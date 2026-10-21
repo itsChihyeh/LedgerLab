@@ -1,24 +1,46 @@
 # 数据字典（初稿）
 
-P0 设计稿 v0.1，2026-10-21。字段是设计层面的，P1 写 Flyway 迁移时以本文为准再细化；改动要回写本文。
+P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。字段是设计层面的，P1 写 Flyway 迁移时以本文为准再细化；改动要回写本文。
 
-约定：主键都是带前缀的 ULID 文本（见 [contracts.md](contracts.md)）；金额 `BIGINT` 分；时刻 `timestamptz`；所有表都有 `recorded_at`。“不可改”指 `app` 角色没有 UPDATE/DELETE 权限。
+约定：平台生成的实体主键是带前缀的 ULID 文本（见 [contracts.md](contracts.md)）；自然键、外部编号和联合主键按各表定义（例如账户用 `smallint` 代码、inbox 用处理方事件号）。金额 `BIGINT` 分；时刻 `timestamptz`；所有表都有 `recorded_at`。“不可改”指 `app` 角色没有 UPDATE/DELETE 权限。
 
 ## 0. Schema 与角色
 
 | schema | 内容 | `app` 角色 | `readonly` 角色 |
 |---|---|---|---|
-| `ledger` | 账户、分录、posting | 账户：SELECT＋UPDATE(仅余额列)；分录和 posting：INSERT/SELECT | SELECT 视图 |
-| `core` | 支付、退款、提现、批次、状态历史 | INSERT/SELECT/UPDATE（状态列） | SELECT 视图 |
-| `io` | inbox、出站命令、API 幂等记录、导入文件 | INSERT/SELECT/UPDATE | 不可见 |
-| `recon` | 对账运行、差异、结算单行、银行流水行 | INSERT/SELECT/UPDATE（差异状态） | SELECT 视图 |
-| `sim_processor`、`sim_bank` | 模拟器自己的状态和真值 | **不可见** | 不可见 |
+| `ledger` | 资金锁、账户、分录、posting、纠错 | 见下表，按列授权 | SELECT 视图 |
+| `core` | 支付、退款、提现、批次、状态历史 | 见下表，按列授权 | SELECT 视图 |
+| `io` | inbox、出站命令、API 幂等记录、导入文件、拉取存档 | INSERT/SELECT，UPDATE 只给下表列出的列 | 不可见 |
+| `recon` | 对账运行、差异、结算单行、银行流水行 | INSERT/SELECT，UPDATE 只给差异的处置列 | SELECT 视图 |
+| `sim_processor`、`sim_bank`、`sim_chaos`、`sim_truth` | 模拟器自己的状态和真值 | **不可见** | 不可见 |
 
-模拟器用自己的数据库角色连自己的 schema（首版和主库同一个 PostgreSQL 实例，不同库更好但不是必需，见 ADR-0013）。`migrator` 拥有全部 DDL。`TRUNCATE` 对 `app` 一律不授予。
+模拟器用自己的数据库角色连自己的 schema（首版和主库同一个 PostgreSQL 实例，不同库更好但不是必需，见 ADR-0013）。`migrator` 拥有全部 DDL 并且是表的属主。`TRUNCATE` 对 `app` 一律不授予。授权一律**按列列出**（`GRANT UPDATE (col, …)`），不先授整表再撤销。
+
+### 0.1 P1 表的写入契约
+
+P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增的表在各自的迁移里按同样格式补进来。
+
+| 表 | `app` 可写 | 数据库强制 | 直连 SQL 验收（以 `app` 角色） |
+|---|---|---|---|
+| `ledger.funds_lock` | UPDATE(`touched_at`)（只为加行锁） | 只有一行，CHECK `id = 1` | INSERT、DELETE 被拒（42501） |
+| `ledger.account` | UPDATE(`balance`, `version`) | 余额 CHECK（见第 1 节）；属性列不在授权里；属性改动另由触发器拒绝（防属主误操作） | 改属性 42501；余额改成 −1（不可为负的账户）被 CHECK 拒绝（23514）；余额改成合法但错误的值能执行，INV-2 检查报错 |
+| `ledger.journal_entry`、`ledger.posting` | 只 INSERT/SELECT | 封存触发器（第 1 节）；`created_txid` 由触发器写入 | UPDATE、DELETE、TRUNCATE 42501；追加攻击、空分录、单边、条数不符在提交时失败 |
+| `core.payment` | INSERT；UPDATE(`status`, `actual_fee`, `batch_id`, `refunded_amount`) | 状态 CHECK；`refunded_amount ≤ amount`；金额范围 CHECK | 改 `amount`、`processor_payment_ref` 42501 |
+| `core.payment_transition` | 只 INSERT/SELECT | — | UPDATE、DELETE 42501 |
+| `io.inbox_event` | INSERT；UPDATE(`status`, `result`, `attempts`, `next_attempt_at`, `lease_owner`, `lease_until`, `lease_epoch`, `parked_on`, `last_error`, `processed_at`) | `payload`、`payload_sha256`、`event_id` 不在授权里 | 改 `payload` 42501 |
+| `io.inbox_conflict` | 只 INSERT/SELECT | — | UPDATE、DELETE 42501 |
+| `recon.issue` | INSERT；UPDATE(`status`, `last_run_id`, `explanation`, `resolution_correction_id`, `updated_at`) | — | 改 `category`、`expected`、`actual` 42501 |
+| 只读视图 | — | `readonly` 只能 SELECT 视图，底表、`io`、`sim_*` 不可见 | 以 `readonly` 读底表、`io`、`sim_*` 被拒；读视图成功；任何写入被拒 |
+
+纠错（P4）会改到支付金额等目前不在授权里的列：怎么改由 P4 开工前补的纠错类型定义决定（ADR-0011 补充），到时新增迁移扩授权，并同步本表。
 
 ---
 
 ## 1. ledger
+
+### `ledger.funds_lock`
+
+只有一行（`id = 1`，`touched_at`）。每个会动钱的事务**第一步**对它 `SELECT … FOR UPDATE`，然后才锁业务行和账户（ADR-0004 补充）。单商户下资金写入本来就在 2102 上串行，这把锁不降低吞吐，但让整个事务的加锁顺序固定，避免跨多次记账调用的死锁。
 
 ### `ledger.account`
 
@@ -30,9 +52,9 @@ P0 设计稿 v0.1，2026-10-21。字段是设计层面的，P1 写 Flyway 迁移
 | `normal_side` | `char(1)` | `D` / `C` |
 | `allow_negative` | `boolean` | 1101、2102 为 true |
 | `balance` | `bigint` | 按正常方向计的当前余额，与 posting 同事务更新 |
-| `version` | `bigint` | 每次记账 +1 |
+| `version` | `bigint` | 每次记账 +1，和 `balance` 在同一条 UPDATE 里改 |
 
-`code`、`kind`、`normal_side`、`allow_negative` 由触发器禁止修改（复核 S4 的“修改账户属性”攻击）。
+约束：CHECK `allow_negative OR balance >= 0`（INV-5 在数据库层兜底）；CHECK `abs(balance) < 9007199254740992`（汇总值上限，contracts 第 3 节）。`code`、`kind`、`normal_side`、`allow_negative` 不在 `app` 的授权里，另由触发器禁止任何角色修改（复核 S4 的“修改账户属性”攻击）。
 
 ### `ledger.journal_entry`（不可改）
 
@@ -42,9 +64,9 @@ P0 设计稿 v0.1，2026-10-21。字段是设计层面的，P1 写 Flyway 迁移
 | `seq` | `bigint` identity | 账本序号；调查接口返回“截至序号/时点”，避免多次查询拼出不存在于同一时刻的状态 |
 | `entry_type` | `text` | money-model 第 3 节的 reason code |
 | `source_key` | `text` UNIQUE | INV-8 |
-| `posting_count` | `smallint` | ≥ 2；提交时核对（INV-4） |
-| `total_amount` | `bigint` | Σ借 = Σ贷 = 此值 |
-| `created_txid` | `xid8` | 默认 `pg_current_xact_id()`；posting 只能在同一事务插入 |
+| `posting_count` | `smallint` NOT NULL | CHECK ≥ 2；提交时核对（INV-4）；批次分录按实际条数（2～5） |
+| `total_amount` | `bigint` NOT NULL | CHECK > 0；Σ借 = Σ贷 = 此值 |
+| `created_txid` | `xid8` NOT NULL | 由 BEFORE INSERT 触发器写成 `pg_current_xact_id()`，覆盖调用方传入的任何值；posting 只能在同一事务插入 |
 | `occurred_at` | `timestamptz` | 触发它的业务事实发生时刻 |
 | `recorded_at` | `timestamptz` | |
 | `subject_type`、`subject_id` | `text` | 关联的业务对象（`payment`/`refund`/`payout`/`batch`/`bank_txn`） |
@@ -64,6 +86,13 @@ P0 设计稿 v0.1，2026-10-21。字段是设计层面的，P1 写 Flyway 迁移
 | `account_version` | `bigint` | 记账后账户版本 |
 | `balance_after` | `bigint` | 记账后账户余额（方便查历史余额、发现并发漏洞） |
 
+封存的触发器（ADR-0003）：
+
+1. posting 的 BEFORE INSERT 触发器：父分录的 `created_txid` 必须等于当前事务号，否则拒绝。
+2. **分录头和 posting 各有一个** `AFTER INSERT` 的可延迟约束触发器（`DEFERRABLE INITIALLY DEFERRED`），都调用同一个检查：该分录实际 posting 条数 = `posting_count`，Σ借 = Σ贷 = `total_amount`。分录头上也挂，是为了没有任何 posting 的空分录也会被检查；`SUM` 对空集合返回 NULL，检查里按 0 处理。
+3. 调用方提前 `SET CONSTRAINTS ALL IMMEDIATE` 时，之后插入的 posting 在语句结束时就检查条数和合计，一次插入一对平衡的 posting 也会因条数不符被拒绝。
+4. posting 金额 CHECK > 0，`side`、`amount`、`account_code` NOT NULL。
+
 ### `ledger.correction`
 
 | 字段 | 说明 |
@@ -76,19 +105,19 @@ P0 设计稿 v0.1，2026-10-21。字段是设计层面的，P1 写 Flyway 迁移
 
 ### `core.payment`
 
-`id pay_…`、`processor_payment_ref` UNIQUE、`amount`（≥ 50）、`expected_fee`（按合同费率算）、`actual_fee`（批次给出后填）、`status`（`CAPTURED`/`SETTLED`）、`batch_id` NULL、`refunded_amount`（未失败、未取消的退款合计，CHECK ≤ amount）、`occurred_at`、`received_at`、`recorded_at`。
+`id pay_…`、`processor_payment_ref` UNIQUE、`processor_intent_ref`（`pi_…`）、`amount`（50～99999999）、`expected_fee`（按合同费率算）、`actual_fee`（批次给出后填）、`status`（`CAPTURED`/`SETTLED`/`VOIDED`）、`batch_id` NULL、`refunded_amount`（未失败、未取消的退款合计，CHECK ≤ amount）、`source_event_id`、`occurred_at`、`received_at`、`recorded_at`。
 
 ### `core.refund`
 
-`id rfd_…`、`payment_id` FK、`merchant_refund_ref`（与 payment_id 联合 UNIQUE，永久）、`amount` > 0、`status`、`queue_seq`（受理顺序，资金队列用）、`processor_refund_ref` UNIQUE NULL、`failure_reason` NULL、`accepted_at`、`submitted_at`、`resolved_at`。
+`id rfd_…`、`payment_id` FK、`merchant_refund_ref`（与 payment_id 联合 UNIQUE，永久）、`amount` > 0、`status`、`queue_seq`（受理顺序，资金队列用）、`processor_refund_ref` UNIQUE NULL、`failure_reason` NULL、`initial_result`（第一次受理时返回的状态码和响应体，永久保存，用于业务编号重放）、`request_fingerprint`、`accepted_at`、`submitted_at`、`resolved_at`。
 
 ### `core.payout`
 
-`id mpo_…`（同时是 `bank_request_id`）、`merchant_payout_ref` UNIQUE、`amount` > 0、`status`、`bank_ack_ref` NULL、`bank_txn_id` NULL（出账流水）、`return_bank_txn_id` NULL、`failure_reason` NULL、各状态时刻。
+`id mpo_…`（同时是 `bank_request_id`）、`merchant_payout_ref` UNIQUE、`amount` > 0、`status`、`initial_result`、`request_fingerprint`、`bank_ack_ref` NULL、`bank_txn_id` NULL（出账流水）、`return_bank_txn_id` NULL、`failure_reason` NULL、各状态时刻。
 
 ### `core.settlement_batch` 与 `core.settlement_batch_line`
 
-批次：`batch_id`（Stripe payout 编号 `po_…`）PK、`settlement_date`、`gross`、`fees`、`refunds`、`payout_failures_returned`、`net`（> 0）、`status`、`hold_reason` NULL、`source_event_id`、`arrival_date`（处理方预计到账日）。CHECK `net = gross − fees − refunds + payout_failures_returned`。
+批次：`batch_id`（Stripe payout 编号 `po_…`）PK、`payout_amount`（payout 对象上的金额）、`settlement_date`、`gross`、`fees`、`refunds`、`payout_failures_returned`、`net`（> 0，且 = `payout_amount`）、`status`（`ANNOUNCED`/`RECEIVED`/`CONFIRMED`/`HELD`/`PAYOUT_FAILED`/`BANKED`）、`hold_reason` NULL（`UNKNOWN_PAYMENT`、`AMOUNT_MISMATCH`、`UNSUPPORTED_LINE`、`UNSUPPORTED_PAYOUT`、`FEE_EXCEEDS_GROSS` 等）、`source_event_id`、`lines_fetch_id` NULL（就绪且拉完的那次 `io.processor_fetch`）、`arrival_date`（处理方预计到账日）。CHECK `net = gross − fees − refunds + payout_failures_returned`。
 
 批次行：`(batch_id, line_no)` PK、`line_type`（`PAYMENT`/`REFUND`/`PAYOUT_FAILURE`；其他 Stripe 类型如 `adjustment`、`dispute` 不支持 → 批次 `HELD`）、`processor_ref`、`balance_txn_id`（Stripe `txn_…`，UNIQUE）、`gross`、`fee`、`net`。
 
@@ -102,11 +131,19 @@ P0 设计稿 v0.1，2026-10-21。字段是设计层面的，P1 写 Flyway 迁移
 
 ### `io.inbox_event`
 
-`event_id` PK（处理方给的）、`event_type`、`payload`（原始请求体，`bytea`）、`payload_sha256`、`signed_at`、`occurred_at`、`received_at`、`status`（`RECEIVED`/`PARKED`/`PROCESSED`/`REJECTED`/`DEAD`）、`attempts`、`lease_until`、`parked_on`（等待的对象键）、`last_error`。永久保留。
+`event_id` PK（处理方给的）、`event_type`、`api_version`、`livemode`、`payload`（原始请求体，`bytea`）、`payload_sha256`、`signed_at`、`occurred_at`、`received_at`、`status`（`RECEIVED`/`PARKED`/`PROCESSED`/`REJECTED`/`IGNORED`/`DEAD`）、`result` NULL（`APPLIED`/`DUPLICATE_FACT`/`BUSINESS_CONFLICT`/`INVALID_AMOUNT`/`UNSUPPORTED_CURRENCY`/`UNSUPPORTED_CAPTURE`/`UNSUPPORTED_TYPE`/`LIVEMODE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`lease_epoch`（每次抢占 +1，写回时作条件，见 state-machines 第 5 节）、`parked_on`（等待的对象键）、`last_error`、`processed_at`。永久保留。
+
+### `io.inbox_conflict`
+
+同一 `event_id` 不同内容的投递：`id`、`event_id`、`payload`、`payload_sha256`、`signed_at`、`received_at`。只追加；原事件行不动（AC-2.4）。
 
 ### `io.outbound_command`
 
-`id cmd_…`、`kind`（`SUBMIT_REFUND`/`SUBMIT_PAYOUT`/`QUERY_REFUND`/`QUERY_PAYOUT`）、`subject_id`、`request_id`（对外幂等键，所有重试相同）、`status`（`PENDING`/`IN_FLIGHT`/`UNKNOWN`/`DONE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`external_ref`、`last_outcome`、`created_at`。
+`id cmd_…`、`kind`（`SUBMIT_REFUND`/`SUBMIT_PAYOUT`/`QUERY_REFUND`/`QUERY_PAYOUT`）、`subject_id`、`request_id`（对外幂等键，所有重试相同）、`status`（`PENDING`/`IN_FLIGHT`/`UNKNOWN`/`DONE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`lease_epoch`、`first_sent_at`（第一次真正发出的时刻，写入后不改）、`external_ref`、`last_outcome`、`created_at`。
+
+### `io.outbound_attempt`
+
+每次外部调用一行：`command_id`、`attempt_no`、`lease_epoch`、`sent_at`、`request_summary`、`response_status`、`response_body`、`error`、`finished_at`。只追加；旧租约迟到的回执也记在这里，但不改业务对象。
 
 ### `io.processor_fetch`
 
@@ -138,9 +175,9 @@ P0 设计稿 v0.1，2026-10-21。字段是设计层面的，P1 写 Flyway 迁移
 
 ### `recon.issue`
 
-`id iss_…`、`category`、`subject_type`、`subject_id`（联合唯一键见状态机第 7 节）、`first_run_id`、`last_run_id`、`status`、`expected`、`actual`（JSON，金额和引用）、`evidence_refs`、`explanation` NULL、`resolution_correction_id` NULL。
+`id iss_…`、`category`、`subject_type`、`subject_id`（联合唯一键见状态机第 7 节）、`detected_by`（`RUN`/`INGESTION`/`AGING`；P1 的入站冲突用 `INGESTION`，不需要对账运行）、`first_run_id` NULL、`last_run_id` NULL、`status`、`expected`、`actual`（JSON，金额和引用）、`evidence_refs`、`explanation` NULL、`resolution_correction_id` NULL、`updated_at`。
 
-差异类别（首版）：`MISSING_IN_LEDGER`、`MISSING_IN_STATEMENT`、`AMOUNT_MISMATCH`、`FEE_MISMATCH`、`DUPLICATE_STATEMENT_LINE`、`BATCH_TOTAL_MISMATCH`、`REFUND_NOT_IN_STATEMENT`、`DEPOSIT_MISSING`、`DEPOSIT_AMOUNT_MISMATCH`、`UNMATCHED_BANK_LINE`、`UNAPPLIED_CASH_OPEN`、`BANK_BALANCE_MISMATCH`、`BATCH_VERSION_CONFLICT`、`STATEMENT_VERSION_CONFLICT`、`TIMING_DIFFERENCE`、`PAYOUT_STATE_CONFLICT`，以及 contracts 1.3 节的老化类别。
+差异类别（首版）：`MISSING_IN_LEDGER`、`MISSING_IN_STATEMENT`、`AMOUNT_MISMATCH`、`FEE_MISMATCH`、`DUPLICATE_STATEMENT_LINE`、`BATCH_TOTAL_MISMATCH`、`REFUND_NOT_IN_STATEMENT`、`DEPOSIT_MISSING`、`DEPOSIT_AMOUNT_MISMATCH`、`UNMATCHED_BANK_LINE`、`UNAPPLIED_CASH_OPEN`、`BANK_BALANCE_MISMATCH`、`BATCH_VERSION_CONFLICT`、`STATEMENT_VERSION_CONFLICT`、`TIMING_DIFFERENCE`、`PAYOUT_STATE_CONFLICT`、`BATCH_STATE_CONFLICT`、`REFUND_STATE_CONFLICT`、`UNSUPPORTED_PAYOUT`，入站类 `EVENT_CONTENT_CONFLICT`、`EVENT_BUSINESS_CONFLICT`、`UNSUPPORTED_EVENT`、`LIVEMODE_EVENT`，以及 contracts 1.3 节的老化类别。
 
 ---
 

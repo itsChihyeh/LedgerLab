@@ -18,3 +18,7 @@
 
 ## 后果
 退款多一个 `AWAITING_FUNDS` 状态和一个队列；“刚收款就退款”会等到批次结算才执行，页面和 API 要说清楚。
+
+## 补充（2026-10-21，开工前审查）
+- 提现的第二个门槛以 money-model 4.2 为准：`P ≤ bank_cash − payout_in_transit − unapplied_cash − max(0, −processor_receivable)`。原文漏了 `unapplied_cash`，按原文实现会让商户提走来历不明的入账。公式只在 money-model 维护，本 ADR 不再另写一份。
+- 本地放行只说明商户的钱够；处理方没有可用余额时退款仍会 pending（money-model 4.1 第 5 条，样例 A 第 16～18′ 步）。

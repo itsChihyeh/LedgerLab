@@ -17,3 +17,8 @@
 
 ## 后果
 多一个过渡账户和一种证据（银行流水），对账从两方变成三方；提现门槛要看“没被占用的现金”（ADR-0005）。
+
+## 补充（2026-10-21，开工前审查）
+- 删去“处理方余额 ≤ 0 时不产生批次……与 Stripe 的行为一致”：这不是 Stripe 的行为。Stripe 的卡退款只用可用余额，不够时 pending；余额真的变负时，Stripe 会建一笔从银行账户扣款的负 payout。
+- 首版只处理净额 > 0 的标准自动 payout；负 payout 和其他不支持的 payout 在入口隔离（批次 `HELD(UNSUPPORTED_PAYOUT)`，开差异），模拟银行不把它当收入。这是本项目的范围限制，不是对 Stripe 的描述。
+- 批次在 payout 明细就绪（`reconciliation_status=completed`）后才拉取核对，见 design/stripe-integration.md 第 2 节。

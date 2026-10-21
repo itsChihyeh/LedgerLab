@@ -24,3 +24,9 @@
 - Stripe 幂等键会在 24 小时后过期，出站重发必须“先查后发”（ADR-0008 补充）。
 - 测试模式下“结算单”和 webhook 同源，独立性较弱，评测数字只在模拟器模式下报。
 - 简历可以写“integrated with Stripe test mode”，但数字只能来自运行报告。
+
+## 补充（2026-10-21，开工前审查）
+- 第 1 条“处理方余额 ≤ 0 时不产生批次”不是 Stripe 的行为，见 ADR-0001 补充。
+- 后果里“幂等键会在 24 小时后过期”改为：Stripe 的幂等键**至少保留 24 小时**，之后可能被清理。
+- Stripe API 版本、SDK 版本和事件格式在 P1 开工前固定（design/stripe-integration.md 第 8 节），不等到 P6。
+- fake Stripe 要按 Stripe 的规则维护可用余额（退款不够时 pending）和 payout 明细就绪（`reconciliation_status`），否则模拟器测过的行为和真实 Stripe 不一致。

@@ -1,6 +1,6 @@
 # 状态机
 
-P0 设计稿 v0.1，2026-10-21。分录名见 [money-model.md](money-model.md) 第 3 节。
+P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。分录名见 [money-model.md](money-model.md) 第 3 节。
 
 通用规则：
 
@@ -18,7 +18,7 @@ P0 设计稿 v0.1，2026-10-21。分录名见 [money-model.md](money-model.md) �
 
 | 从 | 到 | 触发 | 分录 |
 |---|---|---|---|
-| — | `CAPTURED` | webhook `charge.succeeded` | `PAYMENT_CAPTURED` |
+| — | `CAPTURED` | webhook `charge.succeeded`，通过请款准入检查（stripe-integration 第 2 节） | `PAYMENT_CAPTURED` |
 | `CAPTURED` | `SETTLED` | 所在批次 `BATCH_SETTLED` 记账 | （包含在批次分录里） |
 | `CAPTURED` | `VOIDED` | 受限纠错撤销误记的请款（只限未结算） | `REVERSAL` |
 
@@ -39,16 +39,16 @@ REQUESTED ──受理──▶ AWAITING_FUNDS ──资金覆盖──▶ READY
 | — | `AWAITING_FUNDS` 或 `READY` | 退款 API 受理（INV-7 通过）；按 money-model 4.1 判断是否放行 | `REFUND_ACCEPTED` |
 | `AWAITING_FUNDS` | `READY` | 2102 增加后重算队列，进入可放行前缀 | — |
 | `AWAITING_FUNDS` | `CANCELLED` | 运营取消（必须写原因） | `REFUND_CANCELLED` |
-| `READY` | `SUBMITTED` | 出站命令拿到处理方的受理回执（处理方退款号） | — |
+| `READY` | `SUBMITTED` | 出站命令拿到处理方的回执且退款对象 `status=pending`（处理方已受理，在等可用余额） | — |
 | `READY` / `SUBMITTED` | `UNKNOWN` | 命令超时、连接断开、5xx | — |
-| `UNKNOWN` | `SUBMITTED` | 用同一个退款号重试或查询，处理方返回已受理 | — |
-| `READY` / `SUBMITTED` / `UNKNOWN` | `SUCCEEDED` | webhook `refund.updated`（status=succeeded），或结算批次里出现这笔退款（先到者生效）。`READY` 出发的情况是：处理方已执行，webhook 比我们记下回执还早 | `REFUND_EXECUTED` |
-| `READY` / `SUBMITTED` / `UNKNOWN` | `FAILED` | webhook `refund.failed`，或查询结果明确为失败 | `REFUND_FAILED` |
+| `UNKNOWN` | `SUBMITTED` | 查询或重试得到退款对象，`status=pending` | — |
+| `READY` / `SUBMITTED` / `UNKNOWN` | `SUCCEEDED` | 任何“退款对象 `status=succeeded`”的证据：出站调用的响应、`refund.created`/`refund.updated` 事件、查询结果；或结算批次里出现这笔退款（先到者生效）。`READY` 出发的情况是：处理方已执行，证据比我们记下回执还早 | `REFUND_EXECUTED` |
+| `READY` / `SUBMITTED` / `UNKNOWN` | `FAILED` | 退款对象 `status=failed` 或 `canceled`（事件、查询结果或调用响应）；或调用被处理方明确拒绝（4xx，退款没有创建） | `REFUND_FAILED` |
 
 - `REQUESTED` 只是受理事务里的瞬时状态，不会提交到数据库。
 - `READY` 到 `SUBMITTED` 由出站命令驱动（第 6 节）。`READY` 和命令记录在同一事务里建立。
 - `UNKNOWN` 没有超时出口。老化检查会对停留过久的 `UNKNOWN` 报警，但只有处理方的明确结果能让它离开。
-- 已执行后又被处理方撤销的退款不在首版范围内，写进“已知不做”。
+- 已执行后又被处理方撤销的退款（Stripe 测试里有“先成功后失败”的路径）不在首版范围内：`SUCCEEDED` 之后再收到失败证据，不改状态、不记账，开差异 `REFUND_STATE_CONFLICT`，页面可见。
 
 ## 3. 提现 Payout（S1）
 
@@ -80,7 +80,9 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 
 | 从 | 到 | 触发 | 分录 |
 |---|---|---|---|
-| — | `RECEIVED` | webhook `payout.created` 存入，适配器拉到批次行 | — |
+| — | `ANNOUNCED` | webhook `payout.created`：记下 payout 编号、金额、预计到账日；做 payout 准入检查 | — |
+| `ANNOUNCED` | `RECEIVED` | 明细就绪（`payout.reconciliation_completed` 或查询到 `reconciliation_status=completed`），全部分页拉完，行合计等于 payout 金额 | — |
+| `ANNOUNCED` | `HELD` | payout 不符合准入（手动、即时、负 payout、`reconciliation_status=not_applicable`），原因 `UNSUPPORTED_PAYOUT` | — |
 | `RECEIVED` | `CONFIRMED` | 逐项核对通过 | `BATCH_SETTLED` |
 | `RECEIVED` | `HELD` | 有行对不上本地记录（不认识的支付、金额不同、退款没记、行已属于别的批次、行类型不支持） | — |
 | `CONFIRMED` | `PAYOUT_FAILED` | webhook `payout.failed`，且银行没有对应入账 | `BATCH_PAYOUT_FAILED` |
@@ -91,26 +93,32 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 - `PAYOUT_FAILED` 之后银行又出现入账：开 `BATCH_STATE_CONFLICT`，不自动记账。
 
 - 批次里出现本地还在 `SUBMITTED`/`UNKNOWN` 的退款：批次本身就是执行证据，同一事务里先记 `REFUND_EXECUTED`，再核对批次。
-- 同一个 `batch_id` 再次到达但内容哈希不同：不覆盖，原批次保持原状，新内容存为冲突版本，开差异 `BATCH_VERSION_CONFLICT`。
+- 同一个 `batch_id` 再次到达但内容哈希不同：不覆盖，原批次保持原状，新内容存为冲突版本，开差异 `BATCH_VERSION_CONFLICT`。只有“明细就绪且拉完”的快照才算一个版本；未就绪或没拉完的抓取只存档，不参与比较。
+- 先到 `payout.reconciliation_completed`、后到 `payout.created`（乱序）：直接按就绪处理，`created` 到达时只记状态历史。
 - 批次里有不支持的行类型（例如拒付）：`HELD`，原因 `UNSUPPORTED_LINE`，页面显示批次不完整。
 - 批次里出现本地根本没有的支付：先停在 `HELD`，等对应 webhook（乱序）；超过老化阈值报 `MISSING_IN_LEDGER`。
 
 ## 5. 入站事件 Inbox（R6）
 
+**状态**（处理进度）和**结果**（处理出了什么）分开存：`status` 只有下面几种；`result` 记 `APPLIED`、`DUPLICATE_FACT`、`BUSINESS_CONFLICT`、`INVALID_AMOUNT`、`UNSUPPORTED_CURRENCY`、`UNSUPPORTED_CAPTURE`、`UNSUPPORTED_TYPE`、`LIVEMODE` 等。
+
 ```
 （验签失败 → 401，不入库）
-RECEIVED ──处理成功──▶ PROCESSED
+RECEIVED ──处理完成──▶ PROCESSED（result = APPLIED 或 DUPLICATE_FACT）
    │ ▲
    ▼ │ 依赖对象到达
 PARKED（依赖的对象还不存在，例如退款事件先于支付事件到达）
-RECEIVED ──同一 event_id、不同内容──▶ REJECTED（内容冲突，告警）
-RECEIVED ──事件类型不支持（例如拒付）或字段越界──▶ REJECTED（UNSUPPORTED / INVALID，告警，页面可见）
-RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，退避重试；超过上限变 DEAD，告警）
+RECEIVED ──事件类型不支持、字段越界、业务冲突、livemode──▶ REJECTED（result 写原因，告警，页面可见）
+RECEIVED ──订阅范围外的类型──▶ IGNORED
+RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，next_attempt_at 退避；超过上限变 DEAD，告警）
 ```
 
-- 接收端：先用原始请求体验 HMAC 和时间戳窗口，再按 `event_id` 插入 inbox（唯一约束），然后返回 2xx。重复投递命中唯一约束，内容哈希一致就直接 2xx。
-- 处理器按 `received_at` 顺序取事件，加租约，处理成功把事件标 `PROCESSED`，和业务状态、分录在同一事务里提交。
+- **接收事务**：先用原始请求体验 HMAC 和时间戳窗口（`|now − t| ≤ 300 秒`，两侧都查），再按 `event_id` 插入 inbox（唯一约束），然后返回 2xx。重复投递命中唯一约束：内容哈希一致就直接 2xx；**内容不同**时原事件行一个字段都不改，冲突内容另存一行到 `io.inbox_conflict` 并告警，仍返回 2xx（AC-2.4）。
+- **抢占事务**：worker 用 `FOR UPDATE SKIP LOCKED` 取 `status=RECEIVED` 且 `next_attempt_at ≤ now` 的事件，按 `received_at` 顺序；写入 `lease_owner`、`lease_until`，并把 `lease_epoch` 加 1，提交。
+- **业务事务**：业务状态、分录、事件的 `status`/`result` 在同一事务里写。最后一步是 `UPDATE … WHERE event_id = ? AND lease_epoch = <抢占时的值> AND status = 'RECEIVED'`；更新 0 行说明租约已被别人接管，整个事务回滚。所以租约过期后旧 worker 迟到的结果不会覆盖接管者的结果，也不会多记一次账。
+- **失败记录事务**：业务事务失败后，单独开事务把 `attempts`、`last_error`、`next_attempt_at` 写回（同样带 `lease_epoch` 条件）。
 - `PARKED` 事件在它依赖的对象创建时被同一事务唤醒（回到 `RECEIVED`），后台也会定期扫描。
+- P1 的“告警”和“开差异”写进 `recon.issue`，`detected_by = INGESTION`，不需要对账运行（data-dictionary 第 4 节）。
 
 ## 6. 出站命令 Outbound command（R5）
 
@@ -119,12 +127,13 @@ RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，�
 | 状态 | 含义 |
 |---|---|
 | `PENDING` | 和业务状态同一事务建立，等待发送 |
-| `IN_FLIGHT` | 某个 worker 持有租约（`lease_until`），正在调用外部 |
+| `IN_FLIGHT` | 某个 worker 持有租约（`lease_owner`、`lease_until`、`lease_epoch`），正在调用外部 |
 | `UNKNOWN` | 调用结果不明，等待下一次重试或查询（`next_attempt_at`，指数退避加抖动） |
 | `DONE` | 拿到明确回执（成功受理或明确拒绝），回执已写回业务对象 |
 
 - 每条命令有固定的 `request_id`（退款号或银行请求号），**所有重试都用同一个**，外部按它去重。
-- 租约过期的 `IN_FLIGHT` 会被别的 worker 接管，接管者先查询再决定是否重发。
+- 租约过期的 `IN_FLIGHT` 会被别的 worker 接管（`lease_epoch` 加 1），接管者先查询再决定是否重发。旧 worker 迟到的回执按 inbox 同样的 `lease_epoch` 条件写回，写不进去就丢弃，只留在尝试记录里。
+- 第一次真正发出请求时写入 `first_sent_at`，之后不再改；每次尝试另记一行 `io.outbound_attempt`（时间、请求、结果或错误）。退款“超过 20 小时只有完整查询确认不存在才重发”的规则以 `first_sent_at` 为准（stripe-integration 第 3 节）。
 - 命令本身没有“失败放弃”状态。重试次数超过上限只会告警并停止自动重试，业务对象保持 `UNKNOWN`，等待人工查询或流水证据。
 
 ## 7. 对账差异 Reconciliation issue
@@ -137,3 +146,5 @@ RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，�
 | `OPEN` | `ACCEPTED` | 运营确认无需处理（必须写原因） |
 
 同一差异的识别键是 `(category, subject_type, subject_id)`，重复运行对账不会生成重复差异。
+
+**P2 开工前要补**：同一差异关闭后再次出现怎么办（重开、还是新记一次发现），以及每次运行的发现要不可变地留存，保证旧报告不变。思路是把“某次运行的发现”和“差异的当前处置状态”分成两张表（开工前审查 A-I9）。

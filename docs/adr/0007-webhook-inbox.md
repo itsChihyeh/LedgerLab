@@ -22,3 +22,8 @@ API 层不再同步返回 `DUPLICATE`/`REJECTED`，这些结果改为在 inbox �
 - 入口是 `POST /webhooks/stripe`，签名用 Stripe 的方案（`Stripe-Signature`，HMAC-SHA256，时间窗口 5 分钟）；可以直接用 Stripe Java SDK 的验签函数。fake Stripe 用自己的密钥按同一方案签名。
 - 端点只订阅需要的事件类型；不支持的资金类事件（如拒付）进 `REJECTED(UNSUPPORTED)` 并开差异，其他类型记 `IGNORED`；`livemode=true` 拒绝。
 - 处理 `payout.created` 需要拉批次行：HTTP 调用在事务外完成，结果存 `io.processor_fetch` 后再进事务。
+
+## 补充（2026-10-21，开工前审查）
+- “最长重试 3 天”是 Stripe live 模式的说法；sandbox 只在几小时内重试几次。测试模式下不能依赖处理方自动补投。
+- 时间窗口两侧都检查（`|now − t| ≤ 300 秒`）；SDK 的验签函数只拒绝过旧的时间戳，未来时间我们自己补。
+- 同 ID 不同内容：原事件行不改，冲突内容存 `io.inbox_conflict`。inbox 的状态和结果分开存；抢占、业务、失败记录三个事务和 `lease_epoch` 写回条件见 design/state-machines.md 第 5 节。
