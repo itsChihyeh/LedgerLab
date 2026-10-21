@@ -1,0 +1,7 @@
+# Ecosystems are added as their manifests appear (maven: pom.xml, npm: frontend/, uv: agent/).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

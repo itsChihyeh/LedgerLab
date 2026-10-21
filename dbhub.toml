@@ -1,0 +1,19 @@
+# DBHub (read-only Postgres MCP) for local development.
+# Connects as the `readonly` database role (ADR-0014). Read-only is enforced by
+# the role's grants; the settings below are a second layer, not the boundary.
+# Password comes from the LEDGERLAB_READONLY_PASSWORD environment variable.
+
+[[sources]]
+id = "ledgerlab-dev"
+dsn = "postgres://readonly:${LEDGERLAB_READONLY_PASSWORD}@localhost:5432/ledgerlab"
+query_timeout = 10
+
+[[tools]]
+name = "execute_sql"
+source = "ledgerlab-dev"
+readonly = true
+max_rows = 200
+
+[[tools]]
+name = "search_objects"
+source = "ledgerlab-dev"

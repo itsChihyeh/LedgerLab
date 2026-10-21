@@ -1,0 +1,9 @@
+# Git hooks. Install once per clone: `lefthook install`.
+# Layers are added as the build grows: Spotless joins pre-commit once the Maven
+# project exists, Biome once the frontend exists.
+
+pre-commit:
+  parallel: true
+  commands:
+    gitleaks:
+      run: gitleaks git --pre-commit --staged --redact --no-banner
