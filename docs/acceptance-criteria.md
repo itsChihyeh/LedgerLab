@@ -39,16 +39,6 @@
 - **INV-3**：资产余额合计 = 负债余额合计。
 - **INV-4**：每笔支付的累计退款 ≤ 已结算金额；支付状态与累计退款一致。
 
-### 0.5 11-29 里程碑标记
-
-说明第 8 节写明，以下五项在 **11-29 正确性演示**时就要能演示：重复提交不重复记账、相同键不同内容被拒、分录整体成败、并发退款不超额、故障点重试后余额正确。
-
-- 🎯 = 11-29 必须可演示
-- 📅 = 按排期在 11-29 前完成，但不在上面五项必演示之列
-- ⏭ = 11-30 以后
-
-> **待用户确认的排期冲突**：第 8 节排期把“部分退款与并发保护、乱序与故障重放”放在 11-30～12-20，但同一节的修正要求“并发退款不超额、故障点重试后余额正确”在 11-29 就能演示。本文件按修正要求标记（AC-3、AC-4.3/4.4 标 🎯），也就是说，11-29 前至少要做出最小可用的退款和故障注入。如果决定推迟，需要把这些条目改成 ⏭，同时修改第 8 节。
-
 ---
 
 ## 1. 标准样例：支付 10000 → 结算 → 退款 2000（手算余额）
@@ -71,57 +61,57 @@
 
 ## AC-1 金额与分录
 
-| ID | 场景 | Given / When / Then | 层 | 里程碑 |
-|---|---|---|---|---|
-| AC-1.1 | 整数分 | **Given** 空账本 **When** `POST /payments`，`amount_cents=10000` **Then** 201；数据库金额列为整数类型，值为 `10000`；余额与标准样例步骤 1 一致 | TC | 🎯 |
-| AC-1.2 | 拒绝非整数和非正金额 | **When** 提交 `amount_cents` 为 `100.5`、`"100.00"`、`0`、`-500` 或缺失 **Then** 400 `INVALID_AMOUNT`；不新增 payment、journal_entry 或 posting | TC | 🎯 |
-| AC-1.3 | 拒绝非 CAD | **When** `currency="USD"` **Then** 400 `UNSUPPORTED_CURRENCY`；无写入 | TC | 📅 |
-| AC-1.4 | 借贷相等 | **Given** 标准样例步骤 1–3 **Then** 每个分录借贷相等（INV-1）；余额与第 1 节的表逐格一致 | TC | 🎯 |
-| AC-1.5 | 数据库拒绝不平衡分录 | **Given** 以应用角色直接连库 **When** 在一个事务里写入一个分录：借 应收 10000、贷 待结算款 9999，然后提交 **Then** 提交失败（如延迟约束触发器报错）；事务结束后该分录和它的 posting 都不存在。目的：即使应用代码出错，数据库也挡得住 | TC | 🎯 |
-| AC-1.6 | 分录整体成败 | **Given** S1 **When** 结算流程在写完 2a 的第一条 posting 后被注入异常 **Then** 整个事务回滚：posting 总数仍为 2，余额仍为 S1，支付状态仍为 `CONFIRMED`，事件可以重新处理 | TC | 🎯 |
-| AC-1.7 | 历史分录不可改删 | **Given** S3，以应用运行角色连库 **When** 对 `journal_entries` 或 `postings` 执行 `UPDATE` 或 `DELETE` **Then** 失败，SQLSTATE `42501`（权限不足）；行数和内容不变。只有迁移角色拥有 DDL 权限，应用角色只有 `INSERT`/`SELECT` | TC | 🎯 |
-| AC-1.8 | 页面金额显示 | **Given** S3 **When** 打开交易详情页 **Then** 显示 `CAD 100.00`、退款 `CAD 20.00`，以及第 1 节步骤 1–3 的 8 条 posting | PW | 📅 |
+| ID | 场景 | Given / When / Then | 层 |
+|---|---|---|---|
+| AC-1.1 | 整数分 | **Given** 空账本 **When** `POST /payments`，`amount_cents=10000` **Then** 201；数据库金额列为整数类型，值为 `10000`；余额与标准样例步骤 1 一致 | TC |
+| AC-1.2 | 拒绝非整数和非正金额 | **When** 提交 `amount_cents` 为 `100.5`、`"100.00"`、`0`、`-500` 或缺失 **Then** 400 `INVALID_AMOUNT`；不新增 payment、journal_entry 或 posting | TC |
+| AC-1.3 | 拒绝非 CAD | **When** `currency="USD"` **Then** 400 `UNSUPPORTED_CURRENCY`；无写入 | TC |
+| AC-1.4 | 借贷相等 | **Given** 标准样例步骤 1–3 **Then** 每个分录借贷相等（INV-1）；余额与第 1 节的表逐格一致 | TC |
+| AC-1.5 | 数据库拒绝不平衡分录 | **Given** 以应用角色直接连库 **When** 在一个事务里写入一个分录：借 应收 10000、贷 待结算款 9999，然后提交 **Then** 提交失败（如延迟约束触发器报错）；事务结束后该分录和它的 posting 都不存在。目的：即使应用代码出错，数据库也挡得住 | TC |
+| AC-1.6 | 分录整体成败 | **Given** S1 **When** 结算流程在写完 2a 的第一条 posting 后被注入异常 **Then** 整个事务回滚：posting 总数仍为 2，余额仍为 S1，支付状态仍为 `CONFIRMED`，事件可以重新处理 | TC |
+| AC-1.7 | 历史分录不可改删 | **Given** S3，以应用运行角色连库 **When** 对 `journal_entries` 或 `postings` 执行 `UPDATE` 或 `DELETE` **Then** 失败，SQLSTATE `42501`（权限不足）；行数和内容不变。只有迁移角色拥有 DDL 权限，应用角色只有 `INSERT`/`SELECT` | TC |
+| AC-1.8 | 页面金额显示 | **Given** S3 **When** 打开交易详情页 **Then** 显示 `CAD 100.00`、退款 `CAD 20.00`，以及第 1 节步骤 1–3 的 8 条 posting | PW |
 
 ## AC-2 幂等
 
 三种标识各管一件事：API 幂等键（`Idempotency-Key` 请求头，存在 `idempotency_requests`）、入站事件 `(source, event_id)`（存在 `incoming_events`）、业务 ID（`payment_id`、`refund_id`）。
 
-| ID | 场景 | Given / When / Then | 层 | 里程碑 |
-|---|---|---|---|---|
-| AC-2.1 | 相同键相同内容 | **Given** 已用 `Idempotency-Key: K1` 创建支付 10000，返回 201 和 `payment_id=P1` **When** 用 K1 和完全相同的请求体再提交 **Then** 返回与第一次相同的状态码和响应体（同一个 P1）；payment 行数、posting 数、余额都不变（仍为 S1） | TC | 🎯 |
-| AC-2.2 | 相同键不同内容 | **Given** 同上 **When** 用 K1 提交 `amount_cents=12000` **Then** 409 `IDEMPOTENCY_KEY_REUSED`；不新增任何行；余额仍为 S1 | TC | 🎯 |
-| AC-2.3 | 相同键并发首次提交 | **Given** 空账本 **When** 两个请求同时用 K2 和相同内容创建支付 10000 **Then** 只创建一笔 payment 和一组分录；另一个请求要么返回同一结果，要么返回 409 `IDEMPOTENCY_REQUEST_IN_PROGRESS`（二选一，实现时定下来）；最终余额 = S1 | TC | 🎯 |
-| AC-2.4 | 重复回调同内容 | **Given** S1，已处理结算事件 `(processor_sim, evt_001)` **When** 同一事件、同一内容哈希再次到达 **Then** 200，并标记为重复；posting 数不变，余额仍为 S2 | TC | 🎯 |
-| AC-2.5 | 同事件 ID 不同内容 | **Given** 同上 **When** `(processor_sim, evt_001)` 到达，但内容哈希不同（如金额改为 9000） **Then** 409 `EVENT_CONTENT_MISMATCH`；不记账；保留可追查的记录（日志或冲突记录）；余额仍为 S2 | TC | 🎯 |
-| AC-2.6 | 不同事件 ID 重复结算同一支付 | **Given** S2（P1 已由 `evt_001` 结算） **When** `(processor_sim, evt_002)` 也要结算 P1 **Then** 被业务唯一约束拒绝（如每笔支付最多一个结算记录）；`evt_002` 状态为已拒绝，并写明原因；posting 数不变，余额仍为 S2 | TC | 🎯 |
-| AC-2.7 | 两个不同事件并发结算同一支付 | **Given** S1 **When** `evt_003`、`evt_004` 同时要结算 P1 **Then** 恰好一个成功；余额 = S2；结算 posting 恰好 4 条 | TC | 📅 |
-| AC-2.8 | 页面演示重复回调 | **Given** S2 **When** 通过本地演示脚本重放 `evt_001`，然后刷新交易详情页 **Then** 事件日志里多一条“重复”记录，分录列表和余额不变 | PW | 🎯 |
+| ID | 场景 | Given / When / Then | 层 |
+|---|---|---|---|
+| AC-2.1 | 相同键相同内容 | **Given** 已用 `Idempotency-Key: K1` 创建支付 10000，返回 201 和 `payment_id=P1` **When** 用 K1 和完全相同的请求体再提交 **Then** 返回与第一次相同的状态码和响应体（同一个 P1）；payment 行数、posting 数、余额都不变（仍为 S1） | TC |
+| AC-2.2 | 相同键不同内容 | **Given** 同上 **When** 用 K1 提交 `amount_cents=12000` **Then** 409 `IDEMPOTENCY_KEY_REUSED`；不新增任何行；余额仍为 S1 | TC |
+| AC-2.3 | 相同键并发首次提交 | **Given** 空账本 **When** 两个请求同时用 K2 和相同内容创建支付 10000 **Then** 只创建一笔 payment 和一组分录；另一个请求要么返回同一结果，要么返回 409 `IDEMPOTENCY_REQUEST_IN_PROGRESS`（二选一，实现时定下来）；最终余额 = S1 | TC |
+| AC-2.4 | 重复回调同内容 | **Given** S1，已处理结算事件 `(processor_sim, evt_001)` **When** 同一事件、同一内容哈希再次到达 **Then** 200，并标记为重复；posting 数不变，余额仍为 S2 | TC |
+| AC-2.5 | 同事件 ID 不同内容 | **Given** 同上 **When** `(processor_sim, evt_001)` 到达，但内容哈希不同（如金额改为 9000） **Then** 409 `EVENT_CONTENT_MISMATCH`；不记账；保留可追查的记录（日志或冲突记录）；余额仍为 S2 | TC |
+| AC-2.6 | 不同事件 ID 重复结算同一支付 | **Given** S2（P1 已由 `evt_001` 结算） **When** `(processor_sim, evt_002)` 也要结算 P1 **Then** 被业务唯一约束拒绝（如每笔支付最多一个结算记录）；`evt_002` 状态为已拒绝，并写明原因；posting 数不变，余额仍为 S2 | TC |
+| AC-2.7 | 两个不同事件并发结算同一支付 | **Given** S1 **When** `evt_003`、`evt_004` 同时要结算 P1 **Then** 恰好一个成功；余额 = S2；结算 posting 恰好 4 条 | TC |
+| AC-2.8 | 页面演示重复回调 | **Given** S2 **When** 通过本地演示脚本重放 `evt_001`，然后刷新交易详情页 **Then** 事件日志里多一条“重复”记录，分录列表和余额不变 | PW |
 
 ## AC-3 并发退款
 
 实现要求（来自说明）：锁住原支付行（如 `SELECT … FOR UPDATE`），在同一事务内检查累计退款、更新状态、记账。
 
-| ID | 场景 | Given / When / Then | 层 | 里程碑 |
-|---|---|---|---|---|
-| AC-3.1 | 正常部分退款 | **Given** S2 **When** `POST /payments/P1/refunds`，`amount_cents=2000` **Then** 201；余额 = S3；状态 `PARTIALLY_REFUNDED` | TC | 🎯 |
-| AC-3.2 | 两笔并发 6000 对原款 10000 | **Given** S2 **When** 两个请求（不同幂等键）同时各退款 6000 **Then** 恰好一个 201，另一个 409 `REFUND_EXCEEDS_REMAINING`；退款行只有 1 条（6000）；可用款 4000、结算现金 4000；新增退款 posting 恰好 2 条；状态 `PARTIALLY_REFUNDED` | TC | 🎯 |
-| AC-3.3 | 两笔并发 5000 刚好退完 | **Given** S2 **When** 两笔 5000 同时发起 **Then** 两个都是 201；可用款 0、结算现金 0；状态 `REFUNDED`。用来证明加锁后合法请求仍能成功，而不是一律拒绝 | TC | 🎯 |
-| AC-3.4 | 已有部分退款后再并发 | **Given** S3（剩余可退 8000） **When** 两笔 5000 同时发起 **Then** 一成一拒（409）；可用款 3000、结算现金 3000 | TC | 📅 |
-| AC-3.5 | 超额单笔退款 | **Given** S3 **When** 退款 9000 **Then** 409 `REFUND_EXCEEDS_REMAINING`；余额仍为 S3 | TC | 🎯 |
-| AC-3.6 | 未结算不能退款 | **Given** S1 **When** 退款 2000 **Then** 409 `PAYMENT_NOT_SETTLED`；余额仍为 S1 | TC | 🎯 |
-| AC-3.7 | 退款失败不留半截 | **Given** S2 **When** 退款事务在更新状态后、写 posting 前被注入异常 **Then** 回滚：没有退款行，状态仍为 `SETTLED`，余额仍为 S2 | TC | 🎯 |
-| AC-3.8 | 页面演示一成一拒 | **Given** S2 **When** 演示脚本并发发起两笔 6000，然后刷新页面 **Then** 页面显示一笔成功、一笔被拒（含原因），余额为 CAD 40.00 | PW | 🎯 |
+| ID | 场景 | Given / When / Then | 层 |
+|---|---|---|---|
+| AC-3.1 | 正常部分退款 | **Given** S2 **When** `POST /payments/P1/refunds`，`amount_cents=2000` **Then** 201；余额 = S3；状态 `PARTIALLY_REFUNDED` | TC |
+| AC-3.2 | 两笔并发 6000 对原款 10000 | **Given** S2 **When** 两个请求（不同幂等键）同时各退款 6000 **Then** 恰好一个 201，另一个 409 `REFUND_EXCEEDS_REMAINING`；退款行只有 1 条（6000）；可用款 4000、结算现金 4000；新增退款 posting 恰好 2 条；状态 `PARTIALLY_REFUNDED` | TC |
+| AC-3.3 | 两笔并发 5000 刚好退完 | **Given** S2 **When** 两笔 5000 同时发起 **Then** 两个都是 201；可用款 0、结算现金 0；状态 `REFUNDED`。用来证明加锁后合法请求仍能成功，而不是一律拒绝 | TC |
+| AC-3.4 | 已有部分退款后再并发 | **Given** S3（剩余可退 8000） **When** 两笔 5000 同时发起 **Then** 一成一拒（409）；可用款 3000、结算现金 3000 | TC |
+| AC-3.5 | 超额单笔退款 | **Given** S3 **When** 退款 9000 **Then** 409 `REFUND_EXCEEDS_REMAINING`；余额仍为 S3 | TC |
+| AC-3.6 | 未结算不能退款 | **Given** S1 **When** 退款 2000 **Then** 409 `PAYMENT_NOT_SETTLED`；余额仍为 S1 | TC |
+| AC-3.7 | 退款失败不留半截 | **Given** S2 **When** 退款事务在更新状态后、写 posting 前被注入异常 **Then** 回滚：没有退款行，状态仍为 `SETTLED`，余额仍为 S2 | TC |
+| AC-3.8 | 页面演示一成一拒 | **Given** S2 **When** 演示脚本并发发起两笔 6000，然后刷新页面 **Then** 页面显示一笔成功、一笔被拒（含原因），余额为 CAD 40.00 | PW |
 
 ## AC-4 乱序与重放
 
-| ID | 场景 | Given / When / Then | 层 | 里程碑 |
-|---|---|---|---|---|
-| AC-4.1 | 结算早于支付确认 | **Given** 空账本 **When** P1 的结算事件 `evt_010` 先到达 **Then** 202；`incoming_events` 中状态为 `PENDING`；没有任何 posting；余额全为 0 | TC | 📅 |
-| AC-4.2 | 待处理事件被补处理 | **Given** AC-4.1 之后 **When** P1 的支付确认到达 **Then** 确认入账，挂起的 `evt_010` 被处理（同一事务内或由重试任务处理，二选一并写明）；最终余额 = S2；`evt_010` 状态为已处理。如果支付确认一直不到，`evt_010` 保持 `PENDING`，并在运营页面可见 | TC | 📅 |
-| AC-4.3 | 已提交但响应丢失 | **Given** S2 **When** 退款 2000（幂等键 K3）在事务提交成功后、响应发出前被注入网络中断，客户端收到错误后用 K3 和相同内容重试 **Then** 重试返回原退款结果（同一 `refund_id`）；退款行 1 条；余额 = S3，不是 6000/6000 | TC | 🎯 |
-| AC-4.4 | 提交前崩溃后重试 | **Given** S2 **When** 退款 2000（K4）在提交前被注入异常，然后用 K4 重试 **Then** 第一次没有留下任何写入（包括幂等记录不处于“已完成”状态）；重试成功；余额 = S3 | TC | 🎯 |
-| AC-4.5 | 整段事件日志重放 | **Given** 一组按序写好的事件（确认 P1、结算 P1、确认 P2）**When** 把整组事件按原 ID 再投递一遍 **Then** 全部判为重复；posting 数和余额都不变 | TC | 📅 |
-| AC-4.6 | 页面演示故障重试 | **Given** 本地演示脚本 **When** 注入 AC-4.3 的失败并重试 **Then** 页面上的分录列表和余额与 S3 一致；事件或请求日志能看出“第一次失败、第二次返回原结果” | PW | 🎯 |
+| ID | 场景 | Given / When / Then | 层 |
+|---|---|---|---|
+| AC-4.1 | 结算早于支付确认 | **Given** 空账本 **When** P1 的结算事件 `evt_010` 先到达 **Then** 202；`incoming_events` 中状态为 `PENDING`；没有任何 posting；余额全为 0 | TC |
+| AC-4.2 | 待处理事件被补处理 | **Given** AC-4.1 之后 **When** P1 的支付确认到达 **Then** 确认入账，挂起的 `evt_010` 被处理（同一事务内或由重试任务处理，二选一并写明）；最终余额 = S2；`evt_010` 状态为已处理。如果支付确认一直不到，`evt_010` 保持 `PENDING`，并在运营页面可见 | TC |
+| AC-4.3 | 已提交但响应丢失 | **Given** S2 **When** 退款 2000（幂等键 K3）在事务提交成功后、响应发出前被注入网络中断，客户端收到错误后用 K3 和相同内容重试 **Then** 重试返回原退款结果（同一 `refund_id`）；退款行 1 条；余额 = S3，不是 6000/6000 | TC |
+| AC-4.4 | 提交前崩溃后重试 | **Given** S2 **When** 退款 2000（K4）在提交前被注入异常，然后用 K4 重试 **Then** 第一次没有留下任何写入（包括幂等记录不处于“已完成”状态）；重试成功；余额 = S3 | TC |
+| AC-4.5 | 整段事件日志重放 | **Given** 一组按序写好的事件（确认 P1、结算 P1、确认 P2）**When** 把整组事件按原 ID 再投递一遍 **Then** 全部判为重复；posting 数和余额都不变 | TC |
+| AC-4.6 | 页面演示故障重试 | **Given** 本地演示脚本 **When** 注入 AC-4.3 的失败并重试 **Then** 页面上的分录列表和余额与 S3 一致；事件或请求日志能看出“第一次失败、第二次返回原结果” | PW |
 
 ## AC-5 对账独立
 
@@ -147,35 +137,38 @@
 
 结算单批次 `B1`（日期 2026-11-10，P4 那行除外）：P1 10000；P2 4500；P3 7000；P3 7000（同一行出现两次）；P4 3000（日期 2026-11-11）；P9 2500（账本中没有 P9）。另外在账本中加 P5 6000 已结算，结算单里没有。
 
-| ID | 场景 | Given / When / Then | 层 | 里程碑 |
-|---|---|---|---|---|
-| AC-5.1 | 识别全部类别 | **Given** 上面的样例 **When** 导入 B1 并运行对账 **Then** 恰好得到：P2 `AMOUNT_MISMATCH`（账本 5000 / 结算单 4500，差 500）；P3 `DUPLICATE_ROW`；P4 `TIMING_DIFFERENCE`；P9 `UNEXPECTED_IN_STATEMENT`；P5 `MISSING_IN_STATEMENT`；P1 无差异。没有其他差异（误报 0） | TC | 📅 |
-| AC-5.2 | 对账不改账 | **Given** 同上 **When** 运行对账 **Then** postings 和余额与运行前逐行相同；只写入 `reconciliation_issues` | TC | 📅 |
-| AC-5.3 | 批次去重 | **Given** B1 已导入 **When** 再导入同一文件（内容哈希相同） **Then** 拒绝或判为重复批次；`statement_rows` 行数不变；差异不重复生成 | TC | 📅 |
-| AC-5.4 | 夹具不来自账本 | **Then** 测试读取的预期差异只来自场景描述文件；生成器不依赖账本模块（依赖检查通过） | TC | 📅 |
-| AC-5.5 | 对账工作台 | **Given** AC-5.1 的结果 **When** 打开对账工作台，点击 P2 的差异 **Then** 显示两边金额，并能跳到原支付、原事件和相关 posting | PW | 📅 |
+| ID | 场景 | Given / When / Then | 层 |
+|---|---|---|---|
+| AC-5.1 | 识别全部类别 | **Given** 上面的样例 **When** 导入 B1 并运行对账 **Then** 恰好得到：P2 `AMOUNT_MISMATCH`（账本 5000 / 结算单 4500，差 500）；P3 `DUPLICATE_ROW`；P4 `TIMING_DIFFERENCE`；P9 `UNEXPECTED_IN_STATEMENT`；P5 `MISSING_IN_STATEMENT`；P1 无差异。没有其他差异（误报 0） | TC |
+| AC-5.2 | 对账不改账 | **Given** 同上 **When** 运行对账 **Then** postings 和余额与运行前逐行相同；只写入 `reconciliation_issues` | TC |
+| AC-5.3 | 批次去重 | **Given** B1 已导入 **When** 再导入同一文件（内容哈希相同） **Then** 拒绝或判为重复批次；`statement_rows` 行数不变；差异不重复生成 | TC |
+| AC-5.4 | 夹具不来自账本 | **Then** 测试读取的预期差异只来自场景描述文件；生成器不依赖账本模块（依赖检查通过） | TC |
+| AC-5.5 | 对账工作台 | **Given** AC-5.1 的结果 **When** 打开对账工作台，点击 P2 的差异 **Then** 显示两边金额，并能跳到原支付、原事件和相关 posting | PW |
 
 ## AC-6 修正有边界
 
-| ID | 场景 | Given / When / Then | 层 | 里程碑 |
-|---|---|---|---|---|
-| AC-6.1 | 没有通用改账接口 | **When** 对分录或 posting 发送 `PUT`/`PATCH`/`DELETE`（如 `/journal-entries/{id}`） **Then** 405 或 404；不存在可以直接设置账户余额的接口 | TC | 🎯 |
-| AC-6.2 | 退款与纠错分开建模 | **Given** S3 **Then** 退款分录的类型为 `REFUND`，关联 `refund_id`；它不是冲销分录，也没有 `reversal_of` | TC | 📅 |
-| AC-6.3 | 纠错冲销 | **Given** 某个已入账分录 E（如一笔演示用的人工调整：借 可用款 500 / 贷 结算现金 500） **When** 通过专用纠错接口冲销 E，并填写原因 **Then** 生成新分录 R：类型 `REVERSAL`，`reversal_of=E`，postings 与 E 金额相同、方向相反；E 原样保留；余额回到 E 之前；正确的数字另写一个新分录 | TC | ⏭ |
-| AC-6.4 | 不能重复冲销 | **Given** E 已被 R 冲销 **When** 再次冲销 E，或冲销 R **Then** 409 `ALREADY_REVERSED` / `CANNOT_REVERSE_REVERSAL`；无写入 | TC | ⏭ |
-| AC-6.5 | 冲销需要原因 | **When** 不填原因就冲销 **Then** 400；无写入 | TC | ⏭ |
+| ID | 场景 | Given / When / Then | 层 |
+|---|---|---|---|
+| AC-6.1 | 没有通用改账接口 | **When** 对分录或 posting 发送 `PUT`/`PATCH`/`DELETE`（如 `/journal-entries/{id}`） **Then** 405 或 404；不存在可以直接设置账户余额的接口 | TC |
+| AC-6.2 | 退款与纠错分开建模 | **Given** S3 **Then** 退款分录的类型为 `REFUND`，关联 `refund_id`；它不是冲销分录，也没有 `reversal_of` | TC |
+| AC-6.3 | 纠错冲销 | **Given** 某个已入账分录 E（如一笔演示用的人工调整：借 可用款 500 / 贷 结算现金 500） **When** 通过专用纠错接口冲销 E，并填写原因 **Then** 生成新分录 R：类型 `REVERSAL`，`reversal_of=E`，postings 与 E 金额相同、方向相反；E 原样保留；余额回到 E 之前；正确的数字另写一个新分录 | TC |
+| AC-6.4 | 不能重复冲销 | **Given** E 已被 R 冲销 **When** 再次冲销 E，或冲销 R **Then** 409 `ALREADY_REVERSED` / `CANNOT_REVERSE_REVERSAL`；无写入 | TC |
+| AC-6.5 | 冲销需要原因 | **When** 不填原因就冲销 **Then** 400；无写入 | TC |
 
 > AC-6.3 用到的“人工调整”分录本身是否开放、由谁审批，说明里没有定，待用户确认。这里只把它当作被冲销的示例对象。
 
 ---
 
-## 附：11-29 必演示条目汇总
+## 附：演示脚本与验收条件对应
 
-| 说明第 8 节要求 | 对应验收条件 |
+说明第 9 节的三分钟演示，每一步都要有对应验收条件作为证据：
+
+| 演示步骤 | 对应验收条件 |
 |---|---|
-| 重复提交不重复记账 | AC-2.1、AC-2.3、AC-2.4、AC-2.6、AC-2.8 |
-| 相同键不同内容被拒 | AC-2.2、AC-2.5 |
-| 分录整体成败 | AC-1.5、AC-1.6、AC-3.7 |
-| 并发退款不超额 | AC-3.2、AC-3.3、AC-3.8 |
-| 故障点重试后余额正确 | AC-4.3、AC-4.4、AC-4.6 |
-| 支撑性条目（不在上表但 🎯） | AC-1.1、AC-1.2、AC-1.4、AC-1.7、AC-3.1、AC-3.5、AC-3.6、AC-6.1 |
+| 付款 | AC-1.1、AC-1.4、AC-1.8 |
+| 重复回调（账本不变） | AC-2.4、AC-2.8 |
+| 并发退款（一成一拒） | AC-3.2、AC-3.8 |
+| 注入失败 → 重试 | AC-1.6、AC-4.3、AC-4.6 |
+| 查分录和余额 | 第 1 节标准样例、AC-1.8 |
+| 打开对账报告追到原事件 | AC-5.1、AC-5.5 |
+| Agent 解释一条差异并引用记录 | 不在本文件范围（说明第 6 节，评测标准另写） |
