@@ -1,0 +1,12 @@
+# Gitleaks config shared by lefthook and CI. Extends the built-in rules, which already cover
+# Stripe sk_/rk_ keys; adds the webhook signing secret, which the defaults do not cover.
+title = "LedgerLab gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "stripe-webhook-secret"
+description = "Stripe webhook signing secret"
+regex = '''\bwhsec_[A-Za-z0-9]{24,}\b'''
+keywords = ["whsec_"]

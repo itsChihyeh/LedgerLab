@@ -41,7 +41,7 @@ venv/
 # IDE / OS
 .idea/
 *.iml
-.vscode/
+.vscode/*
 !.vscode/extensions.json
 *.swp
 .DS_Store

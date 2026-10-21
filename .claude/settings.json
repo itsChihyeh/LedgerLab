@@ -6,42 +6,73 @@
       "Bash(mvnw.cmd *)",
       "Bash(npm run *)",
       "Bash(npx biome *)",
-      "Bash(docker compose *)",
+      "Bash(docker compose up *)",
+      "Bash(docker compose ps *)",
+      "Bash(docker compose logs *)",
       "Bash(docker ps *)",
       "Bash(git status *)",
       "Bash(git diff *)",
       "Bash(git log *)",
       "Bash(gitleaks *)",
-      "Bash(lefthook *)"
+      "Bash(lefthook *)",
+      "PowerShell(./mvnw.cmd *)",
+      "PowerShell(.\\mvnw.cmd *)",
+      "PowerShell(npm run *)",
+      "PowerShell(npx biome *)",
+      "PowerShell(docker compose up *)",
+      "PowerShell(docker compose ps *)",
+      "PowerShell(docker compose logs *)",
+      "PowerShell(docker ps *)",
+      "PowerShell(git status *)",
+      "PowerShell(git diff *)",
+      "PowerShell(git log *)",
+      "PowerShell(gitleaks *)",
+      "PowerShell(lefthook *)"
     ],
     "deny": [
-      "Read(./.env)",
-      "Read(./.env.*)",
-      "Bash(git push --force *)",
-      "Bash(git push -f *)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(!.env.example)",
+      "Edit(.env)",
+      "Edit(.env.*)",
+      "Edit(!.env.example)",
+      "Bash(git push *--force*)",
+      "Bash(git push *-f *)",
+      "Bash(git push * +*)",
       "Bash(docker volume rm *)",
-      "Bash(docker compose down -v *)"
+      "Bash(docker volume prune *)",
+      "Bash(docker compose *down*-v*)",
+      "PowerShell(git push *--force*)",
+      "PowerShell(git push *-f *)",
+      "PowerShell(git push * +*)",
+      "PowerShell(docker volume rm *)",
+      "PowerShell(docker volume prune *)",
+      "PowerShell(docker compose *down*-v*)"
     ]
   },
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Edit|Write",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-files.mjs\""
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/protect-files.mjs"],
+            "onFailure": "block"
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Edit|Write",
+        "matcher": "Edit|Write|MultiEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/format-frontend.mjs\""
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/format-frontend.mjs"],
+            "timeout": 90
           }
         ]
       }
@@ -51,7 +82,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/spotless-on-stop.mjs\"",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/spotless-on-stop.mjs"],
             "timeout": 180
           }
         ]

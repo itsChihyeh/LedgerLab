@@ -18,11 +18,12 @@
 
 | 用途 | 命令 |
 |---|---|
-| 构建＋全部测试（含 Testcontainers，需要 Docker 运行中） | `./mvnw verify`（Windows：`mvnw.cmd verify`） |
+| 构建＋全部测试（含 Testcontainers，需要 Docker 运行中） | `./mvnw verify`（Git Bash）／`.\mvnw.cmd verify`（PowerShell） |
 | 只跑单测 | `./mvnw test` |
 | 格式化 | `./mvnw spotless:apply` |
 | 本地起数据库等依赖 | `docker compose up -d` |
 | 前端检查 | `cd frontend && npm run check` |
+| 提交前检查（gitleaks、迁移不可改、skills 同步） | `lefthook run pre-commit`；装一次：`lefthook install` |
 
 ## 架构边界
 
@@ -58,11 +59,19 @@
 
 - 本仓库装了 superpowers 插件（先设计、写计划、TDD、系统化调试、完成前验证）。它的流程与本文件冲突时，以本文件为准。
 - 小步改动；每次改完说明对应哪条 AC、怎么验证的。
-- 设计取舍写成 ADR（`.claude/skills/adr`），新增 Flyway 迁移按 `.claude/skills/flyway-migration`。
+- 设计取舍写成 ADR（skill `adr`），新增 Flyway 迁移按 skill `flyway-migration`。skills 正本在 `.agents/skills/`（Codex 读这里），`.claude/skills/` 是给 Claude Code 的同步副本：只改正本，再跑 `sh scripts/check-skills-sync.sh --fix`。
 - 用到 Spring Boot 4.x、Spring Framework 7、Testcontainers、Flyway、jqwik、Stripe SDK 等库的 API 时，先用 Context7 查当前版本文档，不凭记忆。
 - 改了设计层面的东西（字段、状态、契约），同步回写 `docs/design/` 对应文件。
 - 提交信息用英文祈使句，第一行不超过 72 字符，说明“为什么”。
 
 ## 技术栈速查
 
-Java 25 · Spring Boot 4.1 · Maven Wrapper · PostgreSQL · Spring JDBC（关键路径显式 SQL）· Flyway · Spring Modulith · JUnit 5 · Testcontainers · jqwik · TypeScript + React（Vite）· Playwright · Docker Compose · GitHub Actions · Python + uv（P8 调查 Agent）。
+Java 25 · Spring Boot 4.1 · Maven Wrapper · PostgreSQL · Spring JDBC（关键路径显式 SQL）· Flyway · Spring Modulith · JUnit Jupiter（版本跟随 Spring Boot BOM，不单独覆盖）· Testcontainers · jqwik · TypeScript + React（Vite）· Playwright · Docker Compose · GitHub Actions · Python + uv（P8 调查 Agent）。
+
+## 两个代理的工具差异
+
+- **共同的硬检查**在 lefthook 和 CI：gitleaks（含 `whsec_` 规则，`.gitleaks.toml`）、已提交迁移不可改（`scripts/check-migrations.sh`）、skills 副本同步。不要用 `--no-verify` 跳过。
+- **Claude Code**：`.claude/settings.json` 的权限和 hooks（编辑前拦 `.env` 与已提交迁移；编辑后格式化前端；结束前跑 Spotless）、`.mcp.json` 的 MCP。
+- **Codex**：读本文件和 `.agents/skills/`；MCP 在 `.codex/config.toml`（项目需在 Codex 里设为受信任）。Codex 没有上述 Claude hooks，改完 Java 自己跑 `spotless:apply`，改前端自己跑 `npm run check`。
+- 只读数据库 MCP（DBHub）需要先设环境变量 `LEDGERLAB_READONLY_PASSWORD`，并且数据库已按 ADR-0014 建好 `readonly` 角色（P1a 之后）。
+

@@ -8,24 +8,40 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  secrets:
-    name: Secret scan
-    runs-on: ubuntu-latest
+  guards:
+    name: Secrets, migrations, skills
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: gitleaks
-        run: docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:latest git /repo --redact --no-banner
+        run: docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo --config /repo/.gitleaks.toml --redact --no-banner
+      - name: Committed migrations are unchanged
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # First push of a branch has no "before" commit; fall back to the root.
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then BASE=$(git rev-list --max-parents=0 HEAD | tail -1); fi
+          sh scripts/check-migrations.sh "$BASE"
+      - name: Skills copies match
+        run: sh scripts/check-skills-sync.sh
 
   backend:
     name: Backend (build, tests, checks)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      # Skipped until the Maven project exists. (hashFiles only works at step level.)
-      - uses: actions/setup-java@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Skipped until the Maven project exists (P1a). Once pom.xml is committed, remove the
+      # `if:` lines so a deleted pom.xml fails CI instead of silently skipping it.
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         if: ${{ hashFiles('pom.xml') != '' }}
         with:
           distribution: temurin
@@ -37,11 +53,12 @@ jobs:
 
   frontend:
     name: Frontend (lint, types, tests)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      # Skipped until frontend/ exists.
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Skipped until frontend/ exists (P1c). Remove the `if:` lines once it does.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: ${{ hashFiles('frontend/package.json') != '' }}
         with:
           node-version: '24'

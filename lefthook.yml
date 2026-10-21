@@ -1,9 +1,15 @@
 # Git hooks. Install once per clone: `lefthook install`.
-# Layers are added as the build grows: Spotless joins pre-commit once the Maven
-# project exists, Biome once the frontend exists.
+# These checks are the shared gate for every agent (Claude Code, Codex) and for hand edits;
+# CI runs the same scripts. Layers are added as the build grows: Spotless joins pre-commit
+# once the Maven project exists, Biome once the frontend exists.
 
 pre-commit:
   parallel: true
   commands:
     gitleaks:
-      run: gitleaks git --pre-commit --staged --redact --no-banner
+      run: gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml
+    migrations-immutable:
+      run: sh scripts/check-migrations.sh --staged
+    skills-in-sync:
+      glob: "{.agents,.claude}/skills/**"
+      run: sh scripts/check-skills-sync.sh

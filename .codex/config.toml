@@ -1,0 +1,10 @@
+# Codex project config (loaded only when this project is trusted in Codex).
+# Mirrors .mcp.json, which Codex does not read. Keep the two in step.
+
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+
+[mcp_servers.ledgerlab-db-readonly]
+command = "npx"
+args = ["-y", "@bytebase/dbhub@1.5.0", "--transport", "stdio", "--config", "dbhub.toml"]
+env_vars = ["LEDGERLAB_READONLY_PASSWORD"]

@@ -7,7 +7,7 @@
     "ledgerlab-db-readonly": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@bytebase/dbhub@latest", "--transport", "stdio", "--config", "dbhub.toml"]
+      "args": ["-y", "@bytebase/dbhub@1.5.0", "--transport", "stdio", "--config", "dbhub.toml"]
     }
   }
 }

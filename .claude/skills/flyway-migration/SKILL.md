@@ -10,9 +10,9 @@ LedgerLab 的“只追加”“只读”等约束靠数据库兜底（ADR-0003�
 ## 步骤
 
 1. **先改设计**：字段以 `docs/design/data-dictionary.md` 为准。要改结构，先改数据字典，再写迁移。
-2. **新建文件，不改旧文件**：已提交的迁移永不修改（hook 会拦）。在 `src/main/resources/db/migration/` 下新建 `V<下一个序号>__<小写下划线描述>.sql`，序号取现有最大值加一。
+2. **新建文件，不改旧文件**：已提交的迁移永不修改（`scripts/check-migrations.sh` 在 pre-commit 和 CI 里拦，Claude 的 hook 另拦一层）。在 `src/main/resources/db/migration/` 下新建 `V<下一个序号>__<小写下划线描述>.sql`，序号取现有最大值加一。
 3. **写结构**：
-   - 金额 `BIGINT`（分），时刻 `timestamptz`，主键为带前缀的 ULID 文本（`docs/design/contracts.md`），每张表有 `recorded_at`。
+   - 金额 `BIGINT`（分），时刻 `timestamptz`，平台生成的实体主键用带前缀的 ULID 文本（`docs/design/contracts.md`），自然键、外部编号和联合主键按数据字典各表定义（例如账户用 `smallint` 代码、inbox 用处理方事件号），每张表有 `recorded_at`。
    - 能用约束表达的规则就用约束（`CHECK`、`UNIQUE`、部分唯一索引、外键），不要只靠应用代码。
    - 账本相关的触发器（分录封存、借贷平衡、禁止改账户属性）照 ADR-0003。
 4. **同一个迁移里写授权**（对照数据字典第 0 节）：
