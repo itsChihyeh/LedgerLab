@@ -135,6 +135,14 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 
 每类对象一张：`subject_id`、`from_status`、`to_status`、`evidence_type`、`evidence_id`、`occurred_at`、`recorded_at`。只追加。
 
+### P1b-1 实现备注（V2 迁移）
+
+- `payment.id` 为 `pay_` 加 26 位 ULID，沿用 V1 的字符集检查；`processor_payment_ref` 必须以 `ch_` 开头且有后缀。`processor_intent_ref`、`actual_fee`、`batch_id` 可空，其余字段非空；手续费非负，`refunded_amount` 默认 0，范围为 0～`amount`。
+- `batch_id` 到批次表的外键等 P2 补上；`source_event_id` 到 `io.inbox_event` 的外键等该表创建时补上。
+- `payment_transition.id` 为 `bigint GENERATED ALWAYS AS IDENTITY` 主键；`subject_id` 外键指向 `payment.id`。`from_status` 可空（首次进入 CAPTURED），其他字段非空；两个状态列的非空值均限于 `CAPTURED`、`SETTLED`、`VOIDED`。
+- 状态历史的 UPDATE、DELETE、TRUNCATE 由触发器拒绝（`LL004`），也防属主误操作。在 `core` 内定义拒绝函数，避免依赖 ledger 专用函数及其分录纠错错误消息。
+- `app` 可 SELECT、INSERT 两张表，只有 payment 的 `status`、`actual_fee`、`batch_id`、`refunded_amount` 可 UPDATE。`readonly` 仅可 SELECT `core.v_payment`、`core.v_payment_transition`，视图显式列出各表全部字段。
+
 ---
 
 ## 3. io
