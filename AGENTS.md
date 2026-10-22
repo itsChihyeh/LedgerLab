@@ -14,14 +14,13 @@
 
 ## 常用命令
 
-> Maven 项目骨架建立后补全本节。在那之前没有可运行的构建。
-
 | 用途 | 命令 |
 |---|---|
 | 构建＋全部测试（含 Testcontainers，需要 Docker 运行中） | `./mvnw verify`（Git Bash）／`.\mvnw.cmd verify`（PowerShell） |
-| 只跑单测 | `./mvnw test` |
+| 只跑测试（不做覆盖率和格式检查） | `./mvnw test`；单个类 `./mvnw test -Dtest=LedgerSealTest` |
+| 变异测试（PIT，慢，CI 单独跑） | `./mvnw -Pmutation test-compile org.pitest:pitest-maven:mutationCoverage` |
 | 格式化 | `./mvnw spotless:apply` |
-| 本地起数据库等依赖 | `docker compose up -d` |
+| 本地起数据库等依赖 | 先 `cp .env.example .env` 填密码，再 `docker compose up -d` |
 | 前端检查 | `cd frontend && npm run check` |
 | 提交前检查（gitleaks、迁移不可改、skills 同步） | `lefthook run pre-commit`；装一次：`lefthook install` |
 

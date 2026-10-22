@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeSet;
 import javax.sql.DataSource;
 import org.springframework.dao.DuplicateKeyException;
@@ -71,7 +72,7 @@ public class JdbcLedger implements Ledger {
         Map<Account, Balance> balances = lockAccounts(request.lines());
         List<PlannedPosting> planned = new ArrayList<>(request.lines().size());
         for (PostingLine line : request.lines()) {
-            Balance before = balances.get(line.account());
+            Balance before = Objects.requireNonNull(balances.get(line.account()), "account was locked above");
             Balance after = new Balance(Math.addExact(before.amount(), line.balanceDelta()), before.version() + 1);
             balances.put(line.account(), after);
             planned.add(new PlannedPosting(line, after));

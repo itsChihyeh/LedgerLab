@@ -76,8 +76,10 @@ class EntryRequestTest {
     void balanceDeltaFollowsTheNormalSide() {
         assertThat(PostingLine.debit(Account.BANK_CASH, 5).balanceDelta()).isEqualTo(5);
         assertThat(PostingLine.credit(Account.BANK_CASH, 5).balanceDelta()).isEqualTo(-5);
-        assertThat(PostingLine.credit(Account.MERCHANT_AVAILABLE, 5).balanceDelta()).isEqualTo(5);
-        assertThat(PostingLine.debit(Account.MERCHANT_AVAILABLE, 5).balanceDelta()).isEqualTo(-5);
+        assertThat(PostingLine.credit(Account.MERCHANT_AVAILABLE, 5).balanceDelta())
+                .isEqualTo(5);
+        assertThat(PostingLine.debit(Account.MERCHANT_AVAILABLE, 5).balanceDelta())
+                .isEqualTo(-5);
     }
 
     @Test

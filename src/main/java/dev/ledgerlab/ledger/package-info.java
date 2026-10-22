@@ -5,5 +5,9 @@
  * module writes the {@code ledger} schema. The database enforces the same rules again (seal triggers, CHECK
  * constraints, column grants), so a bug here or a direct SQL write still cannot break the books.
  */
-@org.springframework.modulith.ApplicationModule(displayName = "Ledger")
+@NullMarked
+@ApplicationModule(displayName = "Ledger")
 package dev.ledgerlab.ledger;
+
+import org.jspecify.annotations.NullMarked;
+import org.springframework.modulith.ApplicationModule;

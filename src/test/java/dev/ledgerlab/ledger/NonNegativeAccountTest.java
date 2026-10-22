@@ -114,7 +114,8 @@ class NonNegativeAccountTest {
                         PostingLine.credit(Account.REFUND_PAYABLE, 10000))));
 
         assertThat(fixture.balances())
-                .isEqualTo(only(Account.BANK_CASH, 9680, Account.MERCHANT_AVAILABLE, -320, Account.REFUND_PAYABLE, 10000));
+                .isEqualTo(
+                        only(Account.BANK_CASH, 9680, Account.MERCHANT_AVAILABLE, -320, Account.REFUND_PAYABLE, 10000));
         assertThat(fixture.audit().check()).isEmpty();
     }
 }

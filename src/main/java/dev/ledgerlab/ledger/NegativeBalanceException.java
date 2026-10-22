@@ -9,8 +9,7 @@ public class NegativeBalanceException extends RuntimeException {
     private final long resultingBalance;
 
     public NegativeBalanceException(Account account, long resultingBalance) {
-        super("account " + account.code() + " (" + account + ") may not go negative: would become "
-                + resultingBalance);
+        super("account " + account.code() + " (" + account + ") may not go negative: would become " + resultingBalance);
         this.account = account;
         this.resultingBalance = resultingBalance;
     }

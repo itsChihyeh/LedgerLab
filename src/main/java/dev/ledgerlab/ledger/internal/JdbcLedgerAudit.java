@@ -99,7 +99,8 @@ public class JdbcLedgerAudit implements LedgerAudit {
 
     /** INV-3: total assets equal total liabilities, from the stored balances. */
     private List<InvariantViolation> assetsEqualLiabilities() {
-        return jdbc.sql("""
+        return jdbc
+                .sql("""
                         SELECT coalesce(sum(balance) FILTER (WHERE kind = 'ASSET'), 0) AS assets,
                                coalesce(sum(balance) FILTER (WHERE kind = 'LIABILITY'), 0) AS liabilities
                         FROM ledger.account
@@ -107,15 +108,16 @@ public class JdbcLedgerAudit implements LedgerAudit {
                 .query((rs, row) -> new long[] {rs.getLong("assets"), rs.getLong("liabilities")})
                 .optional()
                 .filter(totals -> totals[0] != totals[1])
-                .map(totals -> new InvariantViolation(
-                        "INV-3", "assets %d, liabilities %d".formatted(totals[0], totals[1])))
+                .map(totals ->
+                        new InvariantViolation("INV-3", "assets %d, liabilities %d".formatted(totals[0], totals[1])))
                 .stream()
                 .toList();
     }
 
     /** INV-5: accounts that may not go negative are not negative. */
     private List<InvariantViolation> nonNegativeAccounts() {
-        return jdbc.sql("SELECT code, balance FROM ledger.account WHERE NOT allow_negative AND balance < 0 ORDER BY code")
+        return jdbc.sql(
+                        "SELECT code, balance FROM ledger.account WHERE NOT allow_negative AND balance < 0 ORDER BY code")
                 .query((rs, row) -> new InvariantViolation(
                         "INV-5", "account %d balance %d".formatted(rs.getInt("code"), rs.getLong("balance"))))
                 .list();

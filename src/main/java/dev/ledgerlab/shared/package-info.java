@@ -1,3 +1,7 @@
 /** Shared kernel: injected time and identifier generation used by every module. */
-@org.springframework.modulith.ApplicationModule(displayName = "Shared kernel")
+@NullMarked
+@ApplicationModule(displayName = "Shared kernel")
 package dev.ledgerlab.shared;
+
+import org.jspecify.annotations.NullMarked;
+import org.springframework.modulith.ApplicationModule;

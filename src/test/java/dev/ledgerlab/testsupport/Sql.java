@@ -58,7 +58,9 @@ public final class Sql {
 
     /** Finds the SQLException in the cause chain and checks its SQLSTATE. */
     public static void assertSqlState(String sqlState, Throwable thrown) {
-        assertThat(thrown).as("expected the database to refuse with SQLSTATE %s", sqlState).isNotNull();
+        assertThat(thrown)
+                .as("expected the database to refuse with SQLSTATE %s", sqlState)
+                .isNotNull();
         Throwable cause = thrown;
         while (cause != null && !(cause instanceof SQLException)) {
             cause = cause.getCause();

@@ -82,11 +82,14 @@ public final class TestDatabase {
 
     private static Handle createDatabase(PostgreSQLContainer postgres, String name, String template) {
         JdbcClient admin = JdbcClient.create(dataSource(postgres.getJdbcUrl(), "postgres", SUPERUSER_PASSWORD));
-        admin.sql("CREATE DATABASE " + name + " TEMPLATE " + template + " OWNER migrator").update();
+        admin.sql("CREATE DATABASE " + name + " TEMPLATE " + template + " OWNER migrator")
+                .update();
         // Database-level privileges are not copied from the template; repeat what 01-roles.sh grants.
         admin.sql("REVOKE ALL ON DATABASE " + name + " FROM PUBLIC").update();
-        admin.sql("GRANT CONNECT ON DATABASE " + name + " TO app, readonly, simulator").update();
-        admin.sql("GRANT CONNECT, CREATE, TEMPORARY ON DATABASE " + name + " TO migrator").update();
+        admin.sql("GRANT CONNECT ON DATABASE " + name + " TO app, readonly, simulator")
+                .update();
+        admin.sql("GRANT CONNECT, CREATE, TEMPORARY ON DATABASE " + name + " TO migrator")
+                .update();
         String url = "jdbc:postgresql://" + postgres.getHost() + ":" + postgres.getMappedPort(5432) + "/" + name;
         return new Handle(name, url);
     }

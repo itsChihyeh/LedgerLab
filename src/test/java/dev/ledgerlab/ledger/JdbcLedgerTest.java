@@ -6,7 +6,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import dev.ledgerlab.testsupport.LedgerFixture;
+import dev.ledgerlab.testsupport.Sql;
 import dev.ledgerlab.testsupport.TestDatabase;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
@@ -35,13 +37,16 @@ class JdbcLedgerTest {
     void postingOutsideATransactionIsRefused() {
         assertThatThrownBy(() -> fixture.ledger().post(captured("ch_1", 100)))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("transaction");
-        assertThatThrownBy(() -> fixture.ledger().lockFunds()).isInstanceOf(IllegalStateException.class);
+                .hasMessageContaining("caller's transaction");
+        assertThatThrownBy(() -> fixture.ledger().lockFunds())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("caller's transaction");
     }
 
     @Test
     void postingWithoutTheFundsLockIsRefused() {
-        TransactionTemplate transaction = new TransactionTemplate(new DataSourceTransactionManager(fixture.db().app()));
+        TransactionTemplate transaction = new TransactionTemplate(
+                new DataSourceTransactionManager(fixture.db().app()));
 
         assertThatThrownBy(() -> transaction.execute(status -> fixture.ledger().post(captured("ch_1", 100))))
                 .isInstanceOf(IllegalStateException.class)
@@ -50,13 +55,29 @@ class JdbcLedgerTest {
     }
 
     @Test
-    void theFundsLockIsReleasedWithTheTransaction() {
+    void everyTransactionTakesTheFundsLockAgain() {
         fixture.post(captured("ch_1", 100));
-        // A second transaction must take the lock again; the first one's binding must not leak into it.
-        fixture.post(captured("ch_2", 200));
+
+        // The first transaction's binding must not leak: the second one has to lock the row itself.
+        fixture.inMoneyTransaction(ledger -> {
+            Sql.assertRejected(
+                    "55P03", fixture.db().app(), "SELECT id FROM ledger.funds_lock WHERE id = 1 FOR UPDATE NOWAIT");
+            return ledger.post(captured("ch_2", 200));
+        });
 
         assertThat(fixture.balances())
                 .isEqualTo(only(Account.PROCESSOR_RECEIVABLE, 300, Account.MERCHANT_PENDING, 300));
+    }
+
+    @Test
+    void theFundsLockIsHeldUntilTheTransactionEnds() throws SQLException {
+        fixture.inMoneyTransaction(ledger -> {
+            Sql.assertRejected(
+                    "55P03", fixture.db().app(), "SELECT id FROM ledger.funds_lock WHERE id = 1 FOR UPDATE NOWAIT");
+            return null;
+        });
+
+        Sql.execute(fixture.db().app(), "SELECT id FROM ledger.funds_lock WHERE id = 1 FOR UPDATE NOWAIT");
     }
 
     @Test
@@ -87,7 +108,7 @@ class JdbcLedgerTest {
         assertThat(fixture.balances())
                 .isEqualTo(only(Account.SETTLEMENT_IN_TRANSIT, 9680, Account.MERCHANT_AVAILABLE, 9680));
 
-        List<String> postings = JdbcClient.create(fixture.db().app())
+        var postings = JdbcClient.create(fixture.db().app())
                 .sql("""
                         SELECT line_no || ' ' || account_code || ' ' || side || ' ' || amount || ' v'
                                || account_version || ' -> ' || balance_after

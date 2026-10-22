@@ -43,7 +43,8 @@ class DatabaseRolesTest {
 
     @Test
     void ac_1_13_readonlyReadsTheViews() throws SQLException {
-        assertThat(Sql.queryLong(fixture.db().readonly(), "SELECT count(*) FROM ledger.v_account")).isEqualTo(8);
+        assertThat(Sql.queryLong(fixture.db().readonly(), "SELECT count(*) FROM ledger.v_account"))
+                .isEqualTo(8);
         assertThat(Sql.queryLong(fixture.db().readonly(), "SELECT count(*) FROM ledger.v_journal_entry"))
                 .isEqualTo(1);
         assertThat(Sql.queryLong(fixture.db().readonly(), "SELECT sum(amount) FROM ledger.v_posting"))
@@ -142,7 +143,8 @@ class DatabaseRolesTest {
                 fixture.db().app(),
                 "SELECT id FROM ledger.funds_lock WHERE id = 1 FOR UPDATE",
                 "UPDATE ledger.funds_lock SET touched_at = now() WHERE id = 1");
-        assertThat(Sql.queryLong(fixture.db().app(), "SELECT count(*) FROM ledger.funds_lock")).isEqualTo(1);
+        assertThat(Sql.queryLong(fixture.db().app(), "SELECT count(*) FROM ledger.funds_lock"))
+                .isEqualTo(1);
     }
 
     @Test

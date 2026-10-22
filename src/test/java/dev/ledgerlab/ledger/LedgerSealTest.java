@@ -173,8 +173,7 @@ class LedgerSealTest {
                 INSERT INTO ledger.journal_entry (id, entry_type, source_key, posting_count, total_amount,
                     occurred_at, recorded_at, subject_type, subject_id)
                 VALUES ('%s', 'PAYMENT_CAPTURED', 'payment:ch_%s:captured', %d, %d, now(), now(), 'payment', 'pay_X')
-                """
-                .formatted(id, id, postingCount, total);
+                """.formatted(id, id, postingCount, total);
     }
 
     private static String posting(String id, String entryId, int lineNo, int account, String side, long amount) {
@@ -182,7 +181,6 @@ class LedgerSealTest {
                 INSERT INTO ledger.posting (id, entry_id, line_no, account_code, side, amount, account_version,
                     balance_after, recorded_at)
                 VALUES ('%s', '%s', %d, %d, '%s', %d, 1, %d, now())
-                """
-                .formatted(id, entryId, lineNo, account, side, amount, amount);
+                """.formatted(id, entryId, lineNo, account, side, amount, amount);
     }
 }

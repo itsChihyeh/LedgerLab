@@ -16,6 +16,8 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。字段是设�
 
 模拟器用自己的数据库角色连自己的 schema（首版和主库同一个 PostgreSQL 实例，不同库更好但不是必需，见 ADR-0013）。`migrator` 拥有全部 DDL 并且是表的属主。`TRUNCATE` 对 `app` 一律不授予。授权一律**按列列出**（`GRANT UPDATE (col, …)`），不先授整表再撤销。
 
+P1a 落地方式（2026-10-21）：角色是集群级对象，不放在 Flyway 里，由数据库初始化脚本 `docker/postgres/initdb/01-roles.sh` 创建（Docker Compose 和 Testcontainers 共用同一个脚本）：`migrator`、`app`、`readonly`，以及模拟器用的 `simulator`（拥有四个 `sim_*` schema，P1a 时为空）。数据库对 `PUBLIC` 收回 CONNECT 和 TEMP，`public` schema 对 `PUBLIC` 收回全部权限。Flyway 以 `migrator` 连接，历史表放在单独的 `flyway` schema，`app` 和 `readonly` 都看不到。
+
 ### 0.1 P1 表的写入契约
 
 P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增的表在各自的迁移里按同样格式补进来。
@@ -92,6 +94,14 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 2. **分录头和 posting 各有一个** `AFTER INSERT` 的可延迟约束触发器（`DEFERRABLE INITIALLY DEFERRED`），都调用同一个检查：该分录实际 posting 条数 = `posting_count`，Σ借 = Σ贷 = `total_amount`。分录头上也挂，是为了没有任何 posting 的空分录也会被检查；`SUM` 对空集合返回 NULL，检查里按 0 处理。
 3. 调用方提前 `SET CONSTRAINTS ALL IMMEDIATE` 时，之后插入的 posting 在语句结束时就检查条数和合计，一次插入一对平衡的 posting 也会因条数不符被拒绝。
 4. posting 金额 CHECK > 0，`side`、`amount`、`account_code` NOT NULL。
+
+### P1a 实现备注（V1 迁移）
+
+- 只读视图：`ledger.v_account`、`ledger.v_journal_entry`、`ledger.v_posting`（不含 `created_txid`），`readonly` 只有这三个视图的 SELECT。
+- `account.version` 按 posting 计：每条 posting 让所在账户版本 +1（同一分录两条 posting 记到同一账户就 +2），`posting.account_version` 和 `balance_after` 是该条 posting 之后的值。INV-2 的检查同时核对余额和版本（版本 = 该账户的 posting 条数）。
+- 触发器的自定义 SQLSTATE：`LL001` 账户属性不可改；`LL002` 向别的事务创建的分录追加 posting；`LL003` 提交时条数或借贷合计与分录头不符；`LL004` 改、删、清空分录或 posting。`LL004` 是额外加的一层：`app` 本来就没有这些权限（得到 42501），它拦的是属主 `migrator` 的误操作。
+- `journal_entry` 另有两条 CHECK：只有 `REVERSAL` 带 `reverses_entry_id`；`REVERSAL` 和 `CORRECTION` 必须带 `correction_id`。`correction_id` 指向 `ledger.correction` 的外键在 P4 建表时补上。
+- 记账接口 `Ledger.post` 只在调用方的事务里工作，并要求同一事务先调用 `Ledger.lockFunds()`；账户按代码升序逐个 `FOR UPDATE`。
 
 ### `ledger.correction`
 

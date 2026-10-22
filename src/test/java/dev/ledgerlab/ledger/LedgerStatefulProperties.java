@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import net.jqwik.api.Arbitraries;
 import net.jqwik.api.Arbitrary;
 import net.jqwik.api.Combinators;
@@ -92,28 +93,35 @@ class LedgerStatefulProperties {
     static final class PostRandomEntry implements Action.Independent<State> {
         @Override
         public Arbitrary<Transformer<State>> transformer() {
-            return entries().map(lines -> Transformer.mutate("post " + describe(lines), state -> {
-                String key = "test:" + (++state.counter);
-                EntryRequest request = new EntryRequest(
-                        EntryType.PAYMENT_CAPTURED, key, T0, SubjectType.PAYMENT, "pay_" + state.counter, lines);
-                List<int[]> modelLines = lines.stream()
-                        .map(line -> new int[] {line.account().code(), line.side() == Side.DEBIT ? 1 : 0})
-                        .toList();
-                List<Long> amounts = lines.stream().map(PostingLine::amount).toList();
-                boolean accepted = state.model.wouldAccept(modelLines, amounts);
+            return entries()
+                    .map(lines -> Transformer.mutate("post " + describe(lines), state -> {
+                        String key = "test:" + (++state.counter);
+                        EntryRequest request = new EntryRequest(
+                                EntryType.PAYMENT_CAPTURED,
+                                key,
+                                T0,
+                                SubjectType.PAYMENT,
+                                "pay_" + state.counter,
+                                lines);
+                        List<int[]> modelLines = lines.stream()
+                                .map(line -> new int[] {line.account().code(), line.side() == Side.DEBIT ? 1 : 0})
+                                .toList();
+                        List<Long> amounts =
+                                lines.stream().map(PostingLine::amount).toList();
+                        boolean accepted = state.model.wouldAccept(modelLines, amounts);
 
-                Throwable thrown = catchThrowable(() -> {
-                    PostedEntry posted = state.fixture.post(request);
-                    state.entryIds.add(posted.entryId());
-                });
-                if (accepted) {
-                    assertThat(thrown).as("model accepts this entry").isNull();
-                    state.model.apply(modelLines, amounts);
-                    state.sourceKeys.add(key);
-                } else {
-                    assertThat(thrown).isInstanceOf(NegativeBalanceException.class);
-                }
-            }));
+                        Throwable thrown = catchThrowable(() -> {
+                            PostedEntry posted = state.fixture.post(request);
+                            state.entryIds.add(posted.entryId());
+                        });
+                        if (accepted) {
+                            assertThat(thrown).as("model accepts this entry").isNull();
+                            state.model.apply(modelLines, amounts);
+                            state.sourceKeys.add(key);
+                        } else {
+                            assertThat(thrown).isInstanceOf(NegativeBalanceException.class);
+                        }
+                    }));
         }
     }
 
@@ -125,19 +133,20 @@ class LedgerStatefulProperties {
 
         @Override
         public Arbitrary<Transformer<State>> transformer(State state) {
-            return Arbitraries.of(state.sourceKeys).map(key -> Transformer.mutate("repost " + key, s -> {
-                EntryRequest again = new EntryRequest(
-                        EntryType.PAYMENT_CAPTURED,
-                        key,
-                        T0,
-                        SubjectType.PAYMENT,
-                        "pay_again",
-                        List.of(
-                                PostingLine.debit(Account.PROCESSOR_RECEIVABLE, 1),
-                                PostingLine.credit(Account.MERCHANT_AVAILABLE, 1)));
-                assertThat(catchThrowable(() -> s.fixture.post(again)))
-                        .isInstanceOf(DuplicateSourceKeyException.class);
-            }));
+            return Arbitraries.of(state.sourceKeys)
+                    .map(key -> Transformer.mutate("repost " + key, s -> {
+                        EntryRequest again = new EntryRequest(
+                                EntryType.PAYMENT_CAPTURED,
+                                key,
+                                T0,
+                                SubjectType.PAYMENT,
+                                "pay_again",
+                                List.of(
+                                        PostingLine.debit(Account.PROCESSOR_RECEIVABLE, 1),
+                                        PostingLine.credit(Account.MERCHANT_AVAILABLE, 1)));
+                        assertThat(catchThrowable(() -> s.fixture.post(again)))
+                                .isInstanceOf(DuplicateSourceKeyException.class);
+                    }));
         }
     }
 
@@ -149,17 +158,19 @@ class LedgerStatefulProperties {
 
         @Override
         public Arbitrary<Transformer<State>> transformer(State state) {
-            return Arbitraries.of(state.entryIds).map(entryId -> Transformer.mutate("append to " + entryId, s -> {
-                String suffix = "%026d".formatted(++s.counter);
-                Sql.assertRejected(
-                        "LL002",
-                        s.fixture.db().app(),
-                        "INSERT INTO ledger.posting (id, entry_id, line_no, account_code, side, amount,"
-                                + " account_version, balance_after, recorded_at) VALUES ('pst_" + suffix + "', '"
-                                + entryId + "', 90, 1101, 'D', 1, 1, 1, now()),"
-                                + " ('pst_X" + suffix.substring(1) + "', '" + entryId
-                                + "', 91, 2101, 'C', 1, 1, 1, now())");
-            }));
+            return Arbitraries.of(state.entryIds)
+                    .map(entryId -> Transformer.mutate("append to " + entryId, s -> {
+                        String suffix = "%026d".formatted(++s.counter);
+                        Sql.assertRejected(
+                                "LL002",
+                                s.fixture.db().app(),
+                                "INSERT INTO ledger.posting (id, entry_id, line_no, account_code, side, amount,"
+                                        + " account_version, balance_after, recorded_at) VALUES ('pst_" + suffix
+                                        + "', '"
+                                        + entryId + "', 90, 1101, 'D', 1, 1, 1, now()),"
+                                        + " ('pst_X" + suffix.substring(1) + "', '" + entryId
+                                        + "', 91, 2101, 'C', 1, 1, 1, now())");
+                    }));
         }
     }
 
@@ -244,18 +255,22 @@ class LedgerStatefulProperties {
         boolean wouldAccept(List<int[]> lines, List<Long> amounts) {
             Map<Integer, Long> after = new HashMap<>(balances);
             applyTo(after, lines, amounts);
-            return after.entrySet().stream().allMatch(e -> CHART.get(e.getKey())[1] == 1 || e.getValue() >= 0);
+            return after.entrySet().stream().allMatch(e -> chart(e.getKey())[1] == 1 || e.getValue() >= 0);
         }
 
         void apply(List<int[]> lines, List<Long> amounts) {
             applyTo(balances, lines, amounts);
         }
 
+        private static int[] chart(int code) {
+            return Objects.requireNonNull(CHART.get(code), "unknown account " + code);
+        }
+
         private static void applyTo(Map<Integer, Long> target, List<int[]> lines, List<Long> amounts) {
             for (int i = 0; i < lines.size(); i++) {
                 int code = lines.get(i)[0];
                 boolean debit = lines.get(i)[1] == 1;
-                boolean normalDebit = CHART.get(code)[0] == 1;
+                boolean normalDebit = chart(code)[0] == 1;
                 long amount = amounts.get(i);
                 target.merge(code, debit == normalDebit ? amount : -amount, Long::sum);
             }
