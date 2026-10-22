@@ -155,6 +155,14 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 
 同一 `event_id` 不同内容的投递：`id`、`event_id`、`payload`、`payload_sha256`、`signed_at`、`received_at`。只追加；原事件行不动（AC-2.4）。
 
+P1b-2 落地（V3）：两表均有 NOT NULL 的 `recorded_at timestamptz`。事件的 `event_id` 为 text 主键，CHECK 以 `evt_` 开头；`event_type`、`api_version` 为 text，`livemode` 为 boolean，原始内容为 bytea，哈希为 text，四个事件时刻均为 timestamptz，均 NOT NULL。两表用 CHECK 保证 `payload_sha256 = encode(sha256(payload), 'hex')`。`livemode=true` 允许入库，后续处理标为 `REJECTED/LIVEMODE`。
+
+事件 `status` NOT NULL，`result` 可空，取值限于上列枚举：`PROCESSED` 必须配 `APPLIED` 或 `DUPLICATE_FACT`；`REJECTED` 必须有其他结果；其余状态结果必须为 NULL。`attempts int`、`lease_epoch bigint` 均 NOT NULL、默认 0 且非负；`next_attempt_at timestamptz` NOT NULL；`lease_owner text`、`lease_until timestamptz`、`parked_on text`、`last_error text`、`processed_at timestamptz` 可空。`PARKED` 必须填写 `parked_on`，其他状态必须为空。抢占索引为 `(status, next_attempt_at, received_at)`。
+
+冲突表所有列 NOT NULL；`id bigint GENERATED ALWAYS AS IDENTITY` 为主键，`event_id` 外键指向事件表，其余字段类型与事件表一致。UPDATE/DELETE/TRUNCATE 触发器以 `LL004` 拒绝改写（包括属主）。`core.payment.source_event_id` 同时补上到事件表的外键。
+
+`app` 对两表有 SELECT/INSERT；只对事件表的 `status, result, attempts, next_attempt_at, lease_owner, lease_until, lease_epoch, parked_on, last_error, processed_at` 按列授 UPDATE，不授 DELETE/TRUNCATE。`readonly` 无 io schema 或表权限，不提供视图。
+
 ### `io.outbound_command`
 
 `id cmd_…`、`kind`（`SUBMIT_REFUND`/`SUBMIT_PAYOUT`/`QUERY_REFUND`/`QUERY_PAYOUT`）、`subject_id`、`request_id`（对外幂等键，所有重试相同）、`status`（`PENDING`/`IN_FLIGHT`/`UNKNOWN`/`DONE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`lease_epoch`、`first_sent_at`（第一次真正发出的时刻，写入后不改）、`external_ref`、`last_outcome`、`created_at`。
