@@ -23,6 +23,8 @@
 | 格式化 | `./mvnw spotless:apply` |
 | 本地起数据库等依赖 | 先 `cp .env.example .env` 填密码，再 `docker compose up -d` |
 | 前端检查 | `cd frontend && npm run check` |
+| 前端开发／构建 | `cd frontend && npm run dev`／`npm run build`（开发时 `/api` 代理到 8080） |
+| 前端 E2E（需要 Docker） | `cd frontend && npx playwright install chromium && npm run test:e2e`（自动启动测试后端和 Vite） |
 | 提交前检查（gitleaks、迁移不可改、skills 同步） | `lefthook run pre-commit`；装一次：`lefthook install` |
 
 ## 架构边界

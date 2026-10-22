@@ -27,6 +27,7 @@ pnpm-debug.log*
 .vite/
 playwright-report/
 test-results/
+frontend/e2e-artifacts/
 
 # Python
 __pycache__/
