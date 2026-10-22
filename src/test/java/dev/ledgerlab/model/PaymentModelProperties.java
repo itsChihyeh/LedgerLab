@@ -28,6 +28,7 @@ class PaymentModelProperties {
     private static ModelApplication app;
     private static ModelReport report;
     private static long sequenceId;
+    private static boolean rebuildFailed;
     private State current;
 
     @BeforeContainer
@@ -46,17 +47,19 @@ class PaymentModelProperties {
     }
 
     @Property(seed = SEED, shrinking = ShrinkingMode.BOUNDED, generation = GenerationMode.RANDOMIZED)
-    void ac_4_11_p1ActionsMatchIndependentModel(@ForAll("actions") ActionChain<State> chain) {
+    void ac_4_11_ac_4_13_p1ActionsMatchIndependentModelAndRebuild(@ForAll("actions") ActionChain<State> chain) {
         current = null;
         boolean passed = false;
         try {
             chain.withInvariant("P1 ledger, payment, inbox and issue model", State::check)
                     .run();
             current.drain("final-worker");
+            current.app.assertNoPending();
             current.check();
+            if (current.rebuild) current.rebuild();
             passed = true;
         } catch (AssertionError | RuntimeException failure) {
-            report.lastFailure = chain + "\n" + failure;
+            report.lastFailure = chain + "\n" + failure + (current == null ? "" : "\n" + current.app.log);
             throw failure;
         } finally {
             if (current != null) {
@@ -73,12 +76,13 @@ class PaymentModelProperties {
         // Finish failed/shrunk attempts before the next baseline without rewriting sealed entries.
         if (current == null) return;
         try {
-            app.advance(31);
-            app.drain("cleanup-worker");
+            current.app.advance(31);
+            current.app.drain("cleanup-worker");
         } catch (AssertionError | RuntimeException cleanupFailure) {
             report.cleanupFailures++;
             throw cleanupFailure;
         } finally {
+            if (current.rebuild) current.app.close();
             current = null;
         }
     }
@@ -101,7 +105,7 @@ class PaymentModelProperties {
                 .withAction(2, new Crash(true))
                 .withAction(1, (Action.Independent<State>) () -> Arbitraries.integers()
                         .between(1, 240)
-                        .map(seconds -> step("ADVANCE_CLOCK", "advance " + seconds + "s", s -> app.advance(seconds))))
+                        .map(seconds -> step("ADVANCE_CLOCK", "advance " + seconds + "s", s -> s.app.advance(seconds))))
                 .withMaxTransformations(24);
     }
 
@@ -176,7 +180,7 @@ class PaymentModelProperties {
                         return step(name, name + " event-index=" + index, s -> {
                             PaymentModel.Input input = candidates(s).get(index);
                             if (newId) input = input.withId(s.nextEvent());
-                            else app.advance(1); // A genuinely new signature for same-ID redelivery.
+                            else s.app.advance(1); // A genuinely new signature for same-ID redelivery.
                             if (changed) input = input.withAmount(input.amount().equals("50") ? "51" : "50");
                             s.receive(input);
                         });
@@ -198,19 +202,39 @@ class PaymentModelProperties {
     }
 
     static final class State {
+        final ModelApplication app;
+        final boolean rebuild;
         final String prefix;
         final PaymentModel model = new PaymentModel();
-        final Map<Integer, Long> baseline = app.balances();
-        final long entriesBefore = app.jdbc
-                .sql("SELECT count(*) FROM ledger.journal_entry")
-                .query(Long.class)
-                .single();
+        final Map<Integer, Long> baseline;
+        final long entriesBefore;
         int counter;
         int length;
 
         State(long sequence) {
+            // Once a reconstruction fails, keep rebuilding while jqwik shrinks/replays it.
+            rebuild = rebuildFailed || sequence % 10 == 0;
+            app = rebuild ? new ModelApplication() : PaymentModelProperties.app;
+            app.log.clear();
+            baseline = app.balances();
+            entriesBefore = app.jdbc
+                    .sql("SELECT count(*) FROM ledger.journal_entry")
+                    .query(Long.class)
+                    .single();
             // No SQL LIKE metacharacters: exact prefix filtering cannot include another sequence.
             prefix = "model" + sequence + "x";
+        }
+
+        void rebuild() {
+            report.rebuilds++;
+            try (ModelApplication replay = new ModelApplication()) {
+                app.log.replay(replay);
+                RebuildSnapshot.read(app).assertMatches(RebuildSnapshot.read(replay));
+                report.rebuildMatches++;
+            } catch (AssertionError | RuntimeException failure) {
+                rebuildFailed = true;
+                throw failure;
+            }
         }
 
         String nextEvent() {
@@ -237,6 +261,10 @@ class PaymentModelProperties {
         void crash(boolean afterBusiness) {
             String first = model.pending().getFirst().id();
             Map<String, Object> before = row(first);
+            app.log.add(new ScenarioLog.WorkerRun(
+                    app.clock.instant(),
+                    "doomed-worker",
+                    afterBusiness ? ScenarioLog.CrashPoint.AFTER_BUSINESS : ScenarioLog.CrashPoint.AFTER_CLAIM));
             var doomed = app.worker("doomed-worker", new WorkerHooks() {
                 @Override
                 public void afterClaim(String id) {

@@ -16,6 +16,8 @@ final class ModelReport {
     long violations;
     long checks;
     long cleanupFailures;
+    long rebuilds;
+    long rebuildMatches;
     final long started = System.nanoTime();
     String lastFailure = "none";
 
@@ -42,7 +44,7 @@ final class ModelReport {
     }
 
     void write(String seed) throws IOException {
-        StringBuilder text = new StringBuilder("# P1 model test report (AC-4.11)\n\n");
+        StringBuilder text = new StringBuilder("# P1 model test report (AC-4.11, AC-4.13)\n\n");
         text.append("- Seed: ")
                 .append(seed)
                 .append("\n- Sequence executions: ")
@@ -60,6 +62,14 @@ final class ModelReport {
                 .append(checks)
                 .append("\n- Cleanup failures: ")
                 .append(cleanupFailures)
+                .append("\n- Rebuild attempts (every tenth sequence): ")
+                .append(rebuilds)
+                .append("\n- Matching rebuilds: ")
+                .append(rebuildMatches)
+                .append("\n- Rebuild failures: ")
+                .append(rebuilds - rebuildMatches)
+                .append("\n- IdGenerator seed: ")
+                .append(ModelApplication.ID_SEED)
                 .append("\n- Elapsed seconds (including application startup): ")
                 .append(String.format(Locale.ROOT, "%.3f", (System.nanoTime() - started) / 1_000_000_000.0))
                 .append(
@@ -73,7 +83,7 @@ final class ModelReport {
                         "\nChecks: global LedgerAudit INV-1..5/8; all account balance deltas; per-event outcomes; payment amounts/status; issue categories; conflict copies; INV-9 and INV-10 P1 portions.\n")
                 .append("\nINV-6、7、11：不适用，P2/P3/P5 扩展时加入。\n")
                 .append(
-                        "\nThis only covers generated actions understood by the independent model. It is not a concurrency test; controlled interleavings/barriers remain separate. AC-4.13 empty-database reconstruction is not covered.\n")
+                        "\nThis only covers generated actions understood by the independent model. It is not a concurrency test; controlled interleavings/barriers remain separate. AC-4.13 compares all balances, payments, inbox outcomes, source-key entry/posting multisets and issue identities on separate freshly migrated databases.\n")
                 .append(
                         "\nLast failing execution (jqwik console/Surefire output has the minimized chain):\n\n```text\n")
                 .append(lastFailure)

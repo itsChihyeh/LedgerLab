@@ -7,6 +7,7 @@ import dev.ledgerlab.ingestion.internal.InboxWorker;
 import dev.ledgerlab.ingestion.internal.ModelWorkers;
 import dev.ledgerlab.ingestion.internal.WorkerHooks;
 import dev.ledgerlab.ledger.LedgerAudit;
+import dev.ledgerlab.shared.IdGenerator;
 import dev.ledgerlab.testsupport.MutableClock;
 import dev.ledgerlab.testsupport.StripeSignatures;
 import dev.ledgerlab.testsupport.TestDatabase;
@@ -28,6 +29,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 
 /** One server and one real database for the entire property, including shrinking attempts. */
 final class ModelApplication implements AutoCloseable {
+    static final long ID_SEED = 2026102202L;
+    final ScenarioLog log = new ScenarioLog(ID_SEED);
     private final TestDatabase.Handle db = TestDatabase.freshBlank();
     private final HttpClient http = HttpClient.newHttpClient();
     private final ConfigurableApplicationContext context;
@@ -61,20 +64,32 @@ final class ModelApplication implements AutoCloseable {
         MutableClock modelClock() {
             return new MutableClock(Instant.parse("2026-10-21T14:00:00Z"));
         }
+
+        @Bean
+        @Primary
+        IdGenerator modelIds(MutableClock clock) {
+            return IdGenerator.seeded(clock, ID_SEED);
+        }
     }
 
     void advance(int seconds) {
-        clock.set(clock.instant().plusSeconds(seconds));
+        Instant next = clock.instant().plusSeconds(seconds);
+        log.add(new ScenarioLog.ClockAdvance(clock.instant(), next));
+        clock.set(next);
     }
 
     void deliver(PaymentModel.Input input) {
         byte[] body = payload(input);
+        String signature = StripeSignatures.sign(body, clock.instant().getEpochSecond());
+        log.add(new ScenarioLog.Webhook(clock.instant(), body, signature));
+        deliver(body, signature);
+    }
+
+    void deliver(byte[] body, String signature) {
         HttpRequest request = HttpRequest.newBuilder(endpoint)
                 .timeout(Duration.ofSeconds(10))
                 .header("Content-Type", "application/json")
-                .header(
-                        "Stripe-Signature",
-                        StripeSignatures.sign(body, clock.instant().getEpochSecond()))
+                .header("Stripe-Signature", signature)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                 .build();
         try {
@@ -112,12 +127,22 @@ final class ModelApplication implements AutoCloseable {
     }
 
     void drain(String owner) {
+        log.add(new ScenarioLog.WorkerRun(clock.instant(), owner, ScenarioLog.CrashPoint.NONE));
         InboxWorker worker = worker(owner, new WorkerHooks() {});
         // Bounded so a regression cannot hang the property or CI indefinitely.
         for (int i = 0; i < 100; i++) {
             if (worker.processAvailable() == 0) return;
         }
         throw new AssertionError("Worker did not drain after 100 batches");
+    }
+
+    void assertNoPending() {
+        assertThat(jdbc.sql(
+                                "SELECT event_id, status, next_attempt_at, lease_until FROM io.inbox_event WHERE status IN ('RECEIVED', 'PARKED')")
+                        .query()
+                        .listOfRows())
+                .as("no inbox work remains, including leased or delayed events")
+                .isEmpty();
     }
 
     Map<Integer, Long> balances() {
