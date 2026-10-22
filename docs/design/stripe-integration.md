@@ -42,6 +42,8 @@ webhook 端点只订阅下表的事件类型。
 - 不在 Stripe 里找不到 `metadata.ledgerlab_refund_id` 的退款（例如有人在 Stripe 后台手动退款）：`REJECTED(UNKNOWN_REFUND)`，开差异 `MISSING_IN_LEDGER`。首版不支持从处理方后台发起的退款。
 - `livemode=true` 的事件一律拒绝并告警。
 - **请款准入**：`charge.succeeded` 里的 Charge 必须同时满足 `status=succeeded`、`captured=true`、`amount_captured = amount`、`currency=cad`、`livemode=false`、金额在 50～99999999 分之间；否则 inbox 结果 `REJECTED`（原因 `UNSUPPORTED_CAPTURE`、`UNSUPPORTED_CURRENCY`、`INVALID_AMOUNT` 或 `LIVEMODE`），不记账。流量生成器只用自动请款的 PaymentIntent。
+- 请款准入按 `LIVEMODE` → `INVALID_AMOUNT` → `UNSUPPORTED_CURRENCY` → `UNSUPPORTED_CAPTURE` 的优先级检查，只报告第一个失败原因；金额缺失也算非法金额，`cad` 大小写不敏感。准入失败以事件为主体（`subject_type=event`、`subject_id=eventId`）开 `INGESTION` 差异：`LIVEMODE` 对应 `LIVEMODE_EVENT`，其余对应 `UNSUPPORTED_EVENT`，不写 payment、状态历史或账本。
+- 请款服务在调用方事务中先取资金锁，再做准入和按 Charge 编号锁定支付。同金额的已有事实返回 `DUPLICATE_FACT`，不写入；金额不同返回 `BUSINESS_CONFLICT`，开 `EVENT_BUSINESS_CONFLICT`，expected/actual 分别保存已记金额和新金额。新事实的支付、`NULL → CAPTURED` 历史和 `PAYMENT_CAPTURED` 分录一起提交。
 - **payout 准入**：`automatic=true`、`method=standard`、`currency=cad`、`amount > 0`。不满足的（手动 payout、即时 payout、从银行扣款的负 payout）→ 批次 `HELD(UNSUPPORTED_PAYOUT)`，开差异。
 - **明细就绪**：只在 `reconciliation_status=completed` 后拉取批次行。收到 `payout.created` 后如果迟迟等不到 `payout.reconciliation_completed`，后台按退避查询 payout 对象，看到 `completed` 也一样处理；`not_applicable` 按不支持隔离。拉到的明细必须分页拉完、合计等于 payout 金额，才形成批次版本；未就绪或没拉完的抓取只存档，不参与版本冲突判断。
 - 一个退款的“成功证据”可能来自四处：出站调用的响应、`refund.created`、`refund.updated`、查询结果，外加结算批次里的退款行。它们都走同一个状态转换入口，争同一个 `refund:{refund_id}:executed`，先到者记账。
@@ -79,6 +81,8 @@ webhook 端点只订阅下表的事件类型。
 | `signed_at` | `Stripe-Signature` 里的 `t` |
 | 批次 `arrival_date` | payout `arrival_date`（处理方预计到账日，不是银行记账日） |
 | 手续费 | 支付对应 balance transaction 的 `fee`；合同预期值另算 |
+
+P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at` 使用服务执行时注入的 `Clock`，同次插入取同一时刻；原始 webhook 的接收时刻仍保留在 `io.inbox_event.received_at`，通过 `source_event_id` 关联。`occurred_at` 使用证据中的 Charge `created`，不使用处理时刻。
 
 ## 5. 密钥与安全
 

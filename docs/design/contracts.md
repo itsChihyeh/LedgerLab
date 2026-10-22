@@ -19,6 +19,8 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 
 ### 1.2 规则
 
+P1b-5 请款服务的特例：`core.payment.received_at` 按任务约定记录服务执行时刻，与该行 `recorded_at` 同取注入的 `Clock`；webhook 实际接收时刻以 `source_event_id` 关联的 `io.inbox_event.received_at` 为准。分析 webhook 延迟时使用 inbox 的接收时刻。
+
 1. 时刻一律存 `timestamptz`，统一按 UTC 解释；日期（`date`）只用于外部明确给出的“哪一天”。
 2. **业务日按 `America/Toronto` 划分**：某个时刻属于哪一天，由 `occurred_at` 换算到多伦多本地时间决定。夏令时切换日照样按本地日历日算（这一天有 23 或 25 小时）。
 3. 对账运行要记下**截止时点** `cutoff_at`：只看 `occurred_at < cutoff_at` 且 `received_at < cutoff_at` 的数据，同一批输入、同一截止时点重跑结果必须一样。
