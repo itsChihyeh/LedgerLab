@@ -63,6 +63,15 @@
 - 改了设计层面的东西（字段、状态、契约），同步回写 `docs/design/` 对应文件。
 - 提交信息用英文祈使句，第一行不超过 72 字符，说明“为什么”。
 
+## 分工（2026-10-22 起）
+
+- **Claude Code**：拆任务、定验收条件和关键测试场景、审查实现与测试结果；不重复实现。
+- **Codex**：按任务实现、写测试、跑 `./mvnw verify`、修问题、提交，最后给出改动说明和验证结果（跑了什么命令、结果如何）。
+- 任务要小：一个任务对应一两条 AC 或一个迁移，能单独验收、单独提交。任务说明写明范围、对应 AC、关键测试场景、完成标准和不许碰的文件。
+- **不确定就停**：Codex 遇到任务说明没讲清、设计文档有冲突、或需要越出任务范围时，不要猜。已做的部分保持可编译，在输出末尾列出问题（每个问题带你倾向的选项），然后结束；Claude 回答后再开下一轮。
+- 同一时间只有一方改文件或操作 Git：Codex 在做任务时 Claude 只读；Claude 审查后给意见，Codex 再改。
+- 交接与进度记录在 `docs/handoff/`。
+
 ## 技术栈速查
 
 Java 25 · Spring Boot 4.1 · Maven Wrapper · PostgreSQL · Spring JDBC（关键路径显式 SQL）· Flyway · Spring Modulith · JUnit Jupiter（版本跟随 Spring Boot BOM，不单独覆盖）· Testcontainers · jqwik · TypeScript + React（Vite）· Playwright · Docker Compose · GitHub Actions · Python + uv（P8 调查 Agent）。

@@ -52,7 +52,7 @@
 4. inbox 的抢占、业务、失败记录事务与两个 worker、受控崩溃（AC-4.3–4.6）。
 5. fake Stripe 最小版（独立进程，`sim_processor` schema，`simulator` 角色）和 chaos relay 的复制、乱序、窗口内延迟。
 
-## 5. 与 Codex 的分工（用户 2026-10-22 提出，待用户确认后写进 AGENTS.md）
+## 5. 与 Codex 的分工（用户 2026-10-22 确认，正本已写进 AGENTS.md“分工”一节）
 
 - Claude Code：拆分任务，为每个任务写明范围、对应 AC、关键测试场景和完成标准；审查 Codex 的改动和测试结果；不重复实现。
 - Codex：按任务实现、写测试、跑 `./mvnw verify`、修问题、提交，并附改动说明和验证结果（跑了什么、结果如何）。
