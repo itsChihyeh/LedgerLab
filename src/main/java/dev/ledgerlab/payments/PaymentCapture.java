@@ -69,7 +69,7 @@ public final class PaymentCapture {
                 INSERT INTO core.payment
                     (id, processor_payment_ref, processor_intent_ref, amount, expected_fee, status,
                      source_event_id, occurred_at, received_at, recorded_at)
-                VALUES (:id, :charge, :intent, :amount, :fee, 'CAPTURED', :event, :occurred, :now, :now)
+                VALUES (:id, :charge, :intent, :amount, :fee, 'CAPTURED', :event, :occurred, :received, :now)
                 """)
                 .param("id", paymentId)
                 .param("charge", evidence.chargeId())
@@ -78,6 +78,7 @@ public final class PaymentCapture {
                 .param("fee", 30 + (amount * 29 + 500) / 1000)
                 .param("event", evidence.eventId())
                 .param("occurred", occurredAt)
+                .param("received", evidence.receivedAt().atOffset(ZoneOffset.UTC))
                 .param("now", now)
                 .update();
         jdbc.sql("""

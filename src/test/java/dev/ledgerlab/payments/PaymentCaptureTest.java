@@ -75,7 +75,8 @@ class PaymentCaptureTest {
     }
 
     private static ChargeEvidence evidence(String event, String charge, Long amount) {
-        return new ChargeEvidence(event, charge, "pi_test", amount, amount, "cad", true, "succeeded", false, T0);
+        return new ChargeEvidence(
+                event, charge, "pi_test", amount, amount, "cad", true, "succeeded", false, T0, T0.plusSeconds(30));
     }
 
     private void inbox(ChargeEvidence evidence) {
@@ -85,10 +86,11 @@ class PaymentCaptureTest {
                      signed_at, occurred_at, received_at, recorded_at, status, next_attempt_at)
                 VALUES (:event, 'charge.succeeded', '2026-09-30.endive', :live,
                     '{}'::bytea, encode(sha256('{}'::bytea), 'hex'),
-                    :time, :time, :time, :time, 'RECEIVED', :time)
+                    :time, :time, :received, :time, 'RECEIVED', :time)
                 """)
                 .param("event", evidence.eventId())
                 .param("live", evidence.livemode())
+                .param("received", evidence.receivedAt().atOffset(ZoneOffset.UTC))
                 .param("time", T0.atOffset(ZoneOffset.UTC))
                 .update();
     }
@@ -113,7 +115,8 @@ class PaymentCaptureTest {
 
     @Test
     void ac_1_1_ac_1_4a_captureMatchesS1AndPreservesEvidenceAndTimes() {
-        assertThat(capture(evidence("evt_1", "ch_1", 10000L))).isEqualTo(CaptureResult.APPLIED);
+        var evidence = evidence("evt_1", "ch_1", 10000L);
+        assertThat(capture(evidence)).isEqualTo(CaptureResult.APPLIED);
         assertCounts(1, 1, 2, 1);
         assertBalances(10000);
         var payment = jdbc.sql("SELECT * FROM core.payment").query().singleRow();
@@ -131,13 +134,15 @@ class PaymentCaptureTest {
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM core.payment p JOIN core.payment_transition t ON t.subject_id = p.id
                 JOIN ledger.journal_entry e ON e.subject_id = p.id
-                WHERE p.occurred_at = :occurred AND p.received_at = :now AND p.recorded_at = :now
+                WHERE p.occurred_at = :occurred AND p.received_at = :received AND p.recorded_at = :now
+                    AND p.received_at <> p.recorded_at
                     AND t.from_status IS NULL AND t.to_status = 'CAPTURED' AND t.evidence_type = 'inbox_event'
                     AND t.evidence_id = 'evt_1' AND t.occurred_at = :occurred AND t.recorded_at = :now
                     AND e.subject_type = 'payment' AND e.entry_type = 'PAYMENT_CAPTURED'
                     AND e.source_key = 'payment:ch_1:captured' AND e.occurred_at = :occurred AND e.recorded_at = :now
                 """)
                         .param("occurred", T0.atOffset(ZoneOffset.UTC))
+                        .param("received", evidence.receivedAt().atOffset(ZoneOffset.UTC))
                         .param("now", clock.instant().atOffset(ZoneOffset.UTC))
                         .query(Long.class)
                         .single())
@@ -163,7 +168,17 @@ class PaymentCaptureTest {
     void ac_1_3_nonCadHasOnlyAnIssue(String currency) {
         assertRejected(
                 new ChargeEvidence(
-                        "evt_currency", "ch_1", null, 10000L, 10000L, currency, true, "succeeded", false, T0),
+                        "evt_currency",
+                        "ch_1",
+                        null,
+                        10000L,
+                        10000L,
+                        currency,
+                        true,
+                        "succeeded",
+                        false,
+                        T0,
+                        T0.plusSeconds(30)),
                 CaptureResult.UNSUPPORTED_CURRENCY,
                 "UNSUPPORTED_EVENT");
     }
@@ -184,7 +199,17 @@ class PaymentCaptureTest {
     void ac_1_12_unsupportedCaptureHasOnlyAnIssue(Boolean captured, Long capturedAmount, String status) {
         assertRejected(
                 new ChargeEvidence(
-                        "evt_capture", "ch_1", null, 10000L, capturedAmount, "cad", captured, status, false, T0),
+                        "evt_capture",
+                        "ch_1",
+                        null,
+                        10000L,
+                        capturedAmount,
+                        "cad",
+                        captured,
+                        status,
+                        false,
+                        T0,
+                        T0.plusSeconds(30)),
                 CaptureResult.UNSUPPORTED_CAPTURE,
                 "UNSUPPORTED_EVENT");
     }
@@ -192,7 +217,8 @@ class PaymentCaptureTest {
     @Test
     void ac_1_12_liveModeWinsOverOtherAdmissionFailures() {
         assertRejected(
-                new ChargeEvidence("evt_live", "ch_1", null, null, null, "usd", false, "pending", true, T0),
+                new ChargeEvidence(
+                        "evt_live", "ch_1", null, null, null, "usd", false, "pending", true, T0, T0.plusSeconds(30)),
                 CaptureResult.LIVEMODE,
                 "LIVEMODE_EVENT");
     }
@@ -200,11 +226,32 @@ class PaymentCaptureTest {
     @Test
     void ac_1_2_ac_1_3_admissionReportsOnlyTheFirstFailure() {
         assertRejected(
-                new ChargeEvidence("evt_priority", "ch_1", null, 49L, null, "usd", false, "pending", false, T0),
+                new ChargeEvidence(
+                        "evt_priority",
+                        "ch_1",
+                        null,
+                        49L,
+                        null,
+                        "usd",
+                        false,
+                        "pending",
+                        false,
+                        T0,
+                        T0.plusSeconds(30)),
                 CaptureResult.INVALID_AMOUNT,
                 "UNSUPPORTED_EVENT");
         assertThat(capture(new ChargeEvidence(
-                        "evt_priority2", "ch_1", null, 50L, null, "usd", false, "pending", false, T0)))
+                        "evt_priority2",
+                        "ch_1",
+                        null,
+                        50L,
+                        null,
+                        "usd",
+                        false,
+                        "pending",
+                        false,
+                        T0,
+                        T0.plusSeconds(30))))
                 .isEqualTo(CaptureResult.UNSUPPORTED_CURRENCY);
         assertThat(fixture.count("recon.issue")).isEqualTo(2);
         assertCounts(0, 0, 0, 0);
@@ -231,7 +278,17 @@ class PaymentCaptureTest {
     @CsvSource({"50,31", "500,45", "99999999,2900030"})
     void ac_1_1_boundaryAmountsAndHalfUpFee(long amount, long fee) {
         assertThat(capture(new ChargeEvidence(
-                        "evt_bound", "ch_bound", null, amount, amount, "CaD", true, "succeeded", false, T0)))
+                        "evt_bound",
+                        "ch_bound",
+                        null,
+                        amount,
+                        amount,
+                        "CaD",
+                        true,
+                        "succeeded",
+                        false,
+                        T0,
+                        T0.plusSeconds(30))))
                 .isEqualTo(CaptureResult.APPLIED);
         assertThat(jdbc.sql("SELECT expected_fee FROM core.payment")
                         .query(Long.class)

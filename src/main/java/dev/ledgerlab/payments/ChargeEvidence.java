@@ -14,4 +14,5 @@ public record ChargeEvidence(
         @Nullable Boolean captured,
         @Nullable String status,
         boolean livemode,
-        Instant created) {}
+        Instant created,
+        Instant receivedAt) {}
