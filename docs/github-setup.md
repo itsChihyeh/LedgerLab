@@ -2,6 +2,8 @@
 
 仓库公开后，以下功能对公开仓库免费。
 
+**现状（2026-10-22）**：仓库 `itsChihyeh/LedgerLab` 是私有的，免费账户的私有仓库不能设规则集（GitHub 返回 403），所以按决定先不开，公开时再按本文开。公开之前先把 `docs/brief.md`（求职交接说明，含个人信息）移出仓库并从历史里清掉。
+
 ## 1. 保护 main（规则集）
 
 Settings → Rules → Rulesets → New ruleset → New branch ruleset：
