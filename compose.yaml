@@ -1,0 +1,25 @@
+# Local dependencies. Start with `docker compose up -d`; copy .env.example to .env and fill in
+# the passwords first (Compose reads .env automatically).
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: ledgerlab
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set it in .env}
+      LEDGERLAB_MIGRATOR_PASSWORD: ${LEDGERLAB_MIGRATOR_PASSWORD:?set it in .env}
+      LEDGERLAB_APP_PASSWORD: ${LEDGERLAB_APP_PASSWORD:?set it in .env}
+      LEDGERLAB_READONLY_PASSWORD: ${LEDGERLAB_READONLY_PASSWORD:?set it in .env}
+      LEDGERLAB_SIMULATOR_PASSWORD: ${LEDGERLAB_SIMULATOR_PASSWORD:?set it in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ledgerlab"]
+      interval: 2s
+      retries: 30
+
+volumes:
+  pgdata:

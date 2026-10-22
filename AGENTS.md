@@ -14,14 +14,13 @@
 
 ## 常用命令
 
-> Maven 项目骨架建立后补全本节。在那之前没有可运行的构建。
-
 | 用途 | 命令 |
 |---|---|
 | 构建＋全部测试（含 Testcontainers，需要 Docker 运行中） | `./mvnw verify`（Git Bash）／`.\mvnw.cmd verify`（PowerShell） |
-| 只跑单测 | `./mvnw test` |
+| 只跑测试（不做覆盖率和格式检查） | `./mvnw test`；单个类 `./mvnw test -Dtest=LedgerSealTest` |
+| 变异测试（PIT，慢，CI 单独跑） | `./mvnw -Pmutation test-compile org.pitest:pitest-maven:mutationCoverage` |
 | 格式化 | `./mvnw spotless:apply` |
-| 本地起数据库等依赖 | `docker compose up -d` |
+| 本地起数据库等依赖 | 先 `cp .env.example .env` 填密码，再 `docker compose up -d` |
 | 前端检查 | `cd frontend && npm run check` |
 | 提交前检查（gitleaks、迁移不可改、skills 同步） | `lefthook run pre-commit`；装一次：`lefthook install` |
 
@@ -63,6 +62,15 @@
 - 用到 Spring Boot 4.x、Spring Framework 7、Testcontainers、Flyway、jqwik、Stripe SDK 等库的 API 时，先用 Context7 查当前版本文档，不凭记忆。
 - 改了设计层面的东西（字段、状态、契约），同步回写 `docs/design/` 对应文件。
 - 提交信息用英文祈使句，第一行不超过 72 字符，说明“为什么”。
+
+## 分工（2026-10-22 起）
+
+- **Claude Code**：拆任务、定验收条件和关键测试场景、审查实现与测试结果；不重复实现。
+- **Codex**：按任务实现、写测试、跑 `./mvnw verify`、修问题、提交，最后给出改动说明和验证结果（跑了什么命令、结果如何）。
+- 任务要小：一个任务对应一两条 AC 或一个迁移，能单独验收、单独提交。任务说明写明范围、对应 AC、关键测试场景、完成标准和不许碰的文件。
+- **不确定就停**：Codex 遇到任务说明没讲清、设计文档有冲突、或需要越出任务范围时，不要猜。已做的部分保持可编译，在输出末尾列出问题（每个问题带你倾向的选项），然后结束；Claude 回答后再开下一轮。
+- 同一时间只有一方改文件或操作 Git：Codex 在做任务时 Claude 只读；Claude 审查后给意见，Codex 再改。
+- 交接与进度记录在 `docs/handoff/`。
 
 ## 技术栈速查
 

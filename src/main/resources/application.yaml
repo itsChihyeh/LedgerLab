@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: ledgerlab
+  # The application connects as `app`; Flyway connects separately as `migrator` (ADR-0014).
+  # Passwords come from the environment (.env.example lists them); there are no defaults.
+  datasource:
+    url: ${LEDGERLAB_DB_URL:jdbc:postgresql://localhost:5432/ledgerlab}
+    username: app
+    password: ${LEDGERLAB_APP_PASSWORD}
+  flyway:
+    url: ${spring.datasource.url}
+    user: migrator
+    password: ${LEDGERLAB_MIGRATOR_PASSWORD}
+    # Flyway's history table lives in its own schema, which app and readonly cannot see.
+    default-schema: flyway
+    schemas: flyway

@@ -1,0 +1,21 @@
+package dev.ledgerlab.ledger;
+
+/** Reason codes of journal entries (money-model section 3). */
+public enum EntryType {
+    PAYMENT_CAPTURED,
+    BATCH_SETTLED,
+    BATCH_PAYOUT_FAILED,
+    BANK_DEPOSIT_RECEIVED,
+    REFUND_ACCEPTED,
+    REFUND_EXECUTED,
+    REFUND_FAILED,
+    REFUND_CANCELLED,
+    PAYOUT_RESERVED,
+    PAYOUT_PAID,
+    PAYOUT_FAILED,
+    PAYOUT_RETURNED,
+    UNAPPLIED_CASH_RECEIVED,
+    UNAPPLIED_CASH_RETURNED,
+    REVERSAL,
+    CORRECTION
+}
