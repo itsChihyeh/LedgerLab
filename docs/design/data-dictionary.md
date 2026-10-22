@@ -205,6 +205,16 @@ P1b-2 落地（V3）：两表均有 NOT NULL 的 `recorded_at timestamptz`。事
 
 差异类别（首版）：`MISSING_IN_LEDGER`、`MISSING_IN_STATEMENT`、`AMOUNT_MISMATCH`、`FEE_MISMATCH`、`DUPLICATE_STATEMENT_LINE`、`BATCH_TOTAL_MISMATCH`、`REFUND_NOT_IN_STATEMENT`、`DEPOSIT_MISSING`、`DEPOSIT_AMOUNT_MISMATCH`、`UNMATCHED_BANK_LINE`、`UNAPPLIED_CASH_OPEN`、`BANK_BALANCE_MISMATCH`、`BATCH_VERSION_CONFLICT`、`STATEMENT_VERSION_CONFLICT`、`TIMING_DIFFERENCE`、`PAYOUT_STATE_CONFLICT`、`BATCH_STATE_CONFLICT`、`REFUND_STATE_CONFLICT`、`UNSUPPORTED_PAYOUT`，入站类 `EVENT_CONTENT_CONFLICT`、`EVENT_BUSINESS_CONFLICT`、`UNSUPPORTED_EVENT`、`LIVEMODE_EVENT`，以及 contracts 1.3 节的老化类别。
 
+### P1b-3 实现备注（V4 迁移）
+
+- `id` 为 text 主键，`iss_` 加 26 位 ULID；`category`、`subject_type`、`subject_id`、`detected_by`、`status` 均为 text NOT NULL，两个 subject 字段不得为空白。类别 CHECK 包含上述 23 项及老化类别 `PAYMENT_NOT_SETTLED`、`DEPOSIT_NOT_RECEIVED`、`REFUND_AWAITING_FUNDS_AGED`、`REFUND_NOT_EXECUTED`、`PAYOUT_UNRESOLVED`、`EVENT_PARKED_AGED`。
+- `first_run_id`、`last_run_id` 为可空 text；`RUN` 必须有 `first_run_id`，`INGESTION` 的两个运行号必须都为空，`AGING` 不额外限制运行号。到 `recon.run` 的外键在 P2 建表时补上。
+- `status` 限于 `OPEN`、`EXPLAINED`、`RESOLVED`、`ACCEPTED`。`EXPLAINED`、`ACCEPTED` 要求 `explanation IS NOT NULL`；`RESOLVED` 要求 `explanation` 或 `resolution_correction_id` 至少一个非 NULL；`OPEN` 不限制两者。两列为可空 text，纠错外键在 P4 建 `ledger.correction` 时补上。
+- `expected`、`actual` 为可空 jsonb；`evidence_refs` 为 jsonb NOT NULL，默认 `[]`，CHECK 为 JSON 数组。`recorded_at`、`updated_at` 为 timestamptz NOT NULL。
+- 显式命名所有 CHECK 和 UNIQUE；识别键为 UNIQUE (`category`, `subject_type`, `subject_id`)。关闭后再次出现的处理按 P2 开工前置第 ③ 条重新设计。
+- `app` 有 SELECT、INSERT，仅可 UPDATE (`status`, `last_run_id`, `explanation`, `resolution_correction_id`, `updated_at`)，无 DELETE/TRUNCATE；`migrator` 为属主；`readonly` 仅可 SELECT 显式列出全部字段的 `recon.v_issue`。
+- V4 将 V3 的 `inbox_event_check1`、`inbox_event_check2` 分别重命名为 `inbox_event_status_result`、`inbox_event_status_parked_on`，约束逻辑不变。
+
 ---
 
 ## 5. 模拟器（独立 schema，主应用不可见）

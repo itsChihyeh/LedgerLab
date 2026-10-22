@@ -1,6 +1,7 @@
 package dev.ledgerlab.ingestion;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 import dev.ledgerlab.testsupport.Sql;
 import dev.ledgerlab.testsupport.TestDatabase;
@@ -175,6 +176,8 @@ class InboxTablesTest {
                     .isEqualTo(1);
         } else {
             Sql.assertRejected("23514", db.app(), sql);
+            assertThat(catchThrowable(() -> Sql.execute(db.app(), sql)))
+                    .hasMessageContaining("\"inbox_event_status_result\"");
         }
     }
 
@@ -199,6 +202,10 @@ class InboxTablesTest {
     void ac_1_13_eventChecksRejectInvalidValues(String assignment) throws SQLException {
         Sql.execute(db.app(), EVENT);
         Sql.assertRejected("23514", db.migrator(), "UPDATE io.inbox_event SET " + assignment);
+        if (assignment.equals("status = 'PARKED'") || assignment.contains("parked_on =")) {
+            assertThat(catchThrowable(() -> Sql.execute(db.migrator(), "UPDATE io.inbox_event SET " + assignment)))
+                    .hasMessageContaining("\"inbox_event_status_parked_on\"");
+        }
     }
 
     @ParameterizedTest
