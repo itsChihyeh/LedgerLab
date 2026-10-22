@@ -48,6 +48,27 @@ jobs:
       # Modulith boundaries, JaCoCo floor, Spotless check.
       - run: ./mvnw -B verify
 
+  model:
+    name: P1 model (1000 sequences)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - run: ./mvnw -B -Pmodel test -Dtest=PaymentModelProperties
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: p1-model-report
+          path: |
+            target/model-report.md
+            target/surefire-reports/
+          if-no-files-found: error
+
   simulator:
     name: Simulator (build, tests, checks)
     runs-on: ubuntu-24.04
