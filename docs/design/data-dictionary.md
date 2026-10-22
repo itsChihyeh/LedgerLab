@@ -227,3 +227,13 @@ P1b-2 落地（V3）：两表均有 NOT NULL 的 `recorded_at timestamptz`。事
 - `sim_truth`：场景编号、种子、注入的故障清单和预期差异（ground truth），对账测试和 Agent 评测共用。
 
 处理方和银行的状态分开存、分开推进，避免两边共享同一个错误（I6）。
+
+### P1b-7 fake Stripe 最小版（模拟器 V1）
+
+独立 Maven 项目 `simulator/`，迁移和运行都用 `simulator`，历史表在已有的 `sim_processor`，禁止 Flyway 建 schema。三张表由 simulator 拥有；PUBLIC、migrator、app、readonly 均不授访问权。
+
+- `charge`：`id text PK`（ch_）、`payment_intent text`（pi_）、`amount bigint`、`amount_captured bigint`、`currency text`、`captured boolean`、`status text`、`livemode boolean`、`created bigint`（Stripe Unix 秒）、`recorded_at timestamptz`，全部非空。准入失败场景允许覆盖金额、币种、请款状态和 livemode，不在模拟器重复主应用的准入限制。
+- `event`：`id text PK`（evt_）、`charge_id text FK charge`、`type text`、`api_version text`、`created bigint`（Unix 秒）、`payload text`（原文 JSON，按 UTF-8 投递）、`recorded_at timestamptz`，全部非空。
+- `webhook_delivery`：`id bigint identity PK`、`event_id text FK event`、`target_url text`、`signed_at bigint`（Unix 秒）、`http_status integer NULL`、`error text NULL`、`recorded_at timestamptz`；状态码与错误恰好一个非空。其余字段非空。
+
+创建 charge 和事件在一个事务提交后投递；失败不自动重试。redeliver 使用存档原文；reissue 复制原事件的 Charge 快照，仅换事件编号及事件创建时刻。模拟时钟影响对象/事件 created，签名和 recorded_at 使用独立的现实 UTC 时钟；同一进程的同事件连续投递至少递增一秒（参考已存日志），确保重投签名时间更新。

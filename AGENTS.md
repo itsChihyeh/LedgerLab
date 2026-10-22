@@ -17,6 +17,7 @@
 | 用途 | 命令 |
 |---|---|
 | 构建＋全部测试（含 Testcontainers，需要 Docker 运行中） | `./mvnw verify`（Git Bash）／`.\mvnw.cmd verify`（PowerShell） |
+| 模拟器构建＋测试＋检查 | `./mvnw -B -f simulator/pom.xml verify`（PowerShell：`.\mvnw.cmd -B -f simulator/pom.xml verify`） |
 | 只跑测试（不做覆盖率和格式检查） | `./mvnw test`；单个类 `./mvnw test -Dtest=LedgerSealTest` |
 | 变异测试（PIT，慢，CI 单独跑） | `./mvnw -Pmutation test-compile org.pitest:pitest-maven:mutationCoverage` |
 | 格式化 | `./mvnw spotless:apply` |

@@ -12,6 +12,9 @@ pre-commit:
     spotless:
       glob: "*.java"
       run: ./mvnw -q spotless:check
+    simulator-spotless:
+      glob: "simulator/**/*.java"
+      run: ./mvnw -q -f simulator/pom.xml spotless:check
     skills-in-sync:
       glob: "{.agents,.claude}/skills/**"
       run: sh scripts/check-skills-sync.sh
