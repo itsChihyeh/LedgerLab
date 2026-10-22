@@ -49,6 +49,7 @@ class WebhookIntakeTest {
         registry.add("spring.datasource.url", DB::url);
         registry.add("LEDGERLAB_APP_PASSWORD", () -> TestDatabase.APP_PASSWORD);
         registry.add("LEDGERLAB_MIGRATOR_PASSWORD", () -> TestDatabase.MIGRATOR_PASSWORD);
+        registry.add("LEDGERLAB_READONLY_PASSWORD", () -> TestDatabase.READONLY_PASSWORD);
         registry.add("STRIPE_WEBHOOK_SECRET", () -> StripeSignatures.SECRET);
         registry.add("STRIPE_API_KEY", () -> "");
     }
@@ -104,6 +105,12 @@ class WebhookIntakeTest {
 
     @Autowired
     TransactionTemplate transactions;
+
+    @Autowired
+    InboxIntake intake;
+
+    @Autowired
+    StripeEventParser parser;
 
     @BeforeEach
     void resetControls() {
@@ -164,6 +171,14 @@ class WebhookIntakeTest {
         assertThat(eventCount("evt_duplicate")).isEqualTo(1);
         assertThat(conflictCount("evt_duplicate")).isZero();
         assertThat(row("evt_duplicate")).usingRecursiveComparison().isEqualTo(before);
+        assertThat(jdbc.sql("SELECT outcome FROM io.webhook_delivery WHERE event_id = 'evt_duplicate' ORDER BY id")
+                        .query(String.class)
+                        .list())
+                .containsExactly("NEW", "DUPLICATE");
+        assertThat(jdbc.sql("SELECT received_at FROM io.webhook_delivery WHERE event_id = 'evt_duplicate' ORDER BY id")
+                        .query(Timestamp.class)
+                        .list())
+                .containsExactly(Timestamp.from(NOW), Timestamp.from(NOW.plusSeconds(20)));
         // Posting-count invariance after business processing belongs to the subsequent worker task.
     }
 
@@ -200,6 +215,39 @@ class WebhookIntakeTest {
                         .listOfRows())
                 .containsExactly(issueBefore);
         assertThat(row("evt_conflict")).usingRecursiveComparison().isEqualTo(before);
+        assertThat(jdbc.sql("SELECT outcome FROM io.webhook_delivery WHERE event_id = 'evt_conflict' ORDER BY id")
+                        .query(String.class)
+                        .list())
+                .containsExactly("NEW", "CONFLICT", "CONFLICT");
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM io.webhook_delivery d JOIN io.inbox_conflict c
+                ON d.event_id = c.event_id AND d.payload_sha256 = c.payload_sha256
+                WHERE d.event_id = 'evt_conflict' AND d.signed_at = c.signed_at
+                    AND d.received_at = c.received_at AND d.recorded_at = c.recorded_at
+                """).query(Long.class).single()).isEqualTo(2);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"NEW", "DUPLICATE", "CONFLICT"})
+    void ac_1_14_deliveriesRollbackWithTheIntakeTransaction(String outcome) throws Exception {
+        String id = "evt_delivery_rollback_" + outcome;
+        byte[] original = event(id, 10000, NOW);
+        if (!outcome.equals("NEW")) assertThat(deliver(original)).isEqualTo(200);
+        long before = count("io.webhook_delivery");
+        byte[] body = outcome.equals("CONFLICT") ? event(id, 9000, NOW) : original;
+        transactions.executeWithoutResult(status -> {
+            intake.receive(parser.parse(body), body, NOW);
+            assertThat(count("io.webhook_delivery")).isEqualTo(before + 1);
+            status.setRollbackOnly();
+        });
+        assertThat(count("io.webhook_delivery")).isEqualTo(before);
+        assertThat(eventCount(id)).isEqualTo(outcome.equals("NEW") ? 0 : 1);
+        assertThat(conflictCount(id)).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM recon.issue WHERE subject_id = :id")
+                        .param("id", id)
+                        .query(Long.class)
+                        .single())
+                .isZero();
     }
 
     @Test

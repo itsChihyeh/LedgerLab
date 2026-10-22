@@ -31,6 +31,7 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 | `core.payment_transition` | 只 INSERT/SELECT | — | UPDATE、DELETE 42501 |
 | `io.inbox_event` | INSERT；UPDATE(`status`, `result`, `attempts`, `next_attempt_at`, `lease_owner`, `lease_until`, `lease_epoch`, `parked_on`, `last_error`, `processed_at`) | `payload`、`payload_sha256`、`event_id` 不在授权里 | 改 `payload` 42501 |
 | `io.inbox_conflict` | 只 INSERT/SELECT | — | UPDATE、DELETE 42501 |
+| `io.webhook_delivery` | 只 INSERT/SELECT | 投递结果、哈希格式、事件外键；UPDATE/DELETE/TRUNCATE 触发器（LL004） | 改、删、清空 42501；属主操作 LL004；readonly 只读 core 摘要视图 |
 | `recon.issue` | INSERT；UPDATE(`status`, `last_run_id`, `explanation`, `resolution_correction_id`, `updated_at`) | — | 改 `category`、`expected`、`actual` 42501 |
 | 只读视图 | — | `readonly` 只能 SELECT 视图，底表、`io`、`sim_*` 不可见 | 以 `readonly` 读底表、`io`、`sim_*` 被拒；读视图成功；任何写入被拒 |
 
@@ -163,7 +164,32 @@ P1b-2 落地（V3）：两表均有 NOT NULL 的 `recorded_at timestamptz`。事
 
 冲突表所有列 NOT NULL；`id bigint GENERATED ALWAYS AS IDENTITY` 为主键，`event_id` 外键指向事件表，其余字段类型与事件表一致。UPDATE/DELETE/TRUNCATE 触发器以 `LL004` 拒绝改写（包括属主）。`core.payment.source_event_id` 同时补上到事件表的外键。
 
-`app` 对两表有 SELECT/INSERT；只对事件表的 `status, result, attempts, next_attempt_at, lease_owner, lease_until, lease_epoch, parked_on, last_error, processed_at` 按列授 UPDATE，不授 DELETE/TRUNCATE。`readonly` 无 io schema 或表权限，不提供视图。
+`app` 对两表有 SELECT/INSERT；只对事件表的 `status, result, attempts, next_attempt_at, lease_owner, lease_until, lease_epoch, parked_on, last_error, processed_at` 按列授 UPDATE，不授 DELETE/TRUNCATE。`readonly` 无 io schema 或表权限；P1c-3 仅通过下述 core 视图读取投递摘要。
+
+### `io.webhook_delivery`（P1c-3，V5）
+
+每次通过验签且元数据有效、可入 inbox 的投递记一行，与接收事务一起提交；同内容重投不增加 inbox 行数，但增加投递记录。签名无效、JSON 或必需元数据无效的请求仍不落库。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | `bigint GENERATED ALWAYS AS IDENTITY` PK | 投递序号，相同时刻按此排序 |
+| `event_id` | `text` NOT NULL FK | 指向 `io.inbox_event.event_id` |
+| `outcome` | `text` NOT NULL | CHECK：`NEW`、`DUPLICATE`、`CONFLICT` |
+| `payload_sha256` | `text` NOT NULL | 本次投递哈希，CHECK 64 位十六进制 |
+| `signed_at`、`received_at`、`recorded_at` | `timestamptz` NOT NULL | 本次签名、收到、记录时刻 |
+
+只追加，触发器禁止 UPDATE/DELETE/TRUNCATE（LL004，包括属主）；app 仅 SELECT/INSERT，readonly 无底表权限。
+
+`core.v_payment_delivery` 由 migrator 拥有，用属主权限读取 io；仅暴露 `id`、`event_id`、`event_type`、投递 `outcome`、`received_at`、事件当前 `status`/`result`，以及原事件 `data.object.id` 提取的 `processor_payment_ref`（仅 `charge.*`）。不暴露原文、哈希或冲突原文，readonly 仅 SELECT 视图，仍无 io 权限。CONFLICT 归于原事件的 charge。
+
+### P1c-3 只读支付查询契约
+
+investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.readonly-datasource.url/username/password`，默认 URL 同主数据源、用户名 readonly、密码来自 `LEDGERLAB_READONLY_PASSWORD`。额外数据源不作为默认候选；不替换 app 数据源、事务管理器或 Flyway 连接。
+
+- `GET /api/payments/{ref}` 支持本地 `pay_…` 和处理方 `ch_…`，不存在返回 404。JSON 字段：`id`、`processorPaymentRef`、`amount`（整数分）、`currency`（CAD）、`status`、`expectedFee`、`postings`、`deliveries`、`asOf`。
+- postings 包含 `entryId`、`entryType`、`lineNo`、`accountCode`、`accountName`、`side`、`amount`，按分录 seq、行号排序。deliveries 包含 `eventId`、`eventType`、`outcome`、`status`、`result`（可空）、`receivedAt`，按 received_at、id 排序；事件状态和结果是读取快照时的当前值。
+- `GET /api/payments?limit=n` 返回 `{payments: [...], asOf: {...}}`；摘要为上述支付基本字段，无 postings/deliveries。按 recorded_at 降序、id 降序；limit 默认 20，仅接受 1～100，非整数或越界返回 400。
+- 每次接口的全部查询都在独立 `REPEATABLE READ` 只读事务中，且只访问视图。`asOf.seq` 是该快照可见的最大账本序号（空账本为 0），`asOf.at` 是取得快照的数据库语句时刻；它不是业务截止时间，也不意味着序号连续或不存在尚未提交的较小序号。
 
 ### `io.outbound_command`
 

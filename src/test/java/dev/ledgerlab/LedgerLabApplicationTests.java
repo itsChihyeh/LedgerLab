@@ -36,6 +36,7 @@ class LedgerLabApplicationTests {
         registry.add("spring.datasource.url", DB::url);
         registry.add("LEDGERLAB_APP_PASSWORD", () -> TestDatabase.APP_PASSWORD);
         registry.add("LEDGERLAB_MIGRATOR_PASSWORD", () -> TestDatabase.MIGRATOR_PASSWORD);
+        registry.add("LEDGERLAB_READONLY_PASSWORD", () -> TestDatabase.READONLY_PASSWORD);
         registry.add("STRIPE_WEBHOOK_SECRET", () -> "whsec_test_only");
         registry.add("STRIPE_API_KEY", () -> "");
     }

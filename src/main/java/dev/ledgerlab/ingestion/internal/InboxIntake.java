@@ -58,6 +58,7 @@ final class InboxIntake {
                     .param("now", now)
                     .update();
             if (inserted == 1) {
+                recordDelivery(event.id(), "NEW", hash, signedAt, now);
                 return;
             }
             String originalHash = jdbc.sql("SELECT payload_sha256 FROM io.inbox_event WHERE event_id = :id")
@@ -65,6 +66,7 @@ final class InboxIntake {
                     .query(String.class)
                     .single();
             if (originalHash.equals(hash)) {
+                recordDelivery(event.id(), "DUPLICATE", hash, signedAt, now);
                 return;
             }
             long conflictId = jdbc.sql("""
@@ -89,7 +91,22 @@ final class InboxIntake {
                     mapper.writeValueAsString(List.of(
                             Map.of("table", "io.inbox_event", "id", event.id()),
                             Map.of("table", "io.inbox_conflict", "id", conflictId))));
+            recordDelivery(event.id(), "CONFLICT", hash, signedAt, now);
         });
+    }
+
+    private void recordDelivery(String eventId, String outcome, String hash, Instant signedAt, OffsetDateTime now) {
+        jdbc.sql("""
+                INSERT INTO io.webhook_delivery
+                    (event_id, outcome, payload_sha256, signed_at, received_at, recorded_at)
+                VALUES (:id, :outcome, :hash, :signed, :now, :now)
+                """)
+                .param("id", eventId)
+                .param("outcome", outcome)
+                .param("hash", hash)
+                .param("signed", signedAt.atOffset(ZoneOffset.UTC))
+                .param("now", now)
+                .update();
     }
 
     private static String sha256(byte[] body) {

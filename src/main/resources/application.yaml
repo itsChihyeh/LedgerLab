@@ -16,6 +16,10 @@ spring:
     schemas: flyway
 
 ledgerlab:
+  readonly-datasource:
+    url: ${spring.datasource.url}
+    username: readonly
+    password: ${LEDGERLAB_READONLY_PASSWORD}
   inbox:
     owner: ${LEDGERLAB_WORKER_ID:inbox-1}
     batch-size: 20

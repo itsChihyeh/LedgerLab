@@ -46,6 +46,7 @@ final class ModelApplication implements AutoCloseable {
                         "--spring.datasource.url=" + db.url(),
                         "--LEDGERLAB_APP_PASSWORD=" + TestDatabase.APP_PASSWORD,
                         "--LEDGERLAB_MIGRATOR_PASSWORD=" + TestDatabase.MIGRATOR_PASSWORD,
+                        "--LEDGERLAB_READONLY_PASSWORD=" + TestDatabase.READONLY_PASSWORD,
                         "--ledgerlab.stripe.webhook-secret=" + StripeSignatures.SECRET,
                         "--ledgerlab.stripe.api-key=",
                         "--ledgerlab.inbox.scheduling-enabled=false",
