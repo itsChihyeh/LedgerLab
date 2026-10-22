@@ -35,7 +35,9 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "ledgerlab.inbox.scheduling-enabled=false")
 @Import(WebhookIntakeTest.Controls.class)
 class WebhookIntakeTest {
     private static final Instant NOW = Instant.parse("2026-10-21T14:00:00Z");

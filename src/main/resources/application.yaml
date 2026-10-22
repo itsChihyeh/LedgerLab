@@ -16,6 +16,15 @@ spring:
     schemas: flyway
 
 ledgerlab:
+  inbox:
+    owner: ${LEDGERLAB_WORKER_ID:inbox-1}
+    batch-size: 20
+    lease-duration: 30s
+    initial-backoff: 1s
+    max-backoff: 5m
+    max-attempts: 5
+    poll-interval: 1s
+    scheduling-enabled: true
   stripe:
     webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
     api-key: ${STRIPE_API_KEY:}

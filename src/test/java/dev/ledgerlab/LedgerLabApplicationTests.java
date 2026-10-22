@@ -26,7 +26,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * the application then runs as {@code app}, and a posting goes through the whole chain (ADR-0014: test which
  * credential the call chain really uses).
  */
-@SpringBootTest
+@SpringBootTest(properties = "ledgerlab.inbox.scheduling-enabled=false")
 class LedgerLabApplicationTests {
 
     private static final TestDatabase.Handle DB = TestDatabase.freshBlank();

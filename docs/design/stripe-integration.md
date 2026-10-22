@@ -28,6 +28,10 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。决策见 ADR-
 
 webhook 端点只订阅下表的事件类型。
 
+**P1 当前实现**：仅 `charge.succeeded` 调用请款服务；`APPLIED`、`DUPLICATE_FACT` 对应 inbox `PROCESSED`，其他请款结果对应 `REJECTED`。`charge.dispute.*` 为 `REJECTED / UNSUPPORTED_TYPE` 并开 `UNSUPPORTED_EVENT`；其余类型全部暂为 `IGNORED`、`result=NULL`，包括 refund 和 payout。**P2 实现 payout、P3 实现 refund 时，必须把对应类型移出 `IGNORED`**；下表这些行描述的是相应阶段的目标行为。所有类型的 `livemode=true` 优先拒绝为 `LIVEMODE` 并开一条 `LIVEMODE_EVENT`；charge 交给请款服务判定（事件或 Charge 任一为 live 即拒绝），其他类型在分流前判定，避免重复开差异。
+
+Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 整数；小数、字符串、非数字或缺失映射为 `null`，交由请款准入判定。其余字段按 Charge 取值，`receivedAt` 使用 inbox 接收时间。worker 默认租约 30 秒、每 1 秒轮询最多 20 条、失败从 1 秒开始倍增并封顶 5 分钟，超过 5 次进入 `DEAD`（第 6 次失败）；配置与三个事务的恢复规则见 state-machines 第 5 节。
+
 | Stripe 事件 | 我们的处理 | 分录 |
 |---|---|---|
 | `charge.succeeded` | 通过请款准入检查后支付 `CAPTURED`；`processor_payment_ref` = `ch_…`，同时存 `pi_…` | `PAYMENT_CAPTURED` |
