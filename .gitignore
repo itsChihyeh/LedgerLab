@@ -49,3 +49,6 @@ Thumbs.db
 
 # Claude Code personal overrides
 .claude/settings.local.json
+
+# jqwik failure database (local re-run state)
+.jqwik-database
