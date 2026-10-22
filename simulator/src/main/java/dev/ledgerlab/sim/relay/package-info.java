@@ -1,4 +1,4 @@
-/** Reserved for the next task: chaos relay. */
+/** Byte-preserving webhook delivery fault injection. */
 @NullMarked
 package dev.ledgerlab.sim.relay;
 

@@ -19,6 +19,8 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。决策见 ADR-
 | 对账的外部证据 | fake Stripe 的 balance transactions / payouts 接口 | 真实 Stripe 的 balance transactions / payouts 接口 |
 | 真值（ground truth） | `sim_truth`：注入了什么、预期什么差异 | Stripe API 的状态是处理方侧的事实；chaos relay 日志记录它做了什么；**没有**“注入差异”的真值 |
 
+P1b relay 提供 `POST /relay/stripe` 和 `PUT/GET /sim/relay/plan`，下游由 `sim.relay.target-url` 指定；规则顺序匹配事件号/类型，默认 PASS。HOLD_AND_REORDER 等后续 k 个事件完成转发后释放；扣留满 240 秒仍未凑够则自动原样转发，日志记 `HOLD_TIMEOUT_RELEASE`。DELAY 与扣留超时使用可控模拟时钟及内存调度队列；进程重启不保留计划和待发请求。完整计划格式见 `simulator/README.md`。
+
 两点要如实写进 README：
 
 - 测试模式下结算单和 webhook 都来自 Stripe，两者的独立性比模拟器模式弱（真实对账也是如此，处理方的报表就是处理方的话）。对账准确率（误报、漏报）的评测只在模拟器模式做，那里有真值。

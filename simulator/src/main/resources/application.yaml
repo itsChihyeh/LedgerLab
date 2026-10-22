@@ -12,6 +12,8 @@ spring:
     schemas: sim_processor
     create-schemas: false
 sim:
+  relay:
+    target-url: ${SIM_RELAY_TARGET_URL:http://localhost:8080/webhooks/stripe}
   stripe:
     webhook-secret: ${SIM_STRIPE_WEBHOOK_SECRET}
     webhook-url: ${SIM_STRIPE_WEBHOOK_URL:http://localhost:8080/webhooks/stripe}

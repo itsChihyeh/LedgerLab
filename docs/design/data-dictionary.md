@@ -228,6 +228,12 @@ P1b-2 落地（V3）：两表均有 NOT NULL 的 `recorded_at timestamptz`。事
 
 处理方和银行的状态分开存、分开推进，避免两边共享同一个错误（I6）。
 
+### P1b-8 chaos relay（模拟器 V2）
+
+`sim_chaos.relay_log` 由 simulator 迁移、拥有；PUBLIC、migrator、app、readonly 无表和序列访问权。
+字段：`id bigint identity PK`、`receipt_id uuid NOT NULL`（每次接收独立编号）、`event_id text NULL`（无法解析时为空）、`action text NOT NULL`（PASS / DUPLICATE / DELAY / HOLD_AND_REORDER / DROP / HOLD_TIMEOUT_RELEASE）、`attempt_no integer NOT NULL`、`http_status integer NULL`、`error text NULL`、`recorded_at timestamptz NOT NULL`、`payload_sha256 text NOT NULL`（64 位小写十六进制）。
+同一 receipt 的 attempt_no 唯一；0 是接收日志（状态码和错误均空），1 起是转发结果（状态码 100～599 或错误恰好一个非空）。DROP 只有接收记录；HOLD_TIMEOUT_RELEASE 只用于转发。recorded_at 使用可控模拟时钟，便于复现场景。日志不保存签名或请求体。
+
 ### P1b-7 fake Stripe 最小版（模拟器 V1）
 
 独立 Maven 项目 `simulator/`，迁移和运行都用 `simulator`，历史表在已有的 `sim_processor`，禁止 Flyway 建 schema。三张表由 simulator 拥有；PUBLIC、migrator、app、readonly 均不授访问权。
