@@ -112,7 +112,8 @@ webhook 端点只订阅下表的事件类型。
 ## 8. 协议版本（P1 开工前固定）
 
 - Stripe API 版本固定为 **`2026-09-30.endive`**（2026-10-21 核对的当前版本；命名规则是发布日期加代号）。fake Stripe 的事件和对象形状、录制夹具、webhook 端点的 API 版本都用它。
-- Java SDK 用与该 API 版本对应的 `stripe-java` 版本，在 P1 建 `pom.xml` 时写死；升级 API 版本是一次单独的改动，要重录夹具并跑契约测试。
+- P1b 自行实现 HMAC-SHA256 验签，不引入 `stripe-java`；P3 需要出站调用时再选用与该 API 版本对应的 SDK 并固定版本。升级 API 版本是一次单独的改动，要重录夹具并跑契约测试。
 - 事件格式用 snapshot 事件（带完整对象），不用 thin 事件。
 - 验签：用原始请求体按 Stripe 方案算 HMAC；时间窗口**两侧**都检查（`|now − t| ≤ 300 秒`）。SDK 的验签函数只拒绝过旧的时间戳，未来时间要我们自己补检查。
+- P1b 配置为 `ledgerlab.stripe.webhook-secret`（`STRIPE_WEBHOOK_SECRET`，必填且以 `whsec_` 开头）和 `ledgerlab.stripe.api-key`（`STRIPE_API_KEY`，可空，非空须以 `sk_test_` 或 `rk_test_` 开头）；启动时校验且错误不包含密钥值。签名有效但 JSON 不合法或缺少 `id/type/api_version/livemode/created` 时返回 400、不入库。
 - P1 的 fake Stripe 只需要 `charge.succeeded`；事件 JSON 按上述版本的官方对象定义写，P6 用真实录制夹具对照（第 6 节）。

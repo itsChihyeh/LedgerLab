@@ -149,6 +149,8 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 
 ### `io.inbox_event`
 
+P1b-4 入口自行按 Stripe 协议验证原始字节的 HMAC-SHA256，检查签名时间 ±300 秒；配置为 `ledgerlab.stripe.webhook-secret`（`STRIPE_WEBHOOK_SECRET`，必填）及 `ledgerlab.stripe.api-key`（`STRIPE_API_KEY`，P1b 可空、仅允许测试密钥）。签名有效但 JSON 不合法或缺必需的事件元数据时返回 400、不入库，因为无法构成有效的 inbox 记录。
+
 `event_id` PK（处理方给的）、`event_type`、`api_version`、`livemode`、`payload`（原始请求体，`bytea`）、`payload_sha256`、`signed_at`、`occurred_at`、`received_at`、`status`（`RECEIVED`/`PARKED`/`PROCESSED`/`REJECTED`/`IGNORED`/`DEAD`）、`result` NULL（`APPLIED`/`DUPLICATE_FACT`/`BUSINESS_CONFLICT`/`INVALID_AMOUNT`/`UNSUPPORTED_CURRENCY`/`UNSUPPORTED_CAPTURE`/`UNSUPPORTED_TYPE`/`LIVEMODE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`lease_epoch`（每次抢占 +1，写回时作条件，见 state-machines 第 5 节）、`parked_on`（等待的对象键）、`last_error`、`processed_at`。永久保留。
 
 ### `io.inbox_conflict`
