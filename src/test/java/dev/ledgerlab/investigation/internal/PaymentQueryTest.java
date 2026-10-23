@@ -50,7 +50,7 @@ import tools.jackson.databind.ObjectMapper;
 class PaymentQueryTest {
     private static final TestDatabase.Handle DB = TestDatabase.freshBlank();
     private static final HttpClient HTTP = HttpClient.newHttpClient();
-    private static final Probe PROBE = new Probe();
+    static final Probe PROBE = new Probe();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
@@ -165,6 +165,8 @@ class PaymentQueryTest {
         assertThat(detail.path("currency").asString()).isEqualTo("CAD");
         assertThat(detail.path("status").asString()).isEqualTo("CAPTURED");
         assertThat(detail.path("expectedFee").asLong()).isEqualTo(320);
+        for (String field : List.of("actualFee", "net", "batch", "bankDeposit"))
+            assertThat(detail.path(field).isNull()).as(field).isTrue();
         JsonNode postings = detail.path("postings");
         assertThat(postings.size()).isEqualTo(2);
         assertThat(postings.get(0).path("accountCode").asInt()).isEqualTo(1101);
@@ -277,7 +279,7 @@ class PaymentQueryTest {
         assertThat(after.path("asOf").path("seq").asLong()).isGreaterThan(seq);
     }
 
-    private static void assertQueryCredentials(int statements) {
+    static void assertQueryCredentials(int statements) {
         assertThat(PROBE.observations).hasSize(statements);
         assertThat(PROBE.observations.stream().map(Observation::user)).containsOnly("readonly");
         assertThat(PROBE.observations.stream().map(Observation::isolation)).containsOnly("repeatable read");
@@ -292,7 +294,9 @@ class PaymentQueryTest {
     void ac_1_14_emptyLedgerHasZeroSnapshotSequence() {
         TestDatabase.Handle empty = TestDatabase.freshMigrated();
         try {
-            PaymentQueries.PaymentList result = new PaymentQueries(empty.readonly()).recent(20);
+            var snapshot = new QuerySnapshot(empty.readonly(), java.time.Clock.systemUTC());
+            PaymentQueries.PaymentList result =
+                    new PaymentQueries(snapshot, new WorkbenchQueries(snapshot, mapper)).recent(20);
             assertThat(result.payments()).isEmpty();
             assertThat(result.asOf().seq()).isZero();
             assertThat(result.asOf().at()).isBeforeOrEqualTo(Instant.now());

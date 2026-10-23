@@ -208,6 +208,21 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - `GET /api/payments?limit=n` 返回 `{payments: [...], asOf: {...}}`；摘要为上述支付基本字段，无 postings/deliveries。按 recorded_at 降序、id 降序；limit 默认 20，仅接受 1～100，非整数或越界返回 400。
 - 每次接口的全部查询都在独立 `REPEATABLE READ` 只读事务中，且只访问视图。`asOf.seq` 是该快照可见的最大账本序号（空账本为 0），`asOf.at` 是取得快照的数据库语句时刻；它不是业务截止时间，也不意味着序号连续或不存在尚未提交的较小序号。
 
+### P2 T13 实现备注：只读查询与运营处置
+
+沿用 P1c-3 的数据源与事务契约：每个新增 GET 及支付详情使用 `investigationDataSource` / `readonly`，全部查询处于一个独立 `REPEATABLE READ` 只读事务。先查询可见最大账本序号建立快照，再从注入 Clock 取 `asOf.at`（T13 起替代上述数据库语句时刻，统一时钟来源）。该时刻是观察标签，不是过滤条件；历史重放仍用 run 的 cutoff/evidence 时点。现有 V1–V11 视图已覆盖所需字段，无新增迁移或授权；不直接读取 io，不返回原始 webhook／处理方响应。
+
+- `GET /api/overview` 返回 `accounts[{code,name,balance}]`（八个账户，代码升序）、`inTransit`（1102）、`bankCash`（1103）、`merchantAvailable`（2102 原始有符号余额）、`merchantOwes`（余额负时精确取反，否则 0）、`unappliedCash`（2105）、`openIssuesByCategory`、`batchesByStatus`、`asOf`。计数对象仅含非零类别／状态，缺项视为 0。
+- 支付详情新增可空 `actualFee`、`net`（有实际手续费时 amount − actualFee，未结算为 null）、`batch{batchId,status,settlementDate,arrivalDate}`、`bankDeposit{bankTxnId,amount,bookingDate}`。入账只取 matched_batch_id 的实际匹配行，候选不算入账。posting 范围为**支付自己的分录 + 当前所属整个批次的分录 + 该批次匹配银行流水的分录**，按分录 seq／行号排序，每条只出现一次；批次金额不分摊到单笔支付。S3 为 2 + 5 + 2 = 9 条；多支付批次仍返回整批 posting。
+- `GET /api/batches?limit=` 返回 `{batches,asOf}`；`GET /api/batches/{id}` 返回 `{batch,lines,history,entries,postings,bankLines,asOf}`。批次包含既有视图业务字段，未就绪合计／日期保持 null；行含 `balanceTxnId`。history 按自增 id 升序；entries/postings 含本批次及实际匹配银行流水分录，bankLines 只含实际匹配行。
+- `GET /api/recon/issues?status=&category=&limit=` 返回 `{issues,asOf}`，保留当前 expected/actual/evidenceRefs JSON；按 updated_at、id 降序。status 只接受 OPEN/EXPLAINED/ACCEPTED/RESOLVED，否则 400；category 精确匹配，未知类别返回空集。省略筛选即全部。
+- `GET /api/recon/issues/{id}` 返回 `{issue,amounts,history,findings,references,asOf}`。amounts 逐项提供 `{metric,statementLineId,expectedAmount,actualAmount,difference}`，difference = expected − actual，精确运算且检查 JSON 安全整数范围。只比较两边存在的金额字段（amount/gross/fee/net/unapplied；银行 closing_balance 对 cash；候选批次 net 对流水 amount），展开实际金额数组及 fees/lines、入口差异的嵌套 line；批次 payout_amount 分别对实际 payout_amount／line_net，max_fee 对实际 fee；存在性、数量或缺失值不伪装为零金额。保留原始 JSON；findings 按运行 started_at、run_id、finding id 排序，全部返回；history 按 recorded_at、id 排序。旧发现不随当前处置改写。
+- references 返回 `batchIds`、`statementLines[{fileId,lineSeq,statementLineId}]`、`eventIds`、`entryIds`、`bankTxnIds`、`paymentIds`。合并当前差异、全部历史发现／处置证据中的明确引用，并补关联支付、批次、结算单版本及银行行；编号排序去重并去掉空白引用，结算单保留各文件行身份。银行候选引用可用于导航，但不等于匹配；仅 payment.bankDeposit 和 batch.bankLines 表示匹配。事件仅返回编号；相关 posting 可由支付、批次或银行详情查询。
+- `GET /api/recon/runs?limit=` 返回 `{runs,asOf}`，含固定输入、哈希、规则版本、两个时点及 summary JSON，按 started_at、id 降序。原有 T09 的运行详情／发起运行接口保持原契约。
+- `GET /api/bank-lines/{bankTxnId}` 返回 `{bankLine,versions,entries,postings,asOf}`，bankLine 为最高证据版本，versions 按 version 降序；分录按 bank_txn 身份查。`GET /api/statement-lines/{fileId}/{seq}` 返回 `{statementLine,asOf}`，精确定位文件内行，不混淆版本或重复行；seq 必须为正整数。
+- 所有列表 limit 默认 20，范围 1–100；非整数或越界 400。批次列表按 recorded_at、batch_id 降序。详情未知编号 404。前端类型正本为 `frontend/src/api.ts`。
+- `POST /api/recon/issues/{id}/accept` 接受 `{reason}`，`/resolve` 接受 `{note}`，在 reconciliation 委托既有 IssueDisposition，走 app 数据源。成功 204；缺失/null/空白说明 400，未知差异 404，非 OPEN 或并发状态冲突 409。状态与 OPERATOR 历史同事务写入，不改账或历史发现。
+
 ### `io.outbound_command`
 
 `id cmd_…`、`kind`（`SUBMIT_REFUND`/`SUBMIT_PAYOUT`/`QUERY_REFUND`/`QUERY_PAYOUT`）、`subject_id`、`request_id`（对外幂等键，所有重试相同）、`status`（`PENDING`/`IN_FLIGHT`/`UNKNOWN`/`DONE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`lease_epoch`、`first_sent_at`（第一次真正发出的时刻，写入后不改）、`external_ref`、`last_outcome`、`created_at`。
