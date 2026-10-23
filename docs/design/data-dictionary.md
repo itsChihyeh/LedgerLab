@@ -247,6 +247,13 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 `id rr_…`、`kind`（`PROCESSOR`/`BANK`/`AGING`）、`input_file_ids`（含处理方快照编号）、`input_hashes`、`rule_version`、`cutoff_at`（业务截止，多伦多 00:00）、`evidence_as_of`（证据快照时点，contracts 1.2 第 3 条）、`started_at`、`finished_at`、`summary`（各类差异数）。CHECK `cutoff_at ≤ evidence_as_of`。
 
+### P2 T09 实现备注（V8：运行与发现）
+
+- `recon.run` 增加 `status`（RUNNING/FINISHED/FAILED）和 `recorded_at`；输入编号为 JSON 数组，哈希为按编号索引的 JSON 对象，summary 为 JSON 对象。`app` 可 INSERT/SELECT，仅可 UPDATE status、finished_at、summary；readonly 仅读 `v_run`。运行和全部发现、处置变化在一个 REPEATABLE READ 事务提交，异常全部回滚，不另开事务保存 FAILED；RUNNING 仅为事务内状态，FAILED 为预留值。
+- finding 与 issue_transition 的 id 分别使用 `fnd_`、`itr_` 加 ULID。finding 的识别键在单次运行内唯一，expected/actual 允许 JSON null；evidence_refs 必须是数组，fingerprint 为 64 位小写十六进制。只有 TIMING_DIFFERENCE 必须有 due_at，其他类别必须为空。两表都由 migrator 拥有，app 仅 INSERT/SELECT，UPDATE/DELETE/TRUNCATE 另由 LL004 触发器保护属主误操作；readonly 仅读对应 `v_finding`、`v_issue_transition`。
+- issue 新增可空 fingerprint、非负 reopen_count（默认 0），app 可 UPDATE 这两列；保留首次 expected/actual/evidence_refs 不变，最新证据从 finding 读取。first_run_id、last_run_id 补 run 外键，v_issue 追加新列。
+- `recon.v_input_evidence` 仅投影 io 存档的编号、种类、哈希、接收/拉取时刻、recorded_at 和就绪标记，不暴露原文。银行文件编号沿用 file_…，处理方快照编号为 `fetch:<id>`，只选择 RECON_SNAPSHOT；app、readonly 仅 SELECT 此视图；UNION 视图写入在 PostgreSQL 重写阶段被拒（55000），测试另查 ACL 证明没有 INSERT/UPDATE/DELETE 授权。框架不直接查询 io。空 inputIds 表示在同一快照内选择该运行种类的全部就绪输入；显式编号要求种类匹配、就绪且两个存档时刻均早于 evidence_as_of。AGING 可使用两类输入。输入排序后固定到 run，GET 返回固定的输入和发现。
+
 ### `recon.finding`（P2，只追加）
 
 `id`、`run_id` FK、`category`、`subject_type`、`subject_id`、`expected`、`actual`（jsonb）、`evidence_refs`、`fingerprint`、`due_at` NULL（只有 `TIMING_DIFFERENCE`）、`issue_id` FK、`recorded_at`。UNIQUE (`run_id`, `category`, `subject_type`, `subject_id`)。`app` 只 INSERT/SELECT，改删清空由触发器拒绝（LL004）。
