@@ -90,7 +90,8 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 | `CONFIRMED` | `BANKED` | 银行流水入账行按批次号精确匹配，金额相等 | `BANK_DEPOSIT_RECEIVED` |
 
 - Stripe `payout.paid` 只是处理方说“应该到了”，记进状态历史作为证据，不改状态、不记账；现金只认银行流水。
-- `PAYOUT_FAILED` 之后银行又出现入账：开 `BATCH_STATE_CONFLICT`，不自动记账。
+- `PAYOUT_FAILED` 之后银行又出现入账：开 `BATCH_STATE_CONFLICT`，按精确匹配失败记 `UNAPPLIED_CASH_RECEIVED`（2026-10-23 改：让账上现金等于银行，钱归属留给受限纠错），批次状态不变。
+- 银行入账比批次确认先到：流水行 `WAITING`，批次 `CONFIRMED` 的同一事务里重新匹配，匹配上就同时记 `BANK_DEPOSIT_RECEIVED`、批次直接到 `BANKED`（money-model 第 3 节）。
 
 - 批次里出现本地还在 `SUBMITTED`/`UNKNOWN` 的退款：批次本身就是执行证据，同一事务里先记 `REFUND_EXECUTED`，再核对批次。
 - 同一个 `batch_id` 再次到达但内容哈希不同：不覆盖，原批次保持原状，新内容存为冲突版本，开差异 `BATCH_VERSION_CONFLICT`。只有“明细就绪且拉完”的快照才算一个版本；未就绪或没拉完的抓取只存档，不参与比较。
@@ -151,4 +152,20 @@ RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，n
 
 同一差异的识别键是 `(category, subject_type, subject_id)`，重复运行对账不会生成重复差异。
 
-**P2 开工前要补**：同一差异关闭后再次出现怎么办（重开、还是新记一次发现），以及每次运行的发现要不可变地留存，保证旧报告不变。思路是把“某次运行的发现”和“差异的当前处置状态”分成两张表（开工前审查 A-I9）。
+### 7.1 运行发现与处置状态分开（2026-10-23 定，P2 开工前置 ③）
+
+- **发现**（`recon.finding`）：某次运行看到的一条差异，带当次的 `expected`/`actual`/证据和内容指纹 `fingerprint`（类别、subject、expected、actual 规范化后的 SHA-256）。只追加、永不修改，所以任何一次旧运行的报告都能原样重现。dry run 不写发现。
+- **差异**（`recon.issue`）：同一 `(category, subject_type, subject_id)` 的当前处置状态，永远只有一行；每次状态变化另记一行 `recon.issue_transition`（只追加，带运行号、原因和解释它的证据）。
+
+每次正式运行结束时，对**本次运行范围内**（运行类别相同、subject 在 `cutoff_at` 范围内）的每个识别键：
+
+| 差异当前状态 | 本次发现了 | 本次没发现 |
+|---|---|---|
+| 不存在 | 新建，`OPEN` | — |
+| `OPEN` | 保持 `OPEN`，更新 `last_run_id`、最新指纹 | 转 `EXPLAINED`，记下本次运行和解释它的证据（例如出现了的结算单行） |
+| `EXPLAINED` | **重开**为 `OPEN`（之前的解释被推翻） | 不变 |
+| `ACCEPTED`／`RESOLVED` | 指纹相同：保持关闭，只更新 `last_run_id`；**指纹不同：重开**为 `OPEN` | 不变 |
+
+- 不在本次运行范围内的差异一律不动；`detected_by = INGESTION` 的差异不参与这张表，只能由运营处置。
+- `TIMING_DIFFERENCE` 到期升级为老化类差异时，旧差异按“本次没发现”转 `EXPLAINED`，解释写“已升级为 {新类别}”（contracts 1.2 第 8 条）。
+- 重开不新建差异编号，便于在工作台看到一条差异的完整历史；`reopen_count` 记重开次数。

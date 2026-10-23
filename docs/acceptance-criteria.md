@@ -67,7 +67,7 @@
 | **P1a** 账本与数据库边界 | Maven 骨架、迁移、三角色、资金锁、账户、分录封存、账本级原子性 | AC-1.5–1.9、AC-1.13、AC-8.1 |
 | **P1b** 签名入站与恢复 | fake Stripe 的 `charge.succeeded`、webhook 验签、inbox、两个 worker、受控崩溃、短延迟 relay | AC-1.1–1.3、AC-1.4a、AC-1.10、AC-1.12、AC-2.1–2.7、AC-4.3–4.6、AC-8.2 |
 | **P1c** 模型测试、重建、页面 | 模型随机测试框架、空库重建一致、最简交易详情页 | AC-1.14、AC-4.11（P1 动作）、AC-4.13 |
-| **P2** 结算＋银行入账＋对账 | 手续费、批次＝payout＋balance transactions、明细就绪、结算在途、模拟银行入账、待查收款、两段精确对账、老化 | AC-1.4b、AC-1.11、AC-2.8、AC-2.16、AC-4.1、AC-5.1–5.13、AC-5.15–5.19 |
+| **P2** 结算＋银行入账＋对账 | 手续费、批次＝payout＋balance transactions、明细就绪、结算在途、模拟银行入账、待查收款、两段精确对账、老化 | AC-1.4b、AC-1.11、AC-2.8、AC-2.16、AC-4.1、AC-5.1–5.13、AC-5.15–5.21 |
 | **P3** 退款 | 退款状态机、额度、并发、资金门槛与等待队列、处理方可用余额、出站命令、失败与未知结果、API 幂等 | AC-1.4c、AC-2.9–2.15、AC-3、AC-4.2、AC-4.7–4.10、AC-4.12、AC-5.14、AC-8.7 |
 | **P4** 纠错 | 误记撤销、冲销＋重记、待查收款清出 | AC-1.4d、AC-6 |
 | **P5** 提现 | 双门槛、出站命令、结果未知恢复、失败、退回、提现侧三方对账 | AC-1.4e、AC-7 |
@@ -224,10 +224,10 @@ webhook 入口：`POST /webhooks/stripe`，签名用 Stripe 的方案（`Stripe-
 
 - **本地（来自 webhook）**：P1 10000、P2 5000、P3 7000、P6 4000 于 2026-11-10（周二）白天请款；P4 3000 于 2026-11-10 23:50 请款；P5 6000 于 2026-11-05（周四）请款。
 - **批次 webhook B1**（结算日 11-10）：P1 费 320、P2 费 **205**、P3 费 233、P6 费 146；净额 9680 + 4795 + 6767 + 3854 = **25096**。本地照此记账。
-- **处理方结算数据 11-10**（balance transactions 快照）：B1 行：L1 P1 10000/320；L2 P2 5000/205；L3 P3 7000/233；**L3 原样再出现一次**；L4 **P9** 2500/103；快照完整（分页拉完）；处理方批次净额 9680 + 4795 + 6767 + 2397 = **23639**。
-- **银行流水 11-11**：入账 25096，引用 B1，流水 T1；期初 0、期末 25096。
-- 对账截止：2026-11-11 00:00。
-- **P2 开工前要修订**：按 contracts 1.2 第 3 条拆分业务截止和证据快照时点以后，重写这里的截止和银行流水日期，让“银行一段无差异”在新口径下成立。
+- **处理方结算数据 11-10**（快照：`created` 在 11-10 当天的 payout，以及每个 payout 的全部 balance transactions；11-11 03:00 拉取）：B1 行：L1 P1 10000/320；L2 P2 5000/205；L3 P3 7000/233；**L3 原样再出现一次**；L4 **P9** 2500/103；快照完整（分页拉完）；处理方批次净额 9680 + 4795 + 6767 + 2397 = **23639**。
+- **银行流水 11-12**（11-11 是非工作日）：入账 25096，引用 B1，流水 T1，`booking_date` 11-12，11-12 07:00 导入；期初 0、期末 25096。
+- 对账运行：业务截止 `cutoff_at` = 2026-11-11 00:00；证据快照时点 `evidence_as_of` = 2026-11-12 08:00（contracts 1.2 第 3 条，2026-10-23 修订）。B1 在截止前确认，T1 虽然记账日在截止之后，但在证据时点之前已导入，所以能解释 B1，银行一段无差异；账上银行现金 25096 = 期末 25096。
+- 工作日按 contracts 1.2 第 7 条的日历（11-11 非工作日）：P5 从 11-05 起已过 11-06、11-09、11-10 三个工作日，超过 2 个工作日的阈值；P4 的到期时刻是 11-14 00:00（11-12、11-13 两个工作日之后）。
 
 | ID | 场景 | Given / When / Then | 层 | 阶段 |
 |---|---|---|---|---|
@@ -239,7 +239,7 @@ webhook 入口：`POST /webhooks/stripe`，签名用 Stripe 的方案（`Stripe-
 | AC-5.6 | 重复打款与重复导入 | **Given** S3 **When** 银行流水另有一行入账 9680、引用 B1、流水编号 T2 **Then** 记待查收款 9680，开 `UNMATCHED_BANK_LINE`（money-model 样例 F）。**When** 同一份流水文件再导入一次 **Then** 不新增任何行和分录 | TC | P2 |
 | AC-5.7 | 标准样例识别全部差异 | **Given** 5.3 样例 **When** 运行对账 **Then** 恰好得到 7 条：P2 `FEE_MISMATCH`（预期 175、实际 205）；L3 `DUPLICATE_STATEMENT_LINE`；P9 `MISSING_IN_LEDGER`；P6 `MISSING_IN_STATEMENT`；B1 `BATCH_TOTAL_MISMATCH`（25096 对 23639，差 1457）；P4 `TIMING_DIFFERENCE`（未完成，有到期时间）；P5 `PAYMENT_NOT_SETTLED`（已过 3 个工作日）。P1、P3 无差异；银行一段无差异。误报 0 | TC | P2 |
 | AC-5.8 | 对账不改账 | **When** 运行对账（包括 dry run）**Then** posting 和余额与运行前逐行相同；正式运行只写 `recon` 表，dry run 什么都不写 | TC | P2 |
-| AC-5.9 | 可重放、不重复报警 | **Given** AC-5.7 已运行 **When** 同样输入、规则版本、截止时点再跑 **Then** 结果完全相同，差异不重复生成。**When** 11-11 的结算单含 P4 后再跑 **Then** P4 的差异转 `EXPLAINED`，并记下解释它的证据 | TC | P2 |
+| AC-5.9 | 可重放、不重复报警 | **Given** AC-5.7 已运行 **When** 同样输入、规则版本、截止时点再跑 **Then** 结果完全相同，差异不重复生成。**When** 再拉一份结算数据（11-12 创建的 payout B2，含 P4 一行），以 `cutoff_at` 11-13 00:00、`evidence_as_of` 11-13 08:00 再跑 **Then** P4 的 `TIMING_DIFFERENCE` 转 `EXPLAINED`，并记下解释它的证据（B2 的行）；第一次运行的发现原样保留（state-machines 第 7 节） | TC | P2 |
 | AC-5.10 | 文件完整性与版本 | **When** 导入文件尾行数或合计不符的银行流水，或分页没拉完的处理方快照 **Then** 整个输入拒绝（`FILE_INCOMPLETE`），保留原始数据。**When** 同一天的新版本里同一行身份内容不同 **Then** 旧行不被覆盖，开 `STATEMENT_VERSION_CONFLICT` | TC | P2 |
 | AC-5.11 | 老化逐笔检查 | **Given** 待结算账户总额看上去合理 **When** 其中一笔支付超过阈值没有进入批次 **Then** 这一笔被单独报出；报告注明老化只能发现“有开始记录、没有结束记录”的义务 | TC | P2 |
 | AC-5.12 | 银行余额核对 | **When** 银行流水 期初 + 入账 − 出账 ≠ 期末 **Then** 文件拒绝。**When** 流水自身平衡，但账上银行现金 ≠ 期末余额 **Then** 开 `BANK_BALANCE_MISMATCH`，显示差额 | TC | P2 |
@@ -249,6 +249,8 @@ webhook 入口：`POST /webhooks/stripe`，签名用 Stripe 的方案（`Stripe-
 | AC-5.17 | payout 明细就绪 | **When** `payout.created` 到达时 fake Stripe 的 `reconciliation_status=in_progress` **Then** 批次 `ANNOUNCED`，不拉明细、不记账。**When** 第一次拉取只拿到部分明细（模拟分页中断）**Then** 不形成批次版本，不开 `BATCH_VERSION_CONFLICT`。**When** `payout.reconciliation_completed` 到达（包括比 `payout.created` 先到）**Then** 拉完全部明细，核对后 `CONFIRMED`。**When** 一笔手动 payout 或负 payout 到达 **Then** 批次 `HELD(UNSUPPORTED_PAYOUT)`，开差异，不记账 | TC | P2 |
 | AC-5.18 | 失败打款重新打出 | **Given** 样例 H 第 H1 步 **When** 只含一行 `PAYOUT_FAILURE` +9680 的批次到达 **Then** `BATCH_SETTLED` 恰好 2 条 posting（借 在途 9680 / 贷 应收 9680），没有 0 元 posting；可用不变 | TC | P2 |
 | AC-5.19 | 实际手续费大于毛额 | **When** 批次里某行毛额 50、实际手续费 60 **Then** 批次 `HELD(FEE_EXCEEDS_GROSS)`，无批次分录，开差异 | TC | P2 |
+| AC-5.20 | 银行证据早到 | **Given** S1，B1 只到 `ANNOUNCED` **When** 导入银行流水，入账 9680、引用 B1 **Then** 流水行存为 `WAITING`，不记账，现金仍 0；银行余额核对把差额 9680 报为 `TIMING_DIFFERENCE`（不报 `BANK_BALANCE_MISMATCH`）。**When** B1 明细就绪并确认 **Then** 同一事务里记 `BATCH_SETTLED` 和 `BANK_DEPOSIT_RECEIVED`，余额 = S3，B1 `BANKED`。**When** 另一笔引用 `po_` 未知批次的入账等满 2 个工作日 **Then** 记 `UNAPPLIED_CASH_RECEIVED`，开 `UNMATCHED_BANK_LINE`。**When** 入账行币种不是 CAD、方向是出账或状态不是 `BOOKED` **Then** 都不和 B1 匹配（money-model 第 3 节的匹配条件） | TC | P2 |
+| AC-5.21 | 差异再次出现 | **Given** AC-5.7 已运行 **Then** 每条差异都有一条该运行的发现记录；发现只追加、不可改（`app` 改删被拒）。**When** 运营把 P2 的 `FEE_MISMATCH` 标为 `ACCEPTED`（写原因）后同样输入再跑 **Then** 差异保持 `ACCEPTED`，新运行仍有这条发现。**When** 之后一次运行里 P2 的实际手续费变了（内容指纹不同）**Then** 差异重开为 `OPEN`，状态历史多一行。**When** 已 `EXPLAINED` 的差异再次被发现 **Then** 重开为 `OPEN`。INGESTION 差异不参与自动解释 | TC | P2 |
 | AC-5.15 | 对账工作台 | **Given** AC-5.7 的结果 **When** 点击 B1 的差异 **Then** 显示两边金额和差额，能跳到批次行、原事件、相关 posting 和银行流水行 | PW | P2 |
 
 ## AC-6 纠错有边界

@@ -64,7 +64,7 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 | 提交退款 | `POST /v1/refunds`（`charge`、`amount`、`metadata.ledgerlab_refund_id`） | `Idempotency-Key` = 退款号 `rfd_…`；响应里的 `status` 当作退款事实处理（第 2 节） |
 | 查询退款 | 已知 `re_…` 时 `GET /v1/refunds/re_…`；不知道时 `GET /v1/refunds?charge=ch_…` **翻完全部分页**（直到 `has_more=false`），按 metadata 找 | 结果未知时先查再重发 |
 | 批次行 | `GET /v1/balance_transactions?payout=po_…`（分页） | 只读 |
-| 对账导入 | `GET /v1/balance_transactions?created[gte]&created[lt]`、`GET /v1/payouts?…` | 只读；按截止时点取数，原始结果存档并算哈希 |
+| 对账导入 | `GET /v1/payouts?created[gte]&created[lt]`，再对每个 payout `GET /v1/balance_transactions?payout=po_…` | 只读；按 payout 创建区间取数（contracts 第 4 节），原始结果存档并算哈希 |
 
 **Stripe 的幂等键至少保留 24 小时，之后可能被清理**（Stripe idempotent requests 文档）。所以退款命令在 `UNKNOWN` 状态下的规则是：
 
@@ -118,7 +118,7 @@ P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at`
 7. 测试模式的接口速率上限，决定流量生成器和演示页的限流值。
 8. 测试模式的自动 payout 会走到 `reconciliation_status=completed` 并发出 `payout.reconciliation_completed`。这一条决定 P2 的批次触发方式：P2 先按官方文档在 fake Stripe 里实现；如果那时测试账号已经注册，就在 P2 开工前先验证这一条，否则 P6 接账号后第一个验证。
 9. 用 Stripe 的 default test-mode sandbox 还是新建的独立 sandbox：接账号时选定一种并写在这里，文档里统一称“测试模式”。
-   **已定（2026-10-23）**：用户注册了加拿大账号，使用 Stripe 自带的默认测试沙盒（Dashboard 显示“测试企业 沙盒”），不另建 sandbox。开发用受限密钥 `ledgerlab-dev`（`rk_test_…`，只放在本地 `.env` 的 `STRIPE_API_KEY`），权限：Balance、Balance Transaction Sources、Events、Payouts 读取；Charges and Refunds、Payment Intents 写入，其余全部无。第 1～8 条尚未实测，P2 开工前先测第 8 条。
+   **已定（2026-10-23）**：用户注册了加拿大账号，使用 Stripe 自带的默认测试沙盒（Dashboard 显示“测试企业 沙盒”），不另建 sandbox。开发用受限密钥 `ledgerlab-dev`（`rk_test_…`，只放在本地 `.env` 的 `STRIPE_API_KEY`），权限：Balance、Balance Transaction Sources、Events、Payouts 读取；Charges and Refunds、Payment Intents 写入，其余全部无。第 1～8 条尚未实测。第 8 条原定 P2 开工前实测；2026-10-23 改为 P2 期间做（新账号的首次自动 payout 要等 Stripe 的初始等待期，开工前等不到），P2 先按官方文档在 fake Stripe 里实现 `reconciliation_completed` 触发，并保留“查询 payout 对象看到 `completed`”的后备路径，所以实测结果即使相反也只改触发方式、不改批次核对。
 
 ## 8. 协议版本（P1 开工前固定）
 

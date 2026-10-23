@@ -221,11 +221,19 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 银行流水文件另记 `account_ref`、`currency`、`opening_balance`、`closing_balance`、`period_start`、`period_end`（INV-11）。
 
-银行流水行：`bank_txn_id` UNIQUE、`file_id`、`direction`（`CREDIT`/`DEBIT`）、`amount`、`reference`（批次号或银行请求号）、`return_of` NULL（原流水或请求号）、`reason_code` NULL、`booking_date`、`value_date`、`memo`。
+银行流水行：`bank_txn_id` UNIQUE、`file_id`、`direction`（`CREDIT`/`DEBIT`）、`currency`、`status`（`BOOKED`/`PENDING`）、`amount`、`reference`（批次号或银行请求号）、`return_of` NULL（原流水或请求号）、`reason_code` NULL、`booking_date`、`value_date`、`memo`、`match_status`（`WAITING`/`MATCHED`/`UNAPPLIED`/`UNMATCHED_NO_POSTING`/`IGNORED_PENDING`）、`matched_batch_id` NULL、`wait_until` NULL。`app` 只可 UPDATE `match_status`、`matched_batch_id`。
 
 ### `recon.run`
 
-`id rr_…`、`kind`（`PROCESSOR`/`BANK`/`AGING`）、`input_file_ids`、`rule_version`、`cutoff_at`、`started_at`、`finished_at`、`summary`（各类差异数）。
+`id rr_…`、`kind`（`PROCESSOR`/`BANK`/`AGING`）、`input_file_ids`（含处理方快照编号）、`input_hashes`、`rule_version`、`cutoff_at`（业务截止，多伦多 00:00）、`evidence_as_of`（证据快照时点，contracts 1.2 第 3 条）、`started_at`、`finished_at`、`summary`（各类差异数）。CHECK `cutoff_at ≤ evidence_as_of`。
+
+### `recon.finding`（P2，只追加）
+
+`id`、`run_id` FK、`category`、`subject_type`、`subject_id`、`expected`、`actual`（jsonb）、`evidence_refs`、`fingerprint`、`due_at` NULL（只有 `TIMING_DIFFERENCE`）、`issue_id` FK、`recorded_at`。UNIQUE (`run_id`, `category`, `subject_type`, `subject_id`)。`app` 只 INSERT/SELECT，改删清空由触发器拒绝（LL004）。
+
+### `recon.issue_transition`（P2，只追加）
+
+`id`、`issue_id` FK、`from_status` NULL、`to_status`、`run_id` NULL、`reason`（`DETECTED`/`REOPENED`/`EXPLAINED`/`OPERATOR`）、`explanation`、`evidence_refs`、`recorded_at`。
 
 ### `recon.issue`
 
@@ -239,7 +247,7 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - `first_run_id`、`last_run_id` 为可空 text；`RUN` 必须有 `first_run_id`，`INGESTION` 的两个运行号必须都为空，`AGING` 不额外限制运行号。到 `recon.run` 的外键在 P2 建表时补上。
 - `status` 限于 `OPEN`、`EXPLAINED`、`RESOLVED`、`ACCEPTED`。`EXPLAINED`、`ACCEPTED` 要求 `explanation IS NOT NULL`；`RESOLVED` 要求 `explanation` 或 `resolution_correction_id` 至少一个非 NULL；`OPEN` 不限制两者。两列为可空 text，纠错外键在 P4 建 `ledger.correction` 时补上。
 - `expected`、`actual` 为可空 jsonb；`evidence_refs` 为 jsonb NOT NULL，默认 `[]`，CHECK 为 JSON 数组。`recorded_at`、`updated_at` 为 timestamptz NOT NULL。
-- 显式命名所有 CHECK 和 UNIQUE；识别键为 UNIQUE (`category`, `subject_type`, `subject_id`)。关闭后再次出现的处理按 P2 开工前置第 ③ 条重新设计。
+- 显式命名所有 CHECK 和 UNIQUE；识别键为 UNIQUE (`category`, `subject_type`, `subject_id`)。关闭后再次出现的处理见 state-machines 7.1 节（P2 新增 `recon.finding`、`recon.issue_transition`，`recon.issue` 加 `fingerprint`、`reopen_count` 两列）。
 - `app` 有 SELECT、INSERT，仅可 UPDATE (`status`, `last_run_id`, `explanation`, `resolution_correction_id`, `updated_at`)，无 DELETE/TRUNCATE；`migrator` 为属主；`readonly` 仅可 SELECT 显式列出全部字段的 `recon.v_issue`。
 - V4 将 V3 的 `inbox_event_check1`、`inbox_event_check2` 分别重命名为 `inbox_event_status_result`、`inbox_event_status_parked_on`，约束逻辑不变。
 
