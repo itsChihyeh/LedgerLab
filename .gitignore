@@ -50,6 +50,8 @@ Thumbs.db
 
 # Claude Code personal overrides
 .claude/settings.local.json
+# Present while Codex edits the working tree; the Stop hook then skips Spotless
+.claude/codex.lock
 
 # jqwik failure database (local re-run state)
 .jqwik-database
