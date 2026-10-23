@@ -59,6 +59,11 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 - `POST /api/recon/runs` 接受 `kind=ALL`：在同一 REPEATABLE READ 事务内顺序建立 PROCESSOR、BANK、AGING 三个运行，两个时点相同，全部成功才提交。返回 `{runIds:[处理方运行号,银行运行号,老化运行号],runs:[三个报告]}`；dry run 的 runIds 为空、报告 id 为 null，完全不写库。单种类响应保持单个报告。
 - T11 的独立纯 Java 参考模型用 jqwik 状态动作组合确认、银行导入（含重复）、推进到期、WAITING 扫描、重跑；种子 2026102311，每序列最多 12 步，本地 100 条、CI 1000 条。每步比较逐笔发现集合、重放和账本不变；不替代并发测试。
 
+### P2 T16 实现备注：三进程冒烟时间
+
+- `scripts/smoke-p2.sh` 通过真实模拟器控制接口执行 `sample-a-1-3` 的金额与动作；不使用会回滚且不投递 webhook 的场景导出接口。冒烟业务日期固定为 2026-10-19～22，cutoff 为 10-22 多伦多午夜（04:00Z），让主应用的真实注入 Clock 能验证截止与证据时点；运行机器时间须晚于该截止。
+- 模拟器业务时钟独立快进，签名仍取既有实时签名 Clock。全部资金处理、银行导入和处理方快照完成后，以主应用 `/api/overview` 的 `asOf.at` 之后第一个整秒为 evidence_as_of（避免 Instant 纳秒与 PostgreSQL 微秒精度造成报告字符串差异），再轮询主应用时钟直到满足默认 60 秒证据宽限。没有新增生产时钟开关、缩短宽限或改动业务时间契约。
+
 ### P2 T01 实现备注（手续费与工作日日历）
 
 - 共享纯函数 `dev.ledgerlab.shared.Fees.contractFee(long)` 实现第 3 节公式，乘法、舍入加法和固定费用加法均用 `Math.multiplyExact` / `Math.addExact`，中间值溢出抛 `ArithmeticException`；支付金额准入仍由调用方负责。`PaymentCapture` 改用此函数，合法支付的结果不变。

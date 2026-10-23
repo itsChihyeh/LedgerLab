@@ -10,3 +10,11 @@ id = "stripe-webhook-secret"
 description = "Stripe webhook signing secret"
 regex = '''\bwhsec_[A-Za-z0-9]{24,}\b'''
 keywords = ["whsec_"]
+
+# Only these two public fake credentials, only in the disposable smoke env file.
+[[allowlists]]
+description = "Synthetic T16 compose smoke credentials"
+condition = "AND"
+paths = ['''(^|/)compose\.smoke\.env$''']
+regexTarget = "secret"
+regexes = ['''^(rk_test_smokeOnlyNotARealStripeKey000000|whsec_smokeOnlyNotARealSigningSecret000000)$''']
