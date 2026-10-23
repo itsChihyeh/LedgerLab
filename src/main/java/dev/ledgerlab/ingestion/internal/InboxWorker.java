@@ -2,6 +2,7 @@ package dev.ledgerlab.ingestion.internal;
 
 import dev.ledgerlab.payments.PaymentCapture;
 import dev.ledgerlab.reconciliation.IngestionIssues;
+import dev.ledgerlab.settlement.PayoutEvidence;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -29,6 +30,7 @@ public final class InboxWorker {
     private final Clock clock;
     private final WorkerProperties properties;
     private final WorkerHooks hooks;
+    private final PayoutProcessing payouts;
 
     InboxWorker(
             JdbcClient jdbc,
@@ -39,7 +41,8 @@ public final class InboxWorker {
             ChargeParser parser,
             Clock clock,
             WorkerProperties properties,
-            WorkerHooks hooks) {
+            WorkerHooks hooks,
+            PayoutProcessing payouts) {
         this.jdbc = jdbc;
         this.transactions = new TransactionTemplate(manager);
         this.transactions.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -50,6 +53,7 @@ public final class InboxWorker {
         this.clock = clock;
         this.properties = properties;
         this.hooks = hooks;
+        this.payouts = payouts;
     }
 
     public int processAvailable() {
@@ -57,7 +61,9 @@ public final class InboxWorker {
         for (Claim claim : claims) {
             hooks.afterClaim(claim.id());
             try {
-                transactions.executeWithoutResult(status -> process(claim));
+                PayoutEvidence prepared = payouts.prepare(claim.id(), claim.type(), claim.live(), claim.payload());
+                hooks.afterFetch(claim.id());
+                transactions.executeWithoutResult(status -> process(claim, prepared));
             } catch (RuntimeException failure) {
                 transactions.executeWithoutResult(status -> recordFailure(claim, failure));
             }
@@ -98,20 +104,28 @@ public final class InboxWorker {
         return claims;
     }
 
-    private void process(Claim claim) {
-        String result = route(claim);
-        String status = result == null
-                ? "IGNORED"
-                : (result.equals("APPLIED") || result.equals("DUPLICATE_FACT") ? "PROCESSED" : "REJECTED");
+    private void process(Claim claim, @Nullable PayoutEvidence prepared) {
+        String outcome =
+                prepared == null ? route(claim) : payouts.apply(prepared).name();
+        boolean parked = "PARKED".equals(outcome);
+        String result = parked ? null : outcome;
+        String status = parked
+                ? "PARKED"
+                : result == null
+                        ? "IGNORED"
+                        : (result.equals("APPLIED") || result.equals("DUPLICATE_FACT") ? "PROCESSED" : "REJECTED");
         hooks.afterBusiness(claim.id());
         int updated = jdbc.sql("""
                 UPDATE io.inbox_event SET status = :status, result = :result, processed_at = :now,
-                    lease_owner = NULL, lease_until = NULL
+                    lease_owner = NULL, lease_until = NULL, parked_on = :dependency
                 WHERE event_id = :id AND lease_epoch = :epoch AND status = 'RECEIVED'
                 """)
                 .param("status", status)
                 .param("result", result)
-                .param("now", utc(clock.instant()))
+                .param("now", parked ? null : utc(clock.instant()))
+                .param(
+                        "dependency",
+                        parked ? "batch:" + Objects.requireNonNull(prepared).batchId() : null)
                 .param("id", claim.id())
                 .param("epoch", claim.epoch())
                 .update();
@@ -133,7 +147,7 @@ public final class InboxWorker {
             openIssue(claim, "UNSUPPORTED_EVENT", "UNSUPPORTED_TYPE");
             return "UNSUPPORTED_TYPE";
         }
-        // P2 payout and P3 refund handlers must move their event types out of IGNORED.
+        // payout.failed/canceled stay ignored until T06; refunds arrive in P3.
         return null;
     }
 

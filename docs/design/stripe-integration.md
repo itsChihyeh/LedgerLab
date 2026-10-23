@@ -38,7 +38,7 @@ P2 T03 fake Stripe 增加 charge 的 balance transaction、payout 生命周期�
 
 webhook 端点只订阅下表的事件类型。
 
-**P1 当前实现**：仅 `charge.succeeded` 调用请款服务；`APPLIED`、`DUPLICATE_FACT` 对应 inbox `PROCESSED`，其他请款结果对应 `REJECTED`。`charge.dispute.*` 为 `REJECTED / UNSUPPORTED_TYPE` 并开 `UNSUPPORTED_EVENT`；其余类型全部暂为 `IGNORED`、`result=NULL`，包括 refund 和 payout。**P2 实现 payout、P3 实现 refund 时，必须把对应类型移出 `IGNORED`**；下表这些行描述的是相应阶段的目标行为。所有类型的 `livemode=true` 优先拒绝为 `LIVEMODE` 并开一条 `LIVEMODE_EVENT`；charge 交给请款服务判定（事件或 Charge 任一为 live 即拒绝），其他类型在分流前判定，避免重复开差异。
+**当前实现（P2 T05）**：`charge.succeeded` 调用请款服务；`payout.created`、`payout.reconciliation_completed`、`payout.paid` 经 ingestion 映射后调用 settlement。`APPLIED`、`DUPLICATE_FACT` 对应 inbox `PROCESSED`，其他请款结果对应 `REJECTED`；paid 的依赖未到时为 `PARKED`。`charge.dispute.*` 为 `REJECTED / UNSUPPORTED_TYPE` 并开 `UNSUPPORTED_EVENT`；其余类型暂为 `IGNORED`、`result=NULL`，包括 refund 和 `payout.failed/canceled`。后两类由 T06 接入，refund 由 P3 接入；下表保留相应阶段的目标行为。所有类型的 `livemode=true` 优先拒绝为 `LIVEMODE` 并开一条 `LIVEMODE_EVENT`；charge 交给请款服务判定（事件或 Charge 任一为 live 即拒绝），其他类型在分流前判定，避免重复开差异。
 
 Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 整数；小数、字符串、非数字或缺失映射为 `null`，交由请款准入判定。其余字段按 Charge 取值，`receivedAt` 使用 inbox 接收时间。worker 默认租约 30 秒、每 1 秒轮询最多 20 条、失败从 1 秒开始倍增并封顶 5 分钟，超过 5 次进入 `DEAD`（第 6 次失败）；配置与三个事务的恢复规则见 state-machines 第 5 节。
 
@@ -64,6 +64,14 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 - 批次行的 balance transaction 类型：`charge` → `PAYMENT`，`refund` → `REFUND`，`payout_failure` → `PAYOUT_FAILURE`；其他类型（`adjustment`、`dispute` 等）→ 批次 `HELD(UNSUPPORTED_LINE)`。
 
 拉取批次行是 HTTP 调用，在数据库事务**之外**做：worker 先拉取并把原始 JSON 存进 `io.processor_fetch`，再开事务核对和记账。拉取失败按 inbox 的重试规则退避。
+
+### P2 T05 实现备注：就绪拉取与兜底轮询
+
+- `PayoutProcessing` 复用 T04 的 Payout 解析与 `StripeReader`，传给 settlement 的证据类型不依赖 ingestion。created 已带 `completed` 时也拉取；`in_progress` 不拉；不支持的 payout 直接隔离，不拉明细。`type=payout` 的转出行跳过，charge 和已知失败打款退回行参加核对，其余行暂隔离。拉取未完成只保留 `complete=false` 存档，worker 重试，不形成批次版本。
+- `occurred_at` 和分录时间取 payout `created`；`settlement_date` 取其多伦多日期；`arrival_date` 保留处理方 epoch 对应的 UTC 日期，不用它驱动银行入账。正常批次的五条 posting 按 money-model 第 3 节生成，零金额省略；只有失败打款退回时为两条。
+- `SettlementPolling.poll()` 查询本地仍为 `ANNOUNCED`、记录时间已超过 `ledgerlab.settlement.after`（默认 30m）的批次。按原始 `source_event_id` 关联的 `purpose=PAYOUT` 拉取存档统计次数及最近 `fetched_at`，退避从 `initial-backoff=1m` 倍增到 `max-backoff=30m`；进程重启后仍可从数据库恢复退避，无新增迁移。`poll-interval` 默认 1m。`scheduling-enabled` 默认继承 `ledgerlab.inbox.scheduling-enabled`，已有关闭 inbox 调度的测试不会另起后台轮询；也可显式配置 `ledgerlab.settlement.scheduling-enabled` 独立控制，测试直接调用 `poll()`。
+- 轮询查询和明细拉取均在业务事务外；看到 `completed` 后共用同一核对／记账入口，`not_applicable` 则 `HELD(UNSUPPORTED_PAYOUT)`。查询、分页或业务处理失败后按已存档尝试继续退避；不伪造 inbox 事件。历史引用 `processor_fetch`，批次原始事件外键保留。并发轮询或 webhook 可重复读取，但资金锁、批次状态检查及 `source_key` 保证业务只应用一次。
+- T05 的 HELD 分类与恢复范围、paid 的 PARKED／唤醒、事务失败回到 ANNOUNCED 的约定见 state-machines 第 4 节实现备注。HTTP 已完成并不代表批次业务确认，T04 的存档契约不变。
 
 ## 3. 出站调用
 

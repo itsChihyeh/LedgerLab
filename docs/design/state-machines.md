@@ -99,6 +99,15 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 - 批次里有不支持的行类型（例如拒付）：`HELD`，原因 `UNSUPPORTED_LINE`，页面显示批次不完整。
 - 批次里出现本地根本没有的支付：先停在 `HELD`，等对应 webhook（乱序）；超过老化阈值报 `MISSING_IN_LEDGER`。
 
+### P2 T05 实现备注：批次确认与入站恢复
+
+- `settlement.BatchSettlement` 是批次业务入口，依赖 payments 的窄查询／状态更新接口和 ledger；ingestion 负责 HTTP、证据映射和调度，settlement 不反向依赖 ingestion。每次业务处理先取 `ledger.lockFunds()`，再锁批次；不存在的批次也由资金锁串行化建立。
+- `ANNOUNCED → RECEIVED → CONFIRMED`、五项合计、已核对明细、支付 `CAPTURED → SETTLED`、支付历史和一个 `BATCH_SETTLED` 在同一业务事务提交。V6 要求批次先成为 `CONFIRMED` 才可插入明细，事务内按此顺序写入。`RECEIVED` 是这条成功路径的事务内状态；**AC-5.16 在第三条 posting 后故障时回滚到原有的 `ANNOUNCED`，不是持久化的 `RECEIVED`**。若本次就绪事件首次建立批次，失败连新批次也一起回滚；独立提交的 fetch 存档保留。重试重新拉取、核对和记账。
+- `payout.paid` 只追加一行当前状态到当前状态的历史；批次尚不存在时 inbox `PARKED`，`parked_on = batch:{po_…}`。建批次与唤醒同依赖的 PARKED 事件在同一事务，唤醒后为 `RECEIVED`、清 `parked_on` 并立即可重试。停放与建批次都在资金锁保护下，避免并发丢失唤醒。此规则同样适用于 T06 的 `payout.failed`／`payout.canceled`；这两类在 T05 仍为 `IGNORED`。PARKED 老化扫描留给 T11。
+- 已存在批次的 created，以及非 `ANNOUNCED` 批次的再次就绪，追加证据历史并返回 `DUPLICATE_FACT`。重复 created 即使快照已 completed 也不再拉取，不让 HTTP 故障阻塞已知重复；已确认批次也可在拉取前短路。并发拉取仍需在业务事务重新查状态，保证只记一次。T05 不实现内容冲突版本比较或 HELD 自动恢复，留给 T06。
+- `HELD` 是已成功处理证据的业务结果，inbox 为 `PROCESSED/APPLIED`。T05 对不支持的 payout 开 `UNSUPPORTED_PAYOUT`、`INGESTION`、batch 主体差异；其余行核对失败先记录 `hold_reason`，差异分类与恢复留给 T06。本地支付缺失先 `HELD(UNKNOWN_PAYMENT)`，不把暂时乱序立即报为 `MISSING_IN_LEDGER`。REFUND 和未知行暂以 `UNSUPPORTED_LINE` 隔离；已知 `PAYOUT_FAILED` 批次的同额、零手续费退回行可确认（AC-5.18），不能在另一批次再次使用。
+- 新增 `SettlementWorkerTest` 真库／本地 HTTP 场景覆盖 AC-5.1、AC-5.16–5.18、AC-1.4b、AC-2.8 及 paid 停放恢复。故障测试使用透传 JDBC 包装，在真实写入第三条 posting 后抛异常，不改生产账本接口。`SettlementModelProperties` 增加独立纯 Java 批次参考模型和 jqwik 有状态动作：created、created 已就绪、就绪、paid、不支持的 payout；随机排列和新 event_id 重复，每步比较状态、历史、余额、posting 数并查账本不变量。固定种子 `2026102305`，100 条序列、每条最多 16 个动作；P1 原有模型保留：本地默认 100 条，CI 的 1000 条配置不变。
+
 ## 5. 入站事件 Inbox（R6）
 
 **状态**（处理进度）和**结果**（处理出了什么）分开存：`status` 只有下面几种；`result` 记 `APPLIED`、`DUPLICATE_FACT`、`BUSINESS_CONFLICT`、`INVALID_AMOUNT`、`UNSUPPORTED_CURRENCY`、`UNSUPPORTED_CAPTURE`、`UNSUPPORTED_TYPE`、`LIVEMODE` 等。
@@ -121,8 +130,9 @@ RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，n
 - **失败记录事务**：业务事务失败后，单独开事务把 `attempts` 加 1，写回 `last_error`（最多 2000 字符）、`next_attempt_at` 并清租约；条件同时包括抢占时的 `lease_epoch` 和 `status=RECEIVED`，防止旧 worker 改动接管后的进度。P1 超过重试上限时 `DEAD` 只记状态、次数和错误，**不开差异**，留给 P2 的老化检查。
 - 默认每 1 秒轮询一次，每批最多 20 条，租约 30 秒；失败退避为 `min(1 秒 × 2^(attempts−1), 5 分钟)`，上限 5 次（第 6 次失败进入 `DEAD`）。参数均在 `ledgerlab.inbox` 下可配；worker 编号为 `owner`（环境变量 `LEDGERLAB_WORKER_ID`，默认 `inbox-1`），测试用 `scheduling-enabled=false` 关闭轮询并直接调用 `processAvailable()`。所有时间来自注入的 `Clock`，`processed_at` 取完成处理时刻；请款证据的 `receivedAt` 始终取 inbox 的 `received_at`。
 - 抢占、业务、失败记录各使用独立事务。抢占提交后、业务事务开始前，以及业务写入完成后、epoch 写回前各有一个生产空操作测试钩子，用 latch 或异常控制崩溃和接管顺序。
+- P2 T05 在抢占提交后、业务事务开始前增加 payout 明细拉取及 `afterFetch` 测试钩子。HTTP 和 fetch 存档沿用 T04；分页不完整抛出处理失败，进入既有失败事务，不写批次版本或冲突差异。拉取期间租约可被接管，成功与失败仍用原 `lease_epoch` 条件写回；过期 worker 的业务历史、唤醒和分录全部随事务回滚。
 - `PARKED` 事件在它依赖的对象创建时被同一事务唤醒（回到 `RECEIVED`），后台也会定期扫描。
-- P1 处理 `charge.succeeded`；`charge.dispute.*` 拒绝为 `UNSUPPORTED_TYPE` 并开差异；其余类型（含 P2 的 payout 和 P3 的 refund）暂为 `IGNORED`、结果为空。任何类型的 `livemode=true` 优先拒绝为 `LIVEMODE`；具体映射见 stripe-integration 第 2 节。
+- P1 处理 `charge.succeeded`；P2 T05 接入 `payout.created`、`payout.reconciliation_completed`、`payout.paid`。`charge.dispute.*` 拒绝为 `UNSUPPORTED_TYPE` 并开差异；其余类型（含 T06 的 payout.failed/canceled 和 P3 的 refund）暂为 `IGNORED`、结果为空。任何类型的 `livemode=true` 优先拒绝为 `LIVEMODE`；具体映射见 stripe-integration 第 2 节。
 - P1 的“告警”和“开差异”写进 `recon.issue`，`detected_by = INGESTION`，不需要对账运行（data-dictionary 第 4 节）；上述 `DEAD` 不开差异。
 
 ## 6. 出站命令 Outbound command（R5）

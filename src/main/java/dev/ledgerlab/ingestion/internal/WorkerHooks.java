@@ -4,5 +4,7 @@ package dev.ledgerlab.ingestion.internal;
 public interface WorkerHooks {
     default void afterClaim(String eventId) {}
 
+    default void afterFetch(String eventId) {}
+
     default void afterBusiness(String eventId) {}
 }
