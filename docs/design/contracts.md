@@ -47,6 +47,15 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 
 老化逐笔检查每一笔未了结的义务，而不是看账户总额（修订 R1）。
 
+### P2 T01 实现备注（手续费与工作日日历）
+
+- 共享纯函数 `dev.ledgerlab.shared.Fees.contractFee(long)` 实现第 3 节公式，乘法、舍入加法和固定费用加法均用 `Math.multiplyExact` / `Math.addExact`，中间值溢出抛 `ArithmeticException`；支付金额准入仍由调用方负责。`PaymentCapture` 改用此函数，合法支付的结果不变。
+- `dev.ledgerlab.shared.BusinessCalendar` 是不可变 Spring bean，启动时以 UTF-8 输入流读取 classpath 的 `calendar/business-holidays.csv`（打包进 JAR 后同样可读），不读取系统当前时间。`businessDateOf` 返回多伦多本地日历日，周末、假日也有归属日期；`isBusinessDay` 才判断工作日。
+- 日历维护范围明确为 2026–2027，不由 CSV 首末条假日推断。2026 日期核对 [Payments Canada 非处理日表](https://www.payments.ca/system-closure-schedule)；2027 按同一联邦假日集合和模拟合同的周末顺延规则列出。2026 Boxing Day 补休为 12-28；2027 Christmas Day、Boxing Day 分别补休为 12-27、12-28，不占用同一天。这是模拟合同约定，不是行业默认。
+- `addBusinessDays(date, n)` 不计起始日，`n = 0` 原样返回起始日期（包括非工作日），负数拒绝；`dueAt(start, n)` 要求 `n > 0`，返回第 n 个工作日的次日多伦多 00:00。`startOfDay` 使用当地日历边界，不能用固定 24 小时替代。
+- 所有日期方法按多伦多日期检查覆盖范围，起点、遍历日期或结果超出 2026–2027 均抛 `IllegalArgumentException`；包括到期结果落在 2028-01-01 的情形。需扩年时必须同时维护 CSV 和代码中的覆盖年份，不能默认为工作日。
+- T01 单测覆盖 [验收条件](../acceptance-criteria.md) 第 5.3 节标准样例的手续费与 P4/P5 到期计算（支持 AC-5.7）、工作日老化边界（支持 AC-5.11），不代表完整对账与老化流程已实现。
+
 ---
 
 ## 2. 稳定编号

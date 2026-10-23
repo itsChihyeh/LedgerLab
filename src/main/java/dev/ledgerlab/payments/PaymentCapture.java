@@ -7,6 +7,7 @@ import dev.ledgerlab.ledger.Ledger;
 import dev.ledgerlab.ledger.PostingLine;
 import dev.ledgerlab.ledger.SubjectType;
 import dev.ledgerlab.reconciliation.IngestionIssues;
+import dev.ledgerlab.shared.Fees;
 import dev.ledgerlab.shared.IdGenerator;
 import java.time.Clock;
 import java.time.ZoneOffset;
@@ -75,7 +76,7 @@ public final class PaymentCapture {
                 .param("charge", evidence.chargeId())
                 .param("intent", evidence.paymentIntentId())
                 .param("amount", amount)
-                .param("fee", 30 + (amount * 29 + 500) / 1000)
+                .param("fee", Fees.contractFee(amount))
                 .param("event", evidence.eventId())
                 .param("occurred", occurredAt)
                 .param("received", evidence.receivedAt().atOffset(ZoneOffset.UTC))
