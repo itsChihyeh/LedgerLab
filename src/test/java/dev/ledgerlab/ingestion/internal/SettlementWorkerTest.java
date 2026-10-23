@@ -1,6 +1,7 @@
 package dev.ledgerlab.ingestion.internal;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.sun.net.httpserver.HttpServer;
 import dev.ledgerlab.ingestion.StripeReader;
@@ -10,7 +11,9 @@ import dev.ledgerlab.ledger.internal.JdbcLedgerAudit;
 import dev.ledgerlab.payments.PaymentCapture;
 import dev.ledgerlab.payments.PaymentSettlement;
 import dev.ledgerlab.reconciliation.internal.JdbcIngestionIssues;
+import dev.ledgerlab.settlement.BankStatements;
 import dev.ledgerlab.settlement.BatchSettlement;
+import dev.ledgerlab.shared.BusinessCalendar;
 import dev.ledgerlab.shared.IdGenerator;
 import dev.ledgerlab.testsupport.MutableClock;
 import dev.ledgerlab.testsupport.StripeSignatures;
@@ -78,6 +81,8 @@ class SettlementWorkerTest {
     private volatile String payout;
     private volatile boolean interrupted;
     private boolean failThird;
+    private BankStatements bankStatements;
+    private int failAfterPosting;
 
     @BeforeEach
     void start() throws IOException {
@@ -96,7 +101,10 @@ class SettlementWorkerTest {
         audit = new JdbcLedgerAudit(source, manager);
         issues = new JdbcIngestionIssues(jdbc, ids, clock);
         capture = new PaymentCapture(ledger, jdbc, issues, ids, clock, mapper);
-        var batches = new BatchSettlement(jdbc, ledger, new PaymentSettlement(jdbc), issues, clock, mapper);
+        bankStatements =
+                new BankStatements(jdbc, ledger, issues, clock, ids, new BusinessCalendar(), mapper, manager, 2);
+        var batches =
+                new BatchSettlement(jdbc, ledger, new PaymentSettlement(jdbc), issues, clock, mapper, bankStatements);
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         lines = page(line("txn_payment", "charge", "ch_p1", 10000, 320), false);
         payout = payout("po_b1", "completed").toString();
@@ -162,6 +170,11 @@ class SettlementWorkerTest {
                             new Class<?>[] {PreparedStatement.class},
                             (p, operation, arguments) -> {
                                 Object value = invoke(statement, operation, arguments);
+                                if (operation.getName().equals("executeUpdate")
+                                        && failAfterPosting > 0
+                                        && --failAfterPosting == 0) {
+                                    throw new IllegalStateException("Injected during bank file posting");
+                                }
                                 if (operation.getName().equals("executeUpdate")
                                         && failThird
                                         && postingsWritten.incrementAndGet() == 3) {
@@ -298,6 +311,424 @@ class SettlementWorkerTest {
 
     private static String page(String items, boolean more) {
         return "{\"data\":[" + items + "],\"has_more\":" + more + "}";
+    }
+
+    static byte[] bankCsv(
+            String id,
+            long amount,
+            String direction,
+            String currency,
+            String status,
+            String ref,
+            String statementDate,
+            String bookingDate,
+            int version) {
+        long credit = status.equals("BOOKED") && direction.equals("CREDIT") ? amount : 0;
+        long debit = status.equals("BOOKED") && direction.equals("DEBIT") ? amount : 0;
+        return ("H,BANK_STATEMENT,SIM-CAD-001," + statementDate + "," + statementDate + "," + version + ",CAD\r\n"
+                        + "D," + id + "," + direction + "," + amount + "," + currency + "," + status + "," + ref + ","
+                        + bookingDate + "," + bookingDate + ",memo\r\n"
+                        + "T,1," + credit + "," + debit + "," + debit + "," + credit + "\r\n")
+                .getBytes(StandardCharsets.UTF_8);
+    }
+
+    BankStatements.ImportResult bank(String id, long amount) {
+        return bankStatements.importBankStatement(
+                "test.csv", bankCsv(id, amount, "CREDIT", "CAD", "BOOKED", "po_b1", "2026-10-23", "2026-10-23", 1));
+    }
+
+    void modelBank(String action) {
+        if (action.equals("EXPIRE_BANK")) {
+            clock.set(Instant.parse("2026-10-28T04:00:00Z"));
+            bankStatements.expireWaiting();
+            return;
+        }
+        String id = action.equals("BANK") || action.equals("PENDING_BANK")
+                ? "model_bank"
+                : action.toLowerCase(java.util.Locale.ROOT);
+        bankStatements.importBankStatement(
+                "model.csv",
+                bankCsv(
+                        id,
+                        action.equals("SHORT_BANK") ? 9679 : 9680,
+                        action.equals("DEBIT_BANK") ? "DEBIT" : "CREDIT",
+                        action.equals("FOREIGN_BANK") ? "USD" : "CAD",
+                        action.equals("PENDING_BANK") ? "PENDING" : "BOOKED",
+                        "po_b1",
+                        "2026-10-23",
+                        "2026-10-23",
+                        1));
+    }
+
+    String bankState(String id) {
+        return jdbc.sql(
+                        "SELECT match_status FROM recon.bank_line WHERE bank_txn_id = :id ORDER BY version DESC LIMIT 1")
+                .param("id", id)
+                .query(String.class)
+                .single();
+    }
+
+    @Test
+    void ac_5_4_ac_1_4b_exampleAStepsOneThroughThreeAndFreeCash() {
+        capture();
+        assertThat(balances()).containsExactly(10000L, 0L, 0L, 10000L, 0L, 0L, 0L, 0L);
+        ready();
+        assertThat(balances()).containsExactly(0L, 9680L, 0L, 0L, 9680L, 0L, 0L, 0L);
+        var b = balances();
+        long freeCash = Math.subtractExact(
+                Math.subtractExact(Math.subtractExact(b.get(2), b.get(6)), b.get(7)),
+                Math.max(0L, Math.negateExact(b.getFirst())));
+        assertThat(freeCash).isZero(); // P5 withdrawal API is deliberately not introduced here.
+        assertThat(bank("t1", 9680).status()).isEqualTo("ACCEPTED");
+        assertThat(bankState("t1")).isEqualTo("MATCHED");
+        assertThat(state()).isEqualTo("BANKED");
+        assertThat(balances()).containsExactly(0L, 0L, 9680L, 0L, 9680L, 0L, 0L, 0L);
+        assertThat(count("ledger.posting")).isEqualTo(9);
+        assertThat(jdbc.sql("SELECT source_key FROM ledger.journal_entry WHERE entry_type = 'BANK_DEPOSIT_RECEIVED'")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("bank_txn:t1");
+        assertThat(jdbc.sql(
+                                "SELECT count(*) FROM core.batch_transition WHERE from_status='CONFIRMED' AND to_status='BANKED'")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(1);
+    }
+
+    @Test
+    void ac_5_5_shortDepositIsUnappliedWithCandidate() {
+        capture();
+        ready();
+        bank("short", 9679);
+        assertThat(state()).isEqualTo("CONFIRMED");
+        assertThat(balances()).containsExactly(0L, 9680L, 9679L, 0L, 9680L, 0L, 0L, 9679L);
+        assertThat(bankState("short")).isEqualTo("UNAPPLIED");
+        assertThat(jdbc.sql("SELECT category, detected_by, evidence_refs::text AS refs FROM recon.issue")
+                        .query()
+                        .singleRow())
+                .containsEntry("category", "DEPOSIT_AMOUNT_MISMATCH")
+                .containsEntry("detected_by", "INGESTION");
+        assertThat(jdbc.sql("SELECT evidence_refs::text FROM recon.issue")
+                        .query(String.class)
+                        .single())
+                .contains("po_b1");
+    }
+
+    @Test
+    void ac_5_6_secondRealDepositAndRepeatedFilesAndRows() {
+        capture();
+        ready();
+        var first = bank("t1", 9680);
+        var second = bank("t2", 9680);
+        assertThat(bank("t1", 9680)).isEqualTo(first);
+        assertThat(bank("t2", 9680)).isEqualTo(second);
+        assertThat(count("io.imported_file")).isEqualTo(2);
+        assertThat(count("recon.bank_line")).isEqualTo(2);
+        assertThat(count("ledger.posting")).isEqualTo(11);
+        assertThat(balances()).containsExactly(0L, 0L, 19360L, 0L, 9680L, 0L, 0L, 9680L);
+        assertThat(bankState("t2")).isEqualTo("UNAPPLIED");
+        assertThat(issueIdentities()).containsExactly("UNMATCHED_BANK_LINE:t2");
+        bankStatements.importBankStatement(
+                "different-version.csv",
+                bankCsv("t1", 9680, "CREDIT", "CAD", "BOOKED", "po_b1", "2026-10-23", "2026-10-23", 2));
+        assertThat(count("io.imported_file")).isEqualTo(3);
+        assertThat(count("recon.bank_line")).isEqualTo(2);
+        assertThat(count("ledger.posting")).isEqualTo(11);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"T,2,FILE_INCOMPLETE", "9680,9681,FILE_INCOMPLETE"})
+    void ac_5_10_badTotalsArchiveRejectionWithoutAnyRows(String ignored, String other, String reason) {
+        String csv = new String(
+                bankCsv("t1", 9680, "CREDIT", "CAD", "BOOKED", "po_b1", "2026-10-23", "2026-10-23", 1),
+                StandardCharsets.UTF_8);
+        csv = ignored.equals("T") ? csv.replace("T,1,", "T,2,") : csv.replace("T,1,9680,", "T,1,9681,");
+        byte[] content = csv.getBytes(StandardCharsets.UTF_8);
+        var result = bankStatements.importBankStatement("bad.csv", content);
+        assertThat(result.status()).isEqualTo("REJECTED");
+        assertThat(result.rejectReason()).isEqualTo(reason);
+        assertThat(bankStatements.importBankStatement("again.csv", content)).isEqualTo(result);
+        assertThat(count("io.imported_file")).isEqualTo(1);
+        assertThat(count("recon.bank_statement")).isZero();
+        assertThat(count("recon.bank_line")).isZero();
+        assertThat(jdbc.sql("SELECT raw FROM io.imported_file")
+                        .query(byte[].class)
+                        .single())
+                .isEqualTo(content);
+    }
+
+    @Test
+    void ac_5_12_balanceMismatchArchivesRaw() {
+        byte[] content = new String(
+                        bankCsv("t1", 9680, "CREDIT", "CAD", "BOOKED", "po_b1", "2026-10-23", "2026-10-23", 1),
+                        StandardCharsets.UTF_8)
+                .replace("T,1,9680,0,0,9680", "T,1,9680,0,0,9679")
+                .getBytes(StandardCharsets.UTF_8);
+        assertThat(bankStatements.importBankStatement("bad.csv", content).rejectReason())
+                .isEqualTo("BALANCE_MISMATCH");
+        assertThat(count("recon.bank_line")).isZero();
+        assertThat(jdbc.sql("SELECT raw FROM io.imported_file")
+                        .query(byte[].class)
+                        .single())
+                .isEqualTo(content);
+    }
+
+    @Test
+    void ac_5_10_pendingAdvancesAcrossDailyFileVersionsButOtherChangesConflict() {
+        capture();
+        ready();
+        bankStatements.importBankStatement(
+                "pending.csv", bankCsv("p", 9680, "CREDIT", "CAD", "PENDING", "po_b1", "2026-10-22", "2026-10-23", 1));
+        assertThat(bankState("p")).isEqualTo("IGNORED_PENDING");
+        assertThat(count("ledger.posting")).isEqualTo(7);
+        bankStatements.importBankStatement(
+                "booked.csv", bankCsv("p", 9680, "CREDIT", "CAD", "BOOKED", "po_b1", "2026-10-23", "2026-10-23", 1));
+        assertThat(count("recon.bank_line")).isEqualTo(2);
+        assertThat(bankState("p")).isEqualTo("MATCHED");
+        bankStatements.importBankStatement(
+                "changed.csv", bankCsv("p", 9679, "CREDIT", "CAD", "BOOKED", "po_b1", "2026-10-23", "2026-10-23", 2));
+        bankStatements.importBankStatement(
+                "regressed.csv",
+                bankCsv("p", 9680, "CREDIT", "CAD", "PENDING", "po_b1", "2026-10-23", "2026-10-23", 3));
+        assertThat(count("recon.bank_line")).isEqualTo(2);
+        assertThat(count("ledger.posting")).isEqualTo(9);
+        assertThat(issueIdentities()).containsExactly("STATEMENT_VERSION_CONFLICT:p");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"absent", "announced", "held", "polling"})
+    void ac_5_20_earlyCashWakesOnEveryConfirmationPath(String path) {
+        if (path.equals("announced") || path.equals("polling")) announce();
+        if (path.equals("held")) ready();
+        var original = bank("early", 9680);
+        assertThat(bankState("early")).isEqualTo("WAITING");
+        assertThat(balances().get(2)).isZero();
+        capture();
+        if (path.equals("polling")) {
+            clock.set(NOW.plusSeconds(1800));
+            polling.poll();
+        } else if (!path.equals("held")) ready();
+        assertThat(state()).isEqualTo("BANKED");
+        assertThat(bankState("early")).isEqualTo("MATCHED");
+        assertThat(bank("early", 9680)).isEqualTo(original);
+        assertThat(balances()).containsExactly(0L, 0L, 9680L, 0L, 9680L, 0L, 0L, 0L);
+    }
+
+    @Test
+    void ac_5_20_wakeAndBothEntriesRollbackWithConfirmation() {
+        capture();
+        announce();
+        bank("early", 9680);
+        event("evt_ready", "payout.reconciliation_completed", payout("po_b1", "completed"));
+        worker(new WorkerHooks() {
+                    @Override
+                    public void afterBusiness(String id) {
+                        assertThat(state()).isEqualTo("BANKED");
+                        assertThat(count("ledger.posting")).isEqualTo(9);
+                        throw new IllegalStateException("after both cash and batch entries");
+                    }
+                })
+                .processAvailable();
+        assertThat(state()).isEqualTo("ANNOUNCED");
+        assertThat(bankState("early")).isEqualTo("WAITING");
+        assertThat(count("ledger.posting")).isEqualTo(2);
+        clock.set(NOW.plusSeconds(1));
+        runWorker();
+        assertThat(state()).isEqualTo("BANKED");
+        assertThat(count("ledger.posting")).isEqualTo(9);
+    }
+
+    @Test
+    void ac_5_20_unknownPayoutExpiresAtSecondBusinessDayEndAcrossHoliday() {
+        clock.set(Instant.parse("2026-11-10T15:00:00Z"));
+        bankStatements.importBankStatement(
+                "early.csv",
+                bankCsv("unknown", 9680, "CREDIT", "CAD", "BOOKED", "po_unknown", "2026-11-10", "2026-11-10", 1));
+        assertThat(bankState("unknown")).isEqualTo("WAITING");
+        assertThat(jdbc.sql("SELECT wait_until FROM recon.bank_line")
+                        .query(Instant.class)
+                        .single())
+                .isEqualTo(Instant.parse("2026-11-14T05:00:00Z"));
+        clock.set(Instant.parse("2026-11-14T04:59:59Z"));
+        bankStatements.expireWaiting();
+        assertThat(bankState("unknown")).isEqualTo("WAITING");
+        clock.set(Instant.parse("2026-11-14T05:00:00Z"));
+        bankStatements.expireWaiting();
+        bankStatements.expireWaiting();
+        assertThat(bankState("unknown")).isEqualTo("UNAPPLIED");
+        assertThat(balances()).containsExactly(0L, 0L, 9680L, 0L, 0L, 0L, 0L, 9680L);
+        assertThat(issueIdentities()).containsExactly("UNMATCHED_BANK_LINE:unknown");
+    }
+
+    @Test
+    void ac_5_20_storedDeadlineSurvivesConfigurationChange() {
+        bank("early", 9680);
+        clock.set(Instant.parse("2026-10-28T04:00:00Z"));
+        var changed = new BankStatements(
+                jdbc,
+                ledger,
+                issues,
+                clock,
+                IdGenerator.seeded(clock, 808),
+                new BusinessCalendar(),
+                mapper,
+                manager,
+                3);
+        changed.expireWaiting();
+        assertThat(bankState("early")).isEqualTo("UNAPPLIED");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "USD,CREDIT,BOOKED,UNAPPLIED,9680",
+        "CAD,DEBIT,BOOKED,UNMATCHED_NO_POSTING,0",
+        "CAD,CREDIT,PENDING,IGNORED_PENDING,0"
+    })
+    void ac_5_20_currencyDirectionAndPendingCannotMatch(
+            String currency, String direction, String status, String expected, long cash) {
+        capture();
+        ready();
+        bankStatements.importBankStatement(
+                "line.csv",
+                bankCsv("ineligible", 9680, direction, currency, status, "po_b1", "2026-10-23", "2026-10-23", 1));
+        assertThat(state()).isEqualTo("CONFIRMED");
+        assertThat(bankState("ineligible")).isEqualTo(expected);
+        assertThat(balances().get(2)).isEqualTo(cash);
+        assertThat(count("recon.issue")).isEqualTo(status.equals("PENDING") ? 0 : 1);
+    }
+
+    @Test
+    void ac_5_20_failedPayoutDepositRemainsUnapplied() {
+        capture();
+        ready();
+        event("evt_fail", "payout.failed", payout("po_b1", "completed"));
+        runWorker();
+        bank("late", 9680);
+        assertThat(state()).isEqualTo("PAYOUT_FAILED");
+        assertThat(bankState("late")).isEqualTo("UNAPPLIED");
+        assertThat(issueIdentities()).containsExactly("BATCH_STATE_CONFLICT:late");
+        assertThat(balances()).containsExactly(9680L, 0L, 9680L, 0L, 9680L, 0L, 0L, 9680L);
+    }
+
+    @Test
+    void ac_5_6_concurrentSameFileImportsExactlyOnce() throws Exception {
+        capture();
+        ready();
+        var barrier = new CyclicBarrier(2);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            java.util.concurrent.Callable<BankStatements.ImportResult> call = () -> {
+                barrier.await(10, TimeUnit.SECONDS);
+                return bank("same", 9680);
+            };
+            var a = pool.submit(call);
+            var b = pool.submit(call);
+            assertThat(a.get(15, TimeUnit.SECONDS)).isEqualTo(b.get(15, TimeUnit.SECONDS));
+        }
+        assertThat(count("io.imported_file")).isEqualTo(1);
+        assertThat(count("ledger.posting")).isEqualTo(9);
+    }
+
+    @Test
+    void ac_5_20_confirmationAndImportDoNotLoseWakeup() throws Exception {
+        capture();
+        announce();
+        event("evt_ready", "payout.reconciliation_completed", payout("po_b1", "completed"));
+        var barrier = new CyclicBarrier(2);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var a = pool.submit(() -> {
+                barrier.await(10, TimeUnit.SECONDS);
+                runWorker();
+                return 0;
+            });
+            var b = pool.submit(() -> {
+                barrier.await(10, TimeUnit.SECONDS);
+                return bank("early", 9680);
+            });
+            a.get(15, TimeUnit.SECONDS);
+            b.get(15, TimeUnit.SECONDS);
+        }
+        assertThat(state()).isEqualTo("BANKED");
+        assertThat(bankState("early")).isEqualTo("MATCHED");
+        assertThat(count("ledger.posting")).isEqualTo(9);
+    }
+
+    @Test
+    void ac_5_10_importJoinsCallerRollback() {
+        capture();
+        ready();
+        byte[] first = bankCsv("t1", 9680, "CREDIT", "CAD", "BOOKED", "po_b1", "2026-10-23", "2026-10-23", 1);
+        assertThatThrownBy(() -> tx.executeWithoutResult(ignored -> {
+                    bankStatements.importBankStatement("rollback.csv", first);
+                    assertThat(state()).isEqualTo("BANKED");
+                    throw new IllegalStateException("failed before commit");
+                }))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(count("io.imported_file")).isZero();
+        assertThat(count("recon.bank_line")).isZero();
+        assertThat(state()).isEqualTo("CONFIRMED");
+        assertThat(count("ledger.posting")).isEqualTo(7);
+        bank("t1", 9680);
+        assertThat(state()).isEqualTo("BANKED");
+    }
+
+    @Test
+    void ac_5_10_wholeFileRollsBackIfSecondLinePostingFails() {
+        capture();
+        ready();
+        String csv = new String(
+                bankCsv("first", 9680, "CREDIT", "CAD", "BOOKED", "po_b1", "2026-10-23", "2026-10-23", 1),
+                StandardCharsets.UTF_8);
+        String second = "D,second,CREDIT,9680,CAD,BOOKED,po_b1,2026-10-23,2026-10-23,memo\r\n";
+        byte[] content =
+                csv.replace("T,1,9680,0,0,9680", second + "T,2,19360,0,0,19360").getBytes(StandardCharsets.UTF_8);
+        failAfterPosting = 3;
+        assertThatThrownBy(() -> bankStatements.importBankStatement("two-lines.csv", content))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(count("io.imported_file")).isZero();
+        assertThat(count("recon.bank_statement")).isZero();
+        assertThat(count("recon.bank_line")).isZero();
+        assertThat(count("ledger.posting")).isEqualTo(7);
+        assertThat(state()).isEqualTo("CONFIRMED");
+        assertThat(count("core.batch_transition")).isEqualTo(3);
+        bankStatements.importBankStatement("two-lines.csv", content);
+        assertThat(bankState("first")).isEqualTo("MATCHED");
+        assertThat(bankState("second")).isEqualTo("UNAPPLIED");
+        assertThat(count("ledger.posting")).isEqualTo(11);
+    }
+
+    @Test
+    void ac_5_20_waitingLinesWakeInImportOrder() {
+        bank("z_first", 9680);
+        bank("a_second", 9680);
+        capture();
+        ready();
+        assertThat(bankState("z_first")).isEqualTo("MATCHED");
+        assertThat(bankState("a_second")).isEqualTo("UNAPPLIED");
+        assertThat(count("ledger.posting")).isEqualTo(11);
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+            strings = {"CREDIT|DEBIT", "9680|9679", "CAD|USD", "po_b1|po_other", "2026-10-23|2026-10-24", "memo|changed"
+            })
+    void ac_5_10_pendingPromotionCannotChangeOtherEvidence(String change) {
+        byte[] pending = bankCsv("p", 9680, "CREDIT", "CAD", "PENDING", "po_b1", "2026-10-22", "2026-10-23", 1);
+        bankStatements.importBankStatement("pending.csv", pending);
+        String[] parts = change.split("\\|", 2);
+        String csv = new String(
+                bankCsv("p", 9680, "CREDIT", "CAD", "BOOKED", "po_b1", "2026-10-23", "2026-10-23", 1),
+                StandardCharsets.UTF_8);
+        String[] records = csv.split("\r\n", -1);
+        records[1] = records[1].replace(parts[0], parts[1]);
+        if (parts[0].equals("9680")) records[2] = "T,1,9679,0,0,9679";
+        if (parts[0].equals("CREDIT")) records[2] = "T,1,0,9680,9680,0";
+        var result = bankStatements.importBankStatement(
+                "changed.csv", String.join("\r\n", records).getBytes(StandardCharsets.UTF_8));
+        assertThat(result.status()).isEqualTo("ACCEPTED");
+        assertThat(bankState("p")).isEqualTo("IGNORED_PENDING");
+        assertThat(count("recon.bank_line")).isEqualTo(1);
+        assertThat(count("ledger.posting")).isZero();
+        assertThat(issueIdentities()).containsExactly("STATEMENT_VERSION_CONFLICT:p");
     }
 
     @Test
@@ -445,7 +876,7 @@ class SettlementWorkerTest {
 
     List<@Nullable String> issueIdentities() {
         return jdbc.sql(
-                        "SELECT category || ':' || subject_id FROM recon.issue WHERE detected_by = 'INGESTION' AND subject_type = 'batch'")
+                        "SELECT category || ':' || subject_id FROM recon.issue WHERE detected_by = 'INGESTION' AND subject_type IN ('batch', 'bank_txn')")
                 .query(String.class)
                 .list();
     }

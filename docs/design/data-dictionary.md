@@ -222,6 +222,15 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 `id`、`kind`（`PROCESSOR_STATEMENT`/`BANK_STATEMENT`）、`source_name`、`sha256` UNIQUE、`statement_date`、`version`、`received_at`。同一文件内容重复导入直接返回原导入结果。
 
+### P2 T08 实现备注（V7 银行流水）
+
+- `io.imported_file.id` 用 `file_` 加 ULID；补 `status`（ACCEPTED/REJECTED）、`reject_reason`（FILE_INCOMPLETE/BALANCE_MISMATCH）、`raw bytea`、`recorded_at`。SHA-256 由 CHECK 校验原始字节；拒绝文件的日期、版本可空，接受文件必填。导入结果仅返回不可变的 `fileId/status/rejectReason`，重导不会返回变化后的匹配状态。
+- `recon.bank_statement` 以 `file_id` 为主键和外键，保存 `account_ref/currency/opening_balance/closing_balance/period_start/period_end/version/recorded_at`。只允许关联 ACCEPTED 文件；T07 的单账户、CAD、单日日报约束落在数据库。文件版本不设唯一约束：同日报表不同字节仍各自存档，流水按身份合并。
+- `recon.bank_line` 以 `(bank_txn_id, version)` 为主键；version 正整数，从 1 开始，仅 PENDING→BOOKED 时递增。`file_id` 引用 bank_statement；补 `recorded_at`。日期、金额、币种、方向、状态、reference、memo 均非空，return_of/reason_code 保留可空。wait_until 在插入时确定，之后不可改；MATCHED 必须带 matched_batch_id，其余状态不得带候选批次外键（候选放 issue.evidence_refs）。部分唯一索引保证同一批次最多一行 MATCHED。
+- `bank_line.import_order bigint identity UNIQUE` 记录实际插入顺序，等待行按此升序处理；不以时钟相同的随机 ULID 或银行流水号排序。导入与资金写入在资金锁内串行化，序列空洞不影响顺序。只读视图也提供此列。
+- migrator 为三表属主；app 仅 INSERT/SELECT，bank_line 额外只可 UPDATE(match_status, matched_batch_id)。触发器保护原文和原始流水字段，禁止删除、清空，包括属主误操作。readonly 仅 SELECT `recon.v_bank_statement`、`recon.v_bank_line`，无 io 或底表权限。
+- 整文件解析、校验完成后在一个资金事务内归档并依文件顺序合并、匹配，先 lockFunds；格式失败只归档拒绝结果。同一 SHA 重导原样返回，无新行。POST `/api/bank-statements` 接受 text/csv 原始字节，可用 `X-Source-Name` 指定来源（默认 bank-statement.csv）；接受和拒绝均返回 200 及上述结果 JSON。
+
 ---
 
 ## 4. recon

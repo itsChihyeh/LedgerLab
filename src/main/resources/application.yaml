@@ -41,3 +41,7 @@ ledgerlab:
     api-base-url: ${STRIPE_API_BASE_URL:https://api.stripe.com}
     connect-timeout: 5s
     read-timeout: 30s
+  bank:
+    wait-business-days: 2
+    poll-interval: 1m
+    scheduling-enabled: ${ledgerlab.inbox.scheduling-enabled:true}

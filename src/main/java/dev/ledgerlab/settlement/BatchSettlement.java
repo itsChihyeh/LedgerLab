@@ -44,6 +44,7 @@ public final class BatchSettlement {
     private final IngestionIssues issues;
     private final Clock clock;
     private final ObjectMapper mapper;
+    private final BankStatements bankStatements;
 
     public BatchSettlement(
             JdbcClient jdbc,
@@ -51,13 +52,15 @@ public final class BatchSettlement {
             PaymentSettlement payments,
             IngestionIssues issues,
             Clock clock,
-            ObjectMapper mapper) {
+            ObjectMapper mapper,
+            BankStatements bankStatements) {
         this.jdbc = jdbc;
         this.ledger = ledger;
         this.payments = payments;
         this.issues = issues;
         this.clock = clock;
         this.mapper = mapper;
+        this.bankStatements = bankStatements;
     }
 
     /** Optimization only: process rechecks under the funds and batch locks. */
@@ -395,6 +398,7 @@ public final class BatchSettlement {
                 SubjectType.BATCH,
                 evidence.batchId(),
                 postings));
+        bankStatements.wakeWaiting(evidence.batchId());
         return Result.APPLIED;
     }
 

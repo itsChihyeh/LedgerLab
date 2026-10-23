@@ -73,6 +73,16 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 - 处理方说打款失败（Stripe `payout.failed`）时，钱回到处理方余额：记 `BATCH_PAYOUT_FAILED`（借 1101 N / 贷 1102 N）。退回的钱会作为一行 `PAYOUT_FAILURE` 出现在之后的某个批次里。
 - 处理方从我们银行账户扣款（Stripe 的负 payout）首版不支持：payout 在入口隔离；如果扣款流水已经出现在银行流水里，按 `UNMATCHED_BANK_LINE` 处理。
 
+### P2 T08 实现备注：银行导入与现金应用
+
+- `settlement.BankStatements.importBankStatement` 先按 contracts 4.1 完整解析并校验 UTF-8 CSV（含双引号转义和字段内换行），再用一个事务处理整文件：先 `Ledger.lockFunds()`，随后检查 SHA、归档、按 CSV 顺序合并和匹配；文件、差异、分录、余额、批次历史一起提交或回滚。选择整文件事务便于重试时保持原导入结果一致；大文件会延长单商户资金锁的持有时间。
+- 行版本从 1 递增，比较全部银行事实字段，包括 booking_date、value_date 和 memo；只有 status 的 PENDING→BOOKED 可前进。不同文件版本重复同一行不再插入；冲突文件仍 ACCEPTED，原行不覆盖，冲突证据和新文件原文由 INGESTION 差异关联。
+- 匹配先排除 PENDING、DEBIT、非 CAD；非 CAD 的 BOOKED CREDIT 按模拟合同原数值记待查收款（CSV 尾合计同样不换汇），不做外汇转换。批次已确认且未匹配时才检查金额；失败批次开 BATCH_STATE_CONFLICT，已 BANKED 的第二笔开 UNMATCHED_BANK_LINE。已知候选保存在 evidence_refs。
+- `wait_until` 按 booking_date 的多伦多 00:00 调 T01 `dueAt` 计算，在插入 WAITING 时固定；配置变更只影响新等待行。`BatchSettlement` 在 BATCH_SETTLED 之后同步唤醒引用该批次的等待行，覆盖 webhook、轮询确认和 HELD 重核；按 import_order 处理，同事务内第一笔精确匹配后批次 BANKED，后续真实入账转待查收款。到期扫描也先取资金锁，按 import_order 处理；`ledgerlab.bank.poll-interval` 默认 1m，`scheduling-enabled` 默认继承 inbox 调度开关，测试关闭调度并直接调用 `expireWaiting()`。
+- 银行分录 occurred_at 使用 booking_date 的多伦多 00:00；received_at 是调用导入时注入 Clock 的时刻，recorded_at 是资金锁内处理时刻。日期型证据不伪造更细粒度的银行业务时间。
+- AC-1.4b 的样例 A 第 2′ 步在测试里按 4.2 公式只读计算 free_cash=0，不引入 P5 提现 API。定向测试覆盖 AC-5.4/5.5/5.6/5.10/5.12 文件部分及 AC-5.20 入账部分；银行余额对账的 TIMING_DIFFERENCE 留给后续对账任务。
+- jqwik 独立参考模型增加正常入账、第二笔、PENDING、短款、外币、出账和等待到期动作，与已有确认、失败、重打动作混排；种子 `2026102308`，最多 24 步，本地 100 条序列、CI 1000 条。每步核对全部余额、银行行版本与匹配状态、分录数量、差异身份及账本不变量；不替代栅栏并发与受控回滚测试。
+
 ## 4. 两个门槛
 
 ### 4.1 退款执行门槛（S3）

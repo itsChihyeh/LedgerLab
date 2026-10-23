@@ -17,7 +17,7 @@ class SettlementModelProperties {
     private SettlementWorkerTest fixture = new SettlementWorkerTest();
     private boolean initiallyCaptured;
 
-    @Property(seed = "2026102306")
+    @Property(seed = "2026102308")
     void ac_4_11_ac_4_1_ac_5_3_batchActionsMatchIndependentReference(
             @ForAll("actions") ActionChain<State> actions, @ForAll boolean capturedInitially) throws Exception {
         fixture = new SettlementWorkerTest();
@@ -59,7 +59,9 @@ class SettlementModelProperties {
             }
             Statistics.label("executed action").collect(action.name());
             String eventId = "evt_model_" + ++sequence;
-            if (action == SettlementReference.Action.CAPTURE) {
+            if (action.name().contains("BANK")) {
+                fixture.modelBank(action.name());
+            } else if (action == SettlementReference.Action.CAPTURE) {
                 fixture.event(eventId, "charge.succeeded", fixture.charge("ch_p1", 10000));
             } else {
                 String type = switch (action) {
@@ -107,13 +109,18 @@ class SettlementModelProperties {
                     .isEqualTo((reference.captured ? 2 : 0)
                             + (reference.settled ? 5 : 0)
                             + (reference.failed ? 2 : 0)
-                            + (reference.reissued ? 2 : 0));
+                            + (reference.reissued ? 2 : 0)
+                            + reference.bankEntries * 2);
             assertThat(fixture.count("core.payment_transition"))
                     .isEqualTo((reference.captured ? 1 : 0) + (reference.settled ? 1 : 0));
             assertThat(fixture.count("core.settlement_batch_line"))
                     .isEqualTo((reference.settled ? 1 : 0) + (reference.reissued ? 1 : 0));
             assertThat(fixture.issueIdentities()).containsExactlyInAnyOrderElementsOf(reference.issues);
             assertThat(fixture.balances()).isEqualTo(reference.balances());
+            assertThat(fixture.count("io.imported_file")).isEqualTo(reference.bankFiles.size());
+            assertThat(fixture.count("recon.bank_line")).isEqualTo(reference.bankVersions);
+            reference.banks.forEach(
+                    (id, bank) -> assertThat(fixture.bankState(id)).isEqualTo(bank.state));
         }
     }
 }
