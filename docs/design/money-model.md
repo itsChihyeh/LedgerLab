@@ -63,7 +63,7 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 - 任何一行的实际手续费大于该行毛额（G − F 会为负）：批次 `HELD(FEE_EXCEEDS_GROSS)`，不记账。
 - 批次分录贷记 1101 的金额是 N+F，而不是本批支付毛额 G，因为本批退款和退回的失败打款早已分别记进 1101。记账前要先核对：本批每一行支付毛额、手续费、每一行退款、每一行失败打款退回，都必须和本地记录**逐项相等**；每笔支付和退款只能出现在一个批次里（零容差）；任何一项对不上，批次进入 `HELD`，不记账，开对账差异（ADR-0010）。
 - **银行入账行的匹配条件**（2026-10-23 定，P2 开工前置 ②）：一行银行流水能记 `BANK_DEPOSIT_RECEIVED`，当且仅当**全部**成立：`status = BOOKED`；`direction = CREDIT`；`currency = CAD`；`reference` 等于某个批次的 `batch_id`；该批次状态是 `CONFIRMED`；金额等于批次 `net`；该批次还没有别的入账行匹配过。任何一项不等都不算匹配，按下面的规则处理，绝不“差不多就配上”。
-  - `status = PENDING`（银行还没记账）的行只存档，不记账、不参与匹配；同一 `bank_txn_id` 之后以 `BOOKED` 出现时按新版本处理。
+  - `status = PENDING`（银行还没记账）的行只存档，不记账、不参与匹配。流水证据身份为 `(bank_txn_id, version)`，当前有效版本为最高版本（行版本独立于按报表日期计数的文件版本）；同一 `bank_txn_id` 只有 PENDING→BOOKED 且其余内容（包括方向、金额、币种、reference、value_date）不变，才接受为状态前进，两份证据均保留，只有 BOOKED 参与匹配和记账。其他内容变化或 BOOKED→PENDING 均为 `STATEMENT_VERSION_CONFLICT`，旧行不动。
   - **银行证据早到**：`reference` 形如 `po_…`，但对应批次还不存在、或还在 `ANNOUNCED`/`RECEIVED`/`HELD`：行进入 `WAITING`，不记账。批次进入 `CONFIRMED` 的同一事务里重新匹配所有引用它的 `WAITING` 行（就像 inbox 的 `PARKED` 被唤醒）；后台也按导入顺序定期重扫。等待从 `booking_date` 起最多 2 个工作日（`ledgerlab.bank.wait-business-days`），到期仍匹配不上就按“精确匹配失败”记待查收款。等待期间账上现金比银行少，银行余额核对把恰好等于全部 `WAITING` 行合计的差额报为 `TIMING_DIFFERENCE`，不是 `BANK_BALANCE_MISMATCH`。
   - 精确匹配失败（引用不认识且不是 `po_…`、批次已 `CONFIRMED` 但金额不等、批次已 `BANKED` 又来一笔、批次已 `PAYOUT_FAILED`、币种不是 CAD、等待到期）：记 `UNAPPLIED_CASH_RECEIVED`，让账上现金继续等于银行；开差异：金额不等是 `DEPOSIT_AMOUNT_MISMATCH`，批次已 `PAYOUT_FAILED` 是 `BATCH_STATE_CONFLICT`，其余是 `UNMATCHED_BANK_LINE`；能看出相关批次的都把它列为候选。
   - P2 没有提现：出账行（`DEBIT`）一律不记账，开 `UNMATCHED_BANK_LINE`。`PAYOUT_PAID`、`PAYOUT_RETURNED`、`UNAPPLIED_CASH_RETURNED` 在 P5 实现。

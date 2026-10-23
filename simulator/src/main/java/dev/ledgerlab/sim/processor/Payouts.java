@@ -1,5 +1,6 @@
 package dev.ledgerlab.sim.processor;
 
+import dev.ledgerlab.sim.bank.IncomingTransfers;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -37,6 +38,7 @@ public final class Payouts {
     private final SimulationClock simulation;
     private final Clock clock;
     private final SeededIds ids;
+    private final IncomingTransfers bank;
     private final JsonMapper json = JsonMapper.builder().build();
 
     public Payouts(
@@ -46,7 +48,8 @@ public final class Payouts {
             Processor processor,
             SimulationClock simulation,
             Clock clock,
-            SeededIds ids) {
+            SeededIds ids,
+            IncomingTransfers bank) {
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(manager);
         this.balances = balances;
@@ -54,6 +57,7 @@ public final class Payouts {
         this.simulation = simulation;
         this.clock = clock;
         this.ids = ids;
+        this.bank = bank;
     }
 
     public Map<String, Object> create(JsonNode request) {
@@ -129,6 +133,12 @@ public final class Payouts {
                 if (action.equals("failed"))
                     balances.add(
                             "payout_failure", id, before.path("amount").asLong(), 0, "cad", null, simulation.instant());
+                if (action.equals("paid")
+                        && before.path("automatic").asBoolean()
+                        && before.path("method").asText().equals("standard")
+                        && before.path("currency").asText().equals("cad")
+                        && before.path("amount").asLong() > 0)
+                    bank.receive(id, before.path("amount").asLong());
             }
             return store(id, type);
         }));

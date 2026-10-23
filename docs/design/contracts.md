@@ -127,5 +127,22 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 - **处理方结算数据**是一次 API 拉取快照：拉 `created` 落在指定区间（通常是一个多伦多业务日）的全部 payout，再对每个 payout 拉 `balance_transactions?payout=` 的全部分页（直到 `has_more=false`）；原始响应整体存档并算哈希，作为一个“结算单版本”，`fetched_at` 记拉取时刻（参与 1.2 第 3 条的证据时点判断）。分页没拉完的快照不能用于对账（`FILE_INCOMPLETE`）。模拟器模式下从 fake Stripe 拉，形式相同。
 - **银行流水**是文件：每个文件有文件头（文件类型、账户、日期范围、版本号）和文件尾（行数、金额合计；银行流水另有期初、期末余额）。行数或合计对不上 → 整个文件拒绝导入（`FILE_INCOMPLETE`），保留原始文件。
 - 同一文件内容（SHA-256）重复导入：直接返回原导入结果。
-- 同一日期、同一账户的新版本文件：按行身份合并；同一行身份内容不同 → `STATEMENT_VERSION_CONFLICT`，不覆盖旧行。
+- 同一日期、同一账户的新版本文件：按行身份合并。银行流水的证据身份为 `(bank_txn_id, version)`，当前有效版本为该流水的最高版本；这里的行版本独立于文件版本。同一 `bank_txn_id` 只有 PENDING→BOOKED 且其余内容（包括方向、金额、币种、reference、value_date）不变，才接受为状态前进，两份证据均保留，只有 BOOKED 参与匹配和记账。其他内容变化或 BOOKED→PENDING → `STATEMENT_VERSION_CONFLICT`，旧行不动；完全相同的行不重复记账。
 - 银行流水首版是自定义 CSV，字段参照 camt.053（Mambu 说明）选取，不解析完整 XML。
+
+### 4.1 银行 CSV 文件格式（P2 T07，T08 解析契约）
+
+`GET /sim/bank/statements/{date}` 中 date 为 `America/Toronto` 日期 `YYYY-MM-DD`；只可导出模拟当天或过去日期，日历覆盖 2026–2027。响应为 `text/csv;charset=UTF-8`，UTF-8 无 BOM，记录分隔符 CRLF，末记录也有 CRLF。无列名行，无空白记录；字段含逗号、双引号、CR 或 LF 时加双引号，内部双引号写成两个双引号（包括 memo；解析不能直接按换行或逗号 split）。
+
+```csv
+H,BANK_STATEMENT,SIM-CAD-001,2026-11-09,2026-11-09,1,CAD
+D,bt_po_example_1,CREDIT,9680,CAD,BOOKED,po_example,2026-11-09,2026-11-09,Simulated bank transfer
+T,1,9680,0,0,9680
+```
+
+- 头恰好 7 个字段：`H,BANK_STATEMENT,<account>,<period_start>,<period_end>,<version>,CAD`。首版单账户 `SIM-CAD-001`、单日日报，两端日期相等且均包含在期间内；版本按 `(account, 报表日期)` 从 1 开始。
+- 明细恰好 10 个字段：`D,<bank_txn_id>,<CREDIT|DEBIT>,<amount>,<currency>,<BOOKED|PENDING>,<reference>,<booking_date>,<value_date>,<memo>`。日期是 ISO 本地日期；金额是无小数点的正整数分（1～99999999），方向由 CREDIT/DEBIT 表示。正常币种 CAD，FOREIGN_CURRENCY 故障故意写 USD；金额数值保持原样，模拟器不做外汇换算。
+- 尾恰好 6 个字段：`T,<line_count>,<sum_credit>,<sum_debit>,<opening_balance>,<closing_balance>`。line_count 是 D **记录**数（包括 PENDING，memo 内换行不增加记录数）；credit/debit 仅合计 BOOKED 记录，`opening + credit − debit = closing`，整数分精确运算。期初为本日前全部实际 BOOKED 净额；PENDING 不改变余额；空文件也有 H/T，计数与收支合计为 0、期初等于期末。币种故障只改变行币种标签，尾合计仍按该 BOOKED 行数值计算。
+- 正常流水在银行实际 booking_date 的文件里出现；PENDING_FIRST 首次在原定下一个工作日出现，booking_date/value_date 从开始就固定为其**下一日历日**（可以是周末）；次日同一 bank_txn_id 只把 status 变成 BOOKED。第一日 PENDING、第二日 BOOKED 的两份文件各从 v1 开始；不要求两个日期的文件版本递增。重导历史日期仍恢复当日状态，不把旧 PENDING 文件改成 BOOKED。
+- 同一日重导规范内容不变时返回相同版本和字节；内容变化才版本 +1，保留已导出的全部干净版本。明细排序为 booking_date、bank_txn_id；文件版本持久化，进程重启后继续计数。
+- 可选 `corrupt=trailer_count|trailer_sum|balance` 分别把尾部行数、入账合计、期末余额加 1，其他内容不动；只损坏响应，不修改银行流水、余额、已存干净文件或版本。未知参数值返回 400。每次坏文件注入记入 sim_truth；T08 按原始文件保留和整份拒绝规则处理。

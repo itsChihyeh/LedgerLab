@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.sun.net.httpserver.HttpServer;
+import dev.ledgerlab.sim.bank.Bank;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -85,6 +86,8 @@ class PayoutTest {
         RECEIVED.clear();
         jdbc.sql("truncate sim_processor.charge, sim_processor.event, sim_processor.webhook_delivery, "
                         + "sim_processor.balance_transaction, sim_processor.payout, sim_processor.fault_plan cascade")
+                .update();
+        jdbc.sql("truncate sim_bank.account, sim_bank.fault_plan, sim_truth.injected_fault cascade")
                 .update();
     }
 
@@ -421,17 +424,18 @@ class PayoutTest {
     void ac_8_2_restrictedTestKeyWorksAndLiveConfigurationIsRejected() {
         var scenario = scenario(82, java.time.Duration.ZERO);
         var restricted = new dev.ledgerlab.sim.processor.PayoutController(
-                scenario.payouts(), scenario.clock(), "rk_test_synthetic");
+                scenario.payouts(), scenario.clock(), "rk_test_synthetic", app.getBean(Bank.class));
         assertThat(restricted
                         .list(java.util.Map.of(), "Bearer rk_test_synthetic")
                         .path("data")
                         .isEmpty())
                 .isTrue();
-        var disabled = new dev.ledgerlab.sim.processor.PayoutController(scenario.payouts(), scenario.clock(), "");
+        var disabled = new dev.ledgerlab.sim.processor.PayoutController(
+                scenario.payouts(), scenario.clock(), "", app.getBean(Bank.class));
         assertThatThrownBy(() -> disabled.list(java.util.Map.of(), "Bearer "))
                 .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
         assertThatThrownBy(() -> new dev.ledgerlab.sim.processor.PayoutController(
-                        scenario.payouts(), scenario.clock(), "sk_live_synthetic"))
+                        scenario.payouts(), scenario.clock(), "sk_live_synthetic", app.getBean(Bank.class)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageNotContaining("sk_live_synthetic");
     }
@@ -542,6 +546,114 @@ class PayoutTest {
             assertThat(request("POST", "/sim/payouts", body, KEY).statusCode()).isEqualTo(400);
     }
 
+    @Test
+    void ac_5_4_paidNotifiesBankAndClockAdvanceExportsActualShortDeposit() throws Exception {
+        charge(10000);
+        String id = payout();
+        ok(
+                "PUT",
+                "/sim/bank/plan",
+                JSON.createObjectNode()
+                        .put("payout_ref", id)
+                        .put("scenario", "http-t07")
+                        .put("fault", "SHORT")
+                        .put("parameter", 1)
+                        .put("memo", "银行, \"memo\"")
+                        .toString());
+        var paid = ok("POST", "/sim/payouts/" + id + "/paid", "{}");
+        ok("POST", "/sim/payouts/" + id + "/paid", "{}");
+        ok("POST", "/sim/events/" + paid.path("event_id").asText() + "/redeliver", "{}");
+        ok("POST", "/sim/events/" + paid.path("event_id").asText() + "/reissue", "{}");
+        assertThat(ok("GET", "/sim/bank/transactions", "").isEmpty()).isTrue();
+        assertThat(jdbc.sql("select count(*) from sim_bank.incoming_transfer")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(1);
+        var due = jdbc.sql("select due_date from sim_bank.incoming_transfer")
+                .query(java.time.LocalDate.class)
+                .single();
+        var time = app.getBean(dev.ledgerlab.sim.processor.SimulationClock.class);
+        long seconds = java.time.Duration.between(
+                        time.instant(),
+                        due.atTime(12, 0)
+                                .atZone(java.time.ZoneId.of("America/Toronto"))
+                                .toInstant())
+                .getSeconds();
+        ok("POST", "/sim/clock/advance", "{\"seconds\":" + seconds + "}");
+        assertThat(jdbc.sql("select balance from sim_bank.account")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(9679);
+        var lines = ok("GET", "/sim/bank/transactions", "");
+        assertThat(lines.size()).isEqualTo(1);
+        assertThat(lines.get(0).path("amount").asLong()).isEqualTo(9679);
+        var response = request("GET", "/sim/bank/statements/" + due, "", KEY);
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.headers().firstValue("content-type").orElseThrow()).contains("text/csv", "UTF-8");
+        assertThat(response.body()).contains("\"银行, \"\"memo\"\"\"").endsWith("T,1,9679,0,0,9679\r\n");
+        assertThat(request("GET", "/sim/bank/statements/" + due + "?corrupt=balance", "", KEY)
+                        .body())
+                .endsWith("T,1,9679,0,0,9680\r\n");
+        assertThat(request("GET", "/sim/bank/statements/" + due, "", KEY).body())
+                .isEqualTo(response.body());
+        assertThat(request("GET", "/sim/bank/statements/" + due + "?corrupt=bad", "", KEY)
+                        .statusCode())
+                .isEqualTo(400);
+        assertThat(request("GET", "/sim/bank/statements/2025-01-01", "", KEY).statusCode())
+                .isEqualTo(400);
+        assertThat(request("GET", "/sim/bank/statements/not-a-date", "", KEY).statusCode())
+                .isEqualTo(400);
+        assertThat(request("PUT", "/sim/bank/plan", "{\"parameter\":0.5}", KEY).statusCode())
+                .isEqualTo(400);
+        var zoned = time.withZone(java.time.ZoneId.of("America/Toronto"));
+        assertThat(zoned.getZone()).isEqualTo(java.time.ZoneId.of("America/Toronto"));
+        assertThat(zoned.withZone(java.time.ZoneOffset.UTC).instant()).isEqualTo(time.instant());
+        assertThat(time.getZone()).isEqualTo(java.time.ZoneOffset.UTC);
+    }
+
+    @Test
+    void ac_5_13_bankNotificationFailureRollsBackPaidEventAndRetryIsAtomic() throws Exception {
+        charge(10000);
+        String id = payout();
+        ok("PUT", "/sim/bank/plan", "{\"fault\":\"SHORT\",\"parameter\":9680}");
+        assertThat(request("POST", "/sim/payouts/" + id + "/paid", "{}", KEY).statusCode())
+                .isEqualTo(400);
+        assertThat(ok("GET", "/v1/payouts/" + id, "").path("status").asText()).isEqualTo("pending");
+        assertThat(jdbc.sql("select count(*) from sim_bank.incoming_transfer")
+                        .query(Long.class)
+                        .single())
+                .isZero();
+        assertThat(jdbc.sql("select count(*) from sim_processor.event where type='payout.paid'")
+                        .query(Long.class)
+                        .single())
+                .isZero();
+        assertThat(jdbc.sql("select count(*) from sim_truth.injected_fault")
+                        .query(Long.class)
+                        .single())
+                .isZero();
+        ok("PUT", "/sim/bank/plan", "{}");
+        ok("POST", "/sim/payouts/" + id + "/paid", "{}");
+        assertThat(jdbc.sql("select count(*) from sim_bank.incoming_transfer")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(1);
+    }
+
+    @Test
+    void ac_5_17_unsupportedPaidPayoutsNeverBecomeBankIncome() throws Exception {
+        for (String body : List.of("{\"automatic\":false}", "{\"method\":\"instant\"}", "{\"amount\":-10}")) {
+            charge(10000);
+            String id =
+                    ok("POST", "/sim/payouts", body).path("payout").path("id").asText();
+            ok("POST", "/sim/payouts/" + id + "/paid", "{}");
+        }
+        assertThat(jdbc.sql("select count(*) from sim_bank.incoming_transfer")
+                        .query(Long.class)
+                        .single())
+                .isZero();
+        assertThat(ok("GET", "/sim/bank/transactions", "").isEmpty()).isTrue();
+    }
+
     private static Scenario scenario(long seed, java.time.Duration delay) {
         var source = TestDatabase.role(database.getJdbcUrl(), "simulator");
         var db = JdbcClient.create(source);
@@ -559,7 +671,8 @@ class PayoutTest {
         var processor = new dev.ledgerlab.sim.processor.Processor(db, manager, clock, real, ids, sender, balances);
         return new Scenario(
                 processor,
-                new dev.ledgerlab.sim.processor.Payouts(db, manager, balances, processor, clock, real, ids),
+                new dev.ledgerlab.sim.processor.Payouts(
+                        db, manager, balances, processor, clock, real, ids, new Bank(db, manager, clock)),
                 clock);
     }
 

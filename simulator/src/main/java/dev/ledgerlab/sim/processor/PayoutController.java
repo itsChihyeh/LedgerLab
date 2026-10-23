@@ -1,5 +1,6 @@
 package dev.ledgerlab.sim.processor;
 
+import dev.ledgerlab.sim.bank.Bank;
 import java.time.DateTimeException;
 import java.time.Duration;
 import java.util.Map;
@@ -23,14 +24,17 @@ public final class PayoutController {
     private final Payouts payouts;
     private final SimulationClock clock;
     private final String key;
+    private final Bank bank;
     private final JsonMapper json = JsonMapper.builder().build();
 
-    public PayoutController(Payouts payouts, SimulationClock clock, @Value("${sim.stripe.api-key:}") String key) {
+    public PayoutController(
+            Payouts payouts, SimulationClock clock, @Value("${sim.stripe.api-key:}") String key, Bank bank) {
         if (!key.isEmpty() && !(key.startsWith("sk_test_") || key.startsWith("rk_test_")))
             throw new IllegalArgumentException("Simulator API key must be a test key");
         this.payouts = payouts;
         this.clock = clock;
         this.key = key;
+        this.bank = bank;
     }
 
     @PostMapping("/sim/payouts")
@@ -61,6 +65,7 @@ public final class PayoutController {
         long seconds = Processor.integer(request, "seconds", null);
         if (seconds < 0) throw Processor.badRequest("seconds");
         clock.advance(Duration.ofSeconds(seconds));
+        bank.advance();
         return clock();
     }
 
@@ -95,7 +100,7 @@ public final class PayoutController {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
     }
 
-    @ExceptionHandler({ArithmeticException.class, DateTimeException.class})
+    @ExceptionHandler({ArithmeticException.class, DateTimeException.class, IllegalArgumentException.class})
     public org.springframework.http.ResponseEntity<Map<String, String>> invalidRange(RuntimeException error) {
         return org.springframework.http.ResponseEntity.badRequest()
                 .body(Map.of("error", "Invalid numeric or time range"));

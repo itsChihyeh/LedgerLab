@@ -232,7 +232,7 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 银行流水文件另记 `account_ref`、`currency`、`opening_balance`、`closing_balance`、`period_start`、`period_end`（INV-11）。
 
-银行流水行：`bank_txn_id` UNIQUE、`file_id`、`direction`（`CREDIT`/`DEBIT`）、`currency`、`status`（`BOOKED`/`PENDING`）、`amount`、`reference`（批次号或银行请求号）、`return_of` NULL（原流水或请求号）、`reason_code` NULL、`booking_date`、`value_date`、`memo`、`match_status`（`WAITING`/`MATCHED`/`UNAPPLIED`/`UNMATCHED_NO_POSTING`/`IGNORED_PENDING`）、`matched_batch_id` NULL、`wait_until` NULL。`app` 只可 UPDATE `match_status`、`matched_batch_id`。
+银行流水行：身份为 `(bank_txn_id, version)`（联合唯一，`bank_txn_id` 不再单独 UNIQUE）、`file_id`、`direction`（`CREDIT`/`DEBIT`）、`currency`、`status`（`BOOKED`/`PENDING`）、`amount`、`reference`（批次号或银行请求号）、`return_of` NULL（原流水或请求号）、`reason_code` NULL、`booking_date`、`value_date`、`memo`、`match_status`（`WAITING`/`MATCHED`/`UNAPPLIED`/`UNMATCHED_NO_POSTING`/`IGNORED_PENDING`）、`matched_batch_id` NULL、`wait_until` NULL。`app` 只可 UPDATE `match_status`、`matched_batch_id`。这里的 version 是同一流水的证据版本，当前有效版本为最高版本，不是按报表日期重置的文件版本。只有 PENDING→BOOKED 且其余内容（包括方向、金额、币种、reference、value_date）不变，才接受为状态前进；两份证据均保留，只有 BOOKED 参与匹配和记账。其他内容变化或 BOOKED→PENDING 均为 `STATEMENT_VERSION_CONFLICT`，旧行不动。
 
 ### `recon.run`
 
@@ -272,6 +272,16 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - `sim_truth`：场景编号、种子、注入的故障清单和预期差异（ground truth），对账测试和 Agent 评测共用。
 
 处理方和银行的状态分开存、分开推进，避免两边共享同一个错误（I6）。
+
+### P2 T07 实现备注（模拟器 V4）
+
+- 全部新表及 identity 序列由 `simulator` 迁移、拥有；显式撤销 PUBLIC、migrator、app、readonly 权限；每表有 `recorded_at timestamptz`，取注入的模拟 Clock。银行无处理方表外键，也不读取处理方 schema。
+- `sim_bank.account`：`account_ref text PK`、`currency text`（CAD）、`balance bigint`（非负且小于 2^53）。单账户 `SIM-CAD-001` 由银行首次操作创建，初始零余额；账户行锁串行化银行推进、收通知、计划替换和文件版本分配。
+- `sim_bank.fault_plan`：`target_ref text PK`（`*` 是默认规则，payout 号规则优先）、`scenario text`、`fault text`、`parameter bigint`、`memo text`。单笔转账选择一种故障，NONE 清除效果；计划仅影响后来收到的转账。
+- `sim_bank.incoming_transfer`：`payout_ref text PK`、`account_ref FK`、`claimed_amount bigint`（正且小于 2^53）、`plan jsonb`（对象，接收时冻结）、`due_date date`、`executed boolean`。重复通知同金额幂等，不同金额拒绝；仅标准自动 CAD 正 payout 通知银行。超出单行上限的总额按 99999999 分分行，不能生成越界银行行。
+- `sim_bank.txn`：`bank_txn_id text PK`（外部身份由 payout 号及分行序号确定）、`account_ref FK`、`payout_ref FK incoming_transfer`、`direction text`、`amount bigint`（1～99999999）、`currency text`（CAD/USD）、`status text`（BOOKED/PENDING）、`reference text`、`booking_date/value_date date`、`visible_date date`、`memo text`。visible_date 是首次出现在文件的日期；PENDING_FIRST 的 booking_date/value_date 从开始就定为次日，次日只前进 status，余额只增加一次。历史文件按这两个日期重建当日状态。
+- `sim_bank.statement`：`(account_ref FK, statement_date, version)` 主键，version 正整数；`content text` 保存完整未损坏 CSV，`body text` 保存不含版本号的规范内容，用于同日报表比较；所有版本保留，corrupt 仅改响应。
+- `sim_truth.injected_fault`：`id bigint identity PK`、`scenario text`、`object_ref text`、`fault text`、`expected_category text`。每次实际应用故障（非设置计划）追加一行，与转账接收或坏文件导出同事务。SHORT/SPLIT → DEPOSIT_AMOUNT_MISMATCH，DUPLICATE/FOREIGN_CURRENCY/UNKNOWN_CREDIT → UNMATCHED_BANK_LINE，DELAY_DAYS/PENDING_FIRST → TIMING_DIFFERENCE（延迟超期后可升级 DEPOSIT_NOT_RECEIVED）；trailer_count/trailer_sum → FILE_INCOMPLETE，balance → BANK_BALANCE_MISMATCH（导入阶段文件拒绝）。
 
 ### P2 T03 实现备注（模拟器 V3）
 

@@ -1,12 +1,15 @@
 package dev.ledgerlab.sim.processor;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.Comparator;
 import java.util.PriorityQueue;
 
 /** A frozen, controllable scenario clock, independent from webhook signing time. */
-public final class SimulationClock {
+public final class SimulationClock extends Clock {
     private Instant now;
     private long sequence;
     private final PriorityQueue<Scheduled> scheduled =
@@ -18,6 +21,32 @@ public final class SimulationClock {
 
     public synchronized Instant instant() {
         return now;
+    }
+
+    @Override
+    public ZoneId getZone() {
+        return ZoneOffset.UTC;
+    }
+
+    @Override
+    public Clock withZone(ZoneId zone) {
+        java.util.Objects.requireNonNull(zone);
+        return new Clock() {
+            @Override
+            public ZoneId getZone() {
+                return zone;
+            }
+
+            @Override
+            public Clock withZone(ZoneId other) {
+                return SimulationClock.this.withZone(other);
+            }
+
+            @Override
+            public Instant instant() {
+                return SimulationClock.this.instant();
+            }
+        };
     }
 
     public void advance(Duration duration) {
