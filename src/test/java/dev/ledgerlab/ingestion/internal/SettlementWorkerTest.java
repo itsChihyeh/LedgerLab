@@ -580,7 +580,7 @@ class SettlementWorkerTest {
 
     @ParameterizedTest
     @CsvSource({
-        "USD,CREDIT,BOOKED,UNAPPLIED,9680",
+        "USD,CREDIT,BOOKED,UNMATCHED_NO_POSTING,0",
         "CAD,DEBIT,BOOKED,UNMATCHED_NO_POSTING,0",
         "CAD,CREDIT,PENDING,IGNORED_PENDING,0"
     })
@@ -588,13 +588,20 @@ class SettlementWorkerTest {
             String currency, String direction, String status, String expected, long cash) {
         capture();
         ready();
+        var beforeBalances = balances();
+        long beforeEntries = count("ledger.journal_entry");
+        long beforePostings = count("ledger.posting");
         bankStatements.importBankStatement(
                 "line.csv",
                 bankCsv("ineligible", 9680, direction, currency, status, "po_b1", "2026-10-23", "2026-10-23", 1));
         assertThat(state()).isEqualTo("CONFIRMED");
         assertThat(bankState("ineligible")).isEqualTo(expected);
         assertThat(balances().get(2)).isEqualTo(cash);
-        assertThat(count("recon.issue")).isEqualTo(status.equals("PENDING") ? 0 : 1);
+        assertThat(balances()).isEqualTo(beforeBalances);
+        assertThat(count("ledger.journal_entry")).isEqualTo(beforeEntries);
+        assertThat(count("ledger.posting")).isEqualTo(beforePostings);
+        if (status.equals("PENDING")) assertThat(issueIdentities()).isEmpty();
+        else assertThat(issueIdentities()).containsExactly("UNMATCHED_BANK_LINE:ineligible");
     }
 
     @Test

@@ -220,10 +220,8 @@ public final class BankStatements {
                 .query((rs, row) -> new Batch(rs.getString(1), rs.getString(2), rs.getLong(3)))
                 .optional();
         Batch candidate = batch.orElse(null);
-        if (line.direction().equals("DEBIT"))
+        if (line.direction().equals("DEBIT") || !line.currency().equals("CAD"))
             return new Decision("UNMATCHED_NO_POSTING", null, "UNMATCHED_BANK_LINE", candidate, null);
-        if (!line.currency().equals("CAD"))
-            return new Decision("UNAPPLIED", null, "UNMATCHED_BANK_LINE", candidate, null);
         if (candidate != null && candidate.status().equals("CONFIRMED")) {
             boolean used = jdbc.sql("SELECT count(*) FROM recon.bank_line WHERE matched_batch_id = :batch")
                             .param("batch", candidate.id())

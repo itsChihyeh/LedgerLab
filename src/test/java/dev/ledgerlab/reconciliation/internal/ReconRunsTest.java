@@ -200,7 +200,8 @@ class ReconRunsTest {
         assertThat(count("finding")).isEqualTo(2);
         assertThat(count("issue_transition")).isEqualTo(2);
         assertThat(same.findings()).isEqualTo(original.findings());
-        rule.findings = List.of(fee("p2", 206));
+        rule.findings = List.of(new Finding(
+                "FEE_MISMATCH", "payment", "p2", "{\"fee\":176}", "{\"fee\":206}", "[\"txn_updated\"]", null));
         runs.run(request(false));
         assertThat(status()).isEqualTo("OPEN");
         assertThat(issueId()).isEqualTo(id);
@@ -216,6 +217,19 @@ class ReconRunsTest {
                 .isEqualTo("REOPENED");
         assertThat(runs.get(java.util.Objects.requireNonNull(original.id()))).contains(original);
         assertThat(jdbc.sql("SELECT actual::text FROM recon.issue")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("{\"fee\": 206}");
+        assertThat(jdbc.sql("SELECT expected::text FROM recon.issue")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("{\"fee\": 176}");
+        assertThat(jdbc.sql("SELECT evidence_refs::text FROM recon.issue")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("[\"txn_updated\"]");
+        assertThat(jdbc.sql("SELECT actual::text FROM recon.finding WHERE run_id=?")
+                        .param(original.id())
                         .query(String.class)
                         .single())
                 .isEqualTo("{\"fee\": 205}");
@@ -426,13 +440,24 @@ class ReconRunsTest {
         assertThat(count("issue_transition")).isEqualTo(2);
     }
 
-    @Test
-    void ac_5_21_sameFingerprintOnClosedIssueOnlyAdvancesLastRun() {
-        runs.run(request(false));
-        issues.accept(issueId(), "Reviewed once");
-        String before = jdbc.sql("SELECT (to_jsonb(i) - 'last_run_id')::text FROM recon.issue i")
+    @ParameterizedTest
+    @ValueSource(strings = {"ACCEPTED", "RESOLVED"})
+    void ac_5_21_sameFingerprintRefreshesEvidenceWithoutChangingDisposition(String disposition) {
+        var original = runs.run(request(false));
+        if (disposition.equals("ACCEPTED")) issues.accept(issueId(), "Reviewed once");
+        else issues.resolve(issueId(), "Correction recorded");
+        String before = jdbc.sql("SELECT (to_jsonb(i) - 'last_run_id' - 'evidence_refs')::text FROM recon.issue i")
                 .query(String.class)
                 .single();
+        var finding = rule.findings.getFirst();
+        rule.findings = List.of(new Finding(
+                finding.category(),
+                finding.subjectType(),
+                finding.subjectId(),
+                finding.expected(),
+                finding.actual(),
+                "[\"txn_updated\"]",
+                finding.dueAt()));
         var later = new ReconRuns(
                 jdbc,
                 manager,
@@ -444,7 +469,7 @@ class ReconRunsTest {
                 mapper,
                 issues);
         var next = later.run(request(false));
-        assertThat(jdbc.sql("SELECT (to_jsonb(i) - 'last_run_id')::text FROM recon.issue i")
+        assertThat(jdbc.sql("SELECT (to_jsonb(i) - 'last_run_id' - 'evidence_refs')::text FROM recon.issue i")
                         .query(String.class)
                         .single())
                 .isEqualTo(before);
@@ -452,6 +477,11 @@ class ReconRunsTest {
                         .query(String.class)
                         .single())
                 .isEqualTo(next.id());
+        assertThat(jdbc.sql("SELECT evidence_refs::text FROM recon.issue")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("[\"txn_updated\"]");
+        assertThat(runs.get(java.util.Objects.requireNonNull(original.id()))).contains(original);
     }
 
     @Test

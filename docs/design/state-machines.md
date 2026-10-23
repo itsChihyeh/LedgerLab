@@ -176,16 +176,16 @@ RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，n
 ### 7.1 运行发现与处置状态分开（2026-10-23 定，P2 开工前置 ③）
 
 - **发现**（`recon.finding`）：某次运行看到的一条差异，带当次的 `expected`/`actual`/证据和内容指纹 `fingerprint`（类别、subject、expected、actual 规范化后的 SHA-256）。只追加、永不修改，所以任何一次旧运行的报告都能原样重现。dry run 不写发现。
-- **差异**（`recon.issue`）：同一 `(category, subject_type, subject_id)` 的当前处置状态，永远只有一行；每次状态变化另记一行 `recon.issue_transition`（只追加，带运行号、原因和解释它的证据）。
+- **差异**（`recon.issue`）：同一 `(category, subject_type, subject_id)` 的当前内容与处置状态，永远只有一行；每次发现都把差异的当前内容（`expected`/`actual`/`evidence_refs`/`fingerprint`/`last_run_id`）刷新为本次发现。历史 finding 只追加不变，旧报告照样可重现。每次状态变化另记一行 `recon.issue_transition`（只追加，带运行号、原因和解释它的证据）。
 
 每次正式运行结束时，对**本次运行范围内**（运行类别相同、subject 在 `cutoff_at` 范围内）的每个识别键：
 
 | 差异当前状态 | 本次发现了 | 本次没发现 |
 |---|---|---|
 | 不存在 | 新建，`OPEN` | — |
-| `OPEN` | 保持 `OPEN`，更新 `last_run_id`、最新指纹 | 转 `EXPLAINED`，记下本次运行和解释它的证据（例如出现了的结算单行） |
+| `OPEN` | 保持 `OPEN`，刷新当前内容 | 转 `EXPLAINED`，记下本次运行和解释它的证据（例如出现了的结算单行） |
 | `EXPLAINED` | **重开**为 `OPEN`（之前的解释被推翻） | 不变 |
-| `ACCEPTED`／`RESOLVED` | 指纹相同：保持关闭，只更新 `last_run_id`；**指纹不同：重开**为 `OPEN` | 不变 |
+| `ACCEPTED`／`RESOLVED` | 刷新当前内容；指纹相同：保持关闭；**指纹不同：重开**为 `OPEN` | 不变 |
 
 - 不在本次运行范围内的差异一律不动；`detected_by = INGESTION` 的差异不参与这张表，只能由运营处置。
 - `TIMING_DIFFERENCE` 到期升级为老化类差异时，旧差异按“本次没发现”转 `EXPLAINED`，解释写“已升级为 {新类别}”（contracts 1.2 第 8 条）。
@@ -194,8 +194,8 @@ RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，n
 ### P2 T09 实现备注：运行骨架与运营处置
 
 - `ReconRule` 声明 kind、version，返回发现列表，另以 `checkedScope` 返回实际检查的 `(category, subject_type, subject_id)` 及未发现时的解释和证据。规则负责按 request 的 cutoff/evidence 时点过滤义务和证据；框架要求发现属于该规则的范围，拒绝重复识别键和重叠规则范围。范围精确到类别，避免检查同一 subject 的手续费时误解释另一类差异。真实规则留给 T10/T11，假规则仅存在于测试。
-- 自动处置按 first_run_id 关联的 kind 判断归属。范围外、其他 kind 和 INGESTION 的 issue 不更新；若本次发现碰到这些既有识别键，仍保存 finding 并关联原 issue，不改处置历史。ACCEPTED/RESOLVED 同指纹只更新 last_run_id，不刷新 updated_at；OPEN 重复发现只更新 last_run_id、fingerprint、updated_at；重开清除旧 explanation/correction 引用并精确递增 reopen_count，旧说明完整保留在 transition。
-- 规范化对 JSON 对象键递归排序、去掉格式空白，保留数组顺序、字符串与 null；数值只接受 long 整数。SHA-256 输入是类别、subject_type、subject_id、expected、actual 的 JSON 数组；证据引用和 due_at 不参与指纹。issue 的首次证据不覆盖，每次运行的发现独立保留。
+- 自动处置按 first_run_id 关联的 kind 判断归属。范围外、其他 kind 和 INGESTION 的 issue 不更新；若本次发现碰到这些既有识别键，仍保存 finding 并关联原 issue，不改处置历史。每次发现都刷新 expected/actual/evidence_refs/fingerprint/last_run_id；ACCEPTED/RESOLVED 同指纹保留处置和 updated_at（证据引用不参与指纹，仍可能变化）；OPEN 重复发现同时刷新 updated_at；重开清除旧 explanation/correction 引用并精确递增 reopen_count，旧说明完整保留在 transition。
+- 规范化对 JSON 对象键递归排序、去掉格式空白，保留数组顺序、字符串与 null；数值只接受 long 整数。SHA-256 输入是类别、subject_type、subject_id、expected、actual 的 JSON 数组；证据引用和 due_at 不参与指纹。issue 保存最新发现的当前内容，每次运行的 finding 独立保留且只追加不变，旧报告照样可重现。
 - 单次正式运行使用独立 REPEATABLE READ 事务：固定输入、计算全部发现、写 run/finding/issue/transition、标 FINISHED 一起提交。任何异常全部回滚；不为失败另开事务。dry run 还执行数据库 READ ONLY，报告 id=null，不生成持久编号。运行与运营处置都锁 issue；并发旧快照遇到状态更新由 PostgreSQL 拒绝，HTTP 返回 409，调用方重试，不覆盖运营结果。
 - 公开 `IssueDisposition.accept(issueId, reason)` / `resolve(issueId, note)` 只接受 OPEN 和非空白说明，在同一事务写状态及 OPERATOR transition，run_id=null。重复处置返回状态错误，INGESTION 可由这两个方法处置；本任务不开放处置 HTTP。
 - `POST /api/recon/runs` 接收 kind/cutoffAt/evidenceAsOf/dryRun，服务端规则版本取 `ledgerlab.recon.rule-version`（默认 p2-v1）；T10 的 PROCESSOR 固定为 processor-v1，自动选取时点前的完整快照。`GET /api/recon/runs/{id}` 返回固定输入哈希、摘要及原发现，未知编号 404。证据宽限 `ledgerlab.recon.evidence-grace` 默认 60s、必须为正；两时点校验失败 400。T09 无生产规则时可生成空报告；T10 已接入处理方规则，BANK/AGING 留给后续任务。

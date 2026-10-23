@@ -83,15 +83,26 @@ public final class IssueStore implements IssueDisposition {
         if (issue.detectedBy().equals("INGESTION") || !kind.name().equals(issue.runKind())) return issue.id();
         if ((issue.status().equals("ACCEPTED") || issue.status().equals("RESOLVED"))
                 && fingerprint.equals(issue.fingerprint())) {
-            jdbc.sql("UPDATE recon.issue SET last_run_id=? WHERE id=?")
-                    .params(runId, issue.id())
+            jdbc.sql("""
+                    UPDATE recon.issue SET last_run_id=?, fingerprint=?,
+                        expected=CAST(? AS jsonb), actual=CAST(? AS jsonb), evidence_refs=CAST(? AS jsonb)
+                    WHERE id=?
+                    """)
+                    .params(
+                            runId,
+                            fingerprint,
+                            finding.expected(),
+                            finding.actual(),
+                            finding.evidenceRefs(),
+                            issue.id())
                     .update();
             return issue.id();
         }
         boolean reopen = issue.status().equals("EXPLAINED")
                 || (!issue.status().equals("OPEN") && !fingerprint.equals(issue.fingerprint()));
         jdbc.sql("""
-                UPDATE recon.issue SET last_run_id=?, fingerprint=?, updated_at=?,
+                UPDATE recon.issue SET last_run_id=?, fingerprint=?,
+                    expected=CAST(? AS jsonb), actual=CAST(? AS jsonb), evidence_refs=CAST(? AS jsonb), updated_at=?,
                     status=?, reopen_count=?, explanation=CASE WHEN ? THEN NULL ELSE explanation END,
                     resolution_correction_id=CASE WHEN ? THEN NULL ELSE resolution_correction_id END
                 WHERE id=?
@@ -99,6 +110,9 @@ public final class IssueStore implements IssueDisposition {
                 .params(
                         runId,
                         fingerprint,
+                        finding.expected(),
+                        finding.actual(),
+                        finding.evidenceRefs(),
                         now,
                         reopen ? "OPEN" : issue.status(),
                         reopen ? Math.incrementExact(issue.reopenCount()) : issue.reopenCount(),

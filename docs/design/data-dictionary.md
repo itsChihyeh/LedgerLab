@@ -32,7 +32,7 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 | `io.inbox_event` | INSERT；UPDATE(`status`, `result`, `attempts`, `next_attempt_at`, `lease_owner`, `lease_until`, `lease_epoch`, `parked_on`, `last_error`, `processed_at`) | `payload`、`payload_sha256`、`event_id` 不在授权里 | 改 `payload` 42501 |
 | `io.inbox_conflict` | 只 INSERT/SELECT | — | UPDATE、DELETE 42501 |
 | `io.webhook_delivery` | 只 INSERT/SELECT | 投递结果、哈希格式、事件外键；UPDATE/DELETE/TRUNCATE 触发器（LL004） | 改、删、清空 42501；属主操作 LL004；readonly 只读 core 摘要视图 |
-| `recon.issue` | INSERT；UPDATE(`status`, `last_run_id`, `explanation`, `resolution_correction_id`, `updated_at`) | — | 改 `category`、`expected`、`actual` 42501 |
+| `recon.issue` | INSERT；UPDATE(`status`, `last_run_id`, `explanation`, `resolution_correction_id`, `updated_at`, `fingerprint`, `reopen_count`, `expected`, `actual`, `evidence_refs`)；内容三列只能由对账运行按最新发现刷新 | — | 改 `category`、`subject_type`、`subject_id` 42501 |
 | 只读视图 | — | `readonly` 只能 SELECT 视图，底表、`io`、`sim_*` 不可见 | 以 `readonly` 读底表、`io`、`sim_*` 被拒；读视图成功；任何写入被拒 |
 
 纠错（P4）会改到支付金额等目前不在授权里的列：怎么改由 P4 开工前补的纠错类型定义决定（ADR-0011 补充），到时新增迁移扩授权，并同步本表。
@@ -258,7 +258,8 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 - `recon.run` 增加 `status`（RUNNING/FINISHED/FAILED）和 `recorded_at`；输入编号为 JSON 数组，哈希为按编号索引的 JSON 对象，summary 为 JSON 对象。`app` 可 INSERT/SELECT，仅可 UPDATE status、finished_at、summary；readonly 仅读 `v_run`。运行和全部发现、处置变化在一个 REPEATABLE READ 事务提交，异常全部回滚，不另开事务保存 FAILED；RUNNING 仅为事务内状态，FAILED 为预留值。
 - finding 与 issue_transition 的 id 分别使用 `fnd_`、`itr_` 加 ULID。finding 的识别键在单次运行内唯一，expected/actual 允许 JSON null；evidence_refs 必须是数组，fingerprint 为 64 位小写十六进制。只有 TIMING_DIFFERENCE 必须有 due_at，其他类别必须为空。两表都由 migrator 拥有，app 仅 INSERT/SELECT，UPDATE/DELETE/TRUNCATE 另由 LL004 触发器保护属主误操作；readonly 仅读对应 `v_finding`、`v_issue_transition`。
-- issue 新增可空 fingerprint、非负 reopen_count（默认 0），app 可 UPDATE 这两列；保留首次 expected/actual/evidence_refs 不变，最新证据从 finding 读取。first_run_id、last_run_id 补 run 外键，v_issue 追加新列。
+- issue 新增可空 fingerprint、非负 reopen_count（默认 0），app 可 UPDATE 这两列；每次发现都把差异的当前内容（expected/actual/evidence_refs/fingerprint/last_run_id）刷新为本次发现，历史 finding 只追加不变，旧报告照样可重现。first_run_id、last_run_id 补 run 外键，v_issue 追加新列。
+- T09b 的 V10 仅给 app 补 expected/actual/evidence_refs 三列的 UPDATE 授权，由对账运行按最新发现刷新；category、subject_type、subject_id 等身份字段仍不可改，INGESTION、其他运行类别和范围外差异不刷新。migrator 属主权限、readonly 仅读 v_issue 的授权不变；finding/issue_transition 的只追加保护不变。
 - `recon.v_input_evidence` 仅投影 io 存档的编号、种类、哈希、接收/拉取时刻、recorded_at 和就绪标记，不暴露原文。银行文件编号沿用 file_…；T09 暂用 `fetch:<id>` 的处理方输入在 T10/V9 替换为完整快照的 file_…，原始 fetch 不再单独参与运行。app、readonly 仅 SELECT 此视图；UNION 视图写入在 PostgreSQL 重写阶段被拒（55000），测试另查 ACL 证明没有 INSERT/UPDATE/DELETE 授权。框架不直接查询 io。空 inputIds 表示在同一快照内选择该运行种类的全部就绪输入；显式编号要求种类匹配、就绪且两个存档时刻均早于 evidence_as_of。AGING 可使用两类输入。输入排序后固定到 run，GET 返回固定的输入和发现。
 
 ### `recon.finding`（P2，只追加）
@@ -272,6 +273,8 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 ### `recon.issue`
 
 `id iss_…`、`category`、`subject_type`、`subject_id`（联合唯一键见状态机第 7 节）、`detected_by`（`RUN`/`INGESTION`/`AGING`；P1 的入站冲突用 `INGESTION`，不需要对账运行）、`first_run_id` NULL、`last_run_id` NULL、`status`、`expected`、`actual`（JSON，金额和引用）、`evidence_refs`、`explanation` NULL、`resolution_correction_id` NULL、`updated_at`。
+
+`expected`、`actual`、`evidence_refs` 是当前发现内容，只能由对账运行按最新发现刷新；运营处置不改这三列。每次运行的原始内容保存在只追加的 `recon.finding` 中，旧报告不随 issue 刷新而改变。
 
 差异类别（首版）：`MISSING_IN_LEDGER`、`MISSING_IN_STATEMENT`、`AMOUNT_MISMATCH`、`FEE_MISMATCH`、`DUPLICATE_STATEMENT_LINE`、`BATCH_TOTAL_MISMATCH`、`REFUND_NOT_IN_STATEMENT`、`DEPOSIT_MISSING`、`DEPOSIT_AMOUNT_MISMATCH`、`UNMATCHED_BANK_LINE`、`UNAPPLIED_CASH_OPEN`、`BANK_BALANCE_MISMATCH`、`BATCH_VERSION_CONFLICT`、`STATEMENT_VERSION_CONFLICT`、`TIMING_DIFFERENCE`、`PAYOUT_STATE_CONFLICT`、`BATCH_STATE_CONFLICT`、`REFUND_STATE_CONFLICT`、`UNSUPPORTED_PAYOUT`，入站类 `EVENT_CONTENT_CONFLICT`、`EVENT_BUSINESS_CONFLICT`、`UNSUPPORTED_EVENT`、`LIVEMODE_EVENT`，以及 contracts 1.3 节的老化类别。
 

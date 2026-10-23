@@ -84,11 +84,9 @@ final class SettlementReference {
             bankVersions++;
             banks.remove(id);
             banks.put(id, bank);
-            if (action == Action.DEBIT_BANK) {
+            if (action == Action.DEBIT_BANK || action == Action.FOREIGN_BANK) {
                 bank.state = "UNMATCHED_NO_POSTING";
                 issues.add("UNMATCHED_BANK_LINE:" + id);
-            } else if (action == Action.FOREIGN_BANK) {
-                unapply(bank, "UNMATCHED_BANK_LINE");
             } else rematchBanks();
             return;
         }

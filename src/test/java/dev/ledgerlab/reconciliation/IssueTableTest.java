@@ -62,21 +62,30 @@ class IssueTableTest {
     @ValueSource(
             strings = {
                 "UPDATE recon.issue SET category = 'LIVEMODE_EVENT'",
-                "UPDATE recon.issue SET expected = '{}'::jsonb",
-                "UPDATE recon.issue SET actual = '{}'::jsonb",
                 "UPDATE recon.issue SET subject_id = 'evt_other'",
                 "UPDATE recon.issue SET subject_type = 'payment'",
                 "UPDATE recon.issue SET detected_by = 'AGING'",
                 "UPDATE recon.issue SET first_run_id = 'rr_test'",
-                "UPDATE recon.issue SET evidence_refs = '[]'::jsonb",
                 "UPDATE recon.issue SET recorded_at = now()",
                 "UPDATE recon.issue SET id = 'iss_00000000000000000000000002'",
                 "DELETE FROM recon.issue",
                 "TRUNCATE recon.issue"
             })
-    void ac_1_13_appCannotRewriteEvidence(String sql) throws SQLException {
+    void ac_1_13_appCannotRewriteIssueIdentity(String sql) throws SQLException {
         Sql.execute(db.app(), ISSUE);
         Sql.assertRejected("42501", db.app(), sql);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"expected", "actual", "evidence_refs"})
+    void ac_5_21_appCanRefreshCurrentContentButCannotRewriteHistory(String column) throws SQLException {
+        Sql.execute(db.app(), ISSUE.replace("'INGESTION'", "'AGING'"));
+        Sql.execute(db.app(), "UPDATE recon.issue SET " + column + " = '[206]'::jsonb");
+        assertThat(Sql.queryLong(
+                        db.readonly(), "SELECT count(*) FROM recon.v_issue WHERE " + column + " = '[206]'::jsonb"))
+                .isEqualTo(1);
+        Sql.assertRejected("42501", db.readonly(), "UPDATE recon.v_issue SET " + column + " = '[]'::jsonb");
+        Sql.assertRejected("42501", db.app(), "UPDATE recon.finding SET " + column + " = '[]'::jsonb");
     }
 
     @Test
