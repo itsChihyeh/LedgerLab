@@ -132,6 +132,12 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 
 批次行：`(batch_id, line_no)` PK、`line_type`（`PAYMENT`/`REFUND`/`PAYOUT_FAILURE`；其他 Stripe 类型如 `adjustment`、`dispute` 不支持 → 批次 `HELD`）、`processor_ref`、`balance_txn_id`（Stripe `txn_…`，UNIQUE）、`gross`、`fee`、`net`。
 
+### P2 T11 实现备注（V11 迁移）
+
+- `core.batch_transition` 增加可空的 `hold_reason text` 和 `lines_fetch_id bigint REFERENCES io.processor_fetch(id)`；在唯一的批次历史写入点保存当时原因与固定明细存档。旧历史不回填；`to_status <> 'HELD' OR hold_reason IS NOT NULL` 用 `NOT VALID` 保留旧行，对新写入强制检查。
+- `core.v_batch_transition` 追加这两列；migrator 仍为属主，app 沿用 SELECT/INSERT、无 UPDATE/DELETE/TRUNCATE，readonly 只读视图。没有新增表或扩大写权限。
+- T11 按证据时点前最后一条历史恢复状态和原因；旧 HELD 历史缺原因或存档时不猜当前值，报告列出该覆盖边界。
+
 ### P2 T02 实现备注（V6 迁移）
 
 - `settlement_batch` 补充不可改的 `currency text`、`automatic boolean`、`method text`、`occurred_at timestamptz`（payout created）、`recorded_at timestamptz`，以及可改的 `updated_at timestamptz`，均非空。`batch_id` 必须以 `po_` 开头且有后缀；`source_event_id` 外键指向 inbox。`settlement_date`、`arrival_date`、`lines_fetch_id` 和五项合计可空，保留尚未就绪的批次；`lines_fetch_id` 外键指向 `io.processor_fetch.id`。

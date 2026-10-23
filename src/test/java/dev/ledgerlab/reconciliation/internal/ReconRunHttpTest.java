@@ -119,6 +119,31 @@ class ReconRunHttpTest {
     }
 
     @Test
+    void ac_5_7_allReturnsThreeOrderedRunNumbersAndDryRunWritesNothing() throws Exception {
+        String body = """
+                {"kind":"ALL","cutoffAt":"2026-11-13T05:00:00Z","evidenceAsOf":"2026-11-13T13:00:00Z","dryRun":false}
+                """;
+        var response = post(body);
+        assertThat(response.statusCode()).isEqualTo(200);
+        var report = mapper.readTree(response.body());
+        assertThat(report.path("runIds").size()).isEqualTo(3);
+        var kinds = List.of("PROCESSOR", "BANK", "AGING");
+        for (int i = 0; i < 3; i++) {
+            assertThat(report.path("runs").get(i).path("kind").asText()).isEqualTo(kinds.get(i));
+            assertThat(mapper.readTree(
+                            get(report.path("runIds").get(i).asText()).body()))
+                    .isEqualTo(report.path("runs").get(i));
+        }
+        long before =
+                jdbc.sql("SELECT count(*) FROM recon.run").query(Long.class).single();
+        var dry = post(body.replace("false", "true"));
+        assertThat(dry.statusCode()).isEqualTo(200);
+        assertThat(mapper.readTree(dry.body()).path("runIds").isEmpty()).isTrue();
+        assertThat(jdbc.sql("SELECT count(*) FROM recon.run").query(Long.class).single())
+                .isEqualTo(before);
+    }
+
+    @Test
     void ac_5_10_snapshotEndpointValidatesDateAndArchivesUnavailableRead() throws Exception {
         for (String body : List.of("{}", "{\"businessDate\":\"invalid\"}", "{\"businessDate\":\"2026-11-10\"}")) {
             var response = HTTP.send(

@@ -60,6 +60,12 @@ public final class ReconRuns {
 
     public RunReport run(RunRequest request) {
         Instant started = clock.instant();
+        validate(request, started);
+        var tx = transaction(request.dryRun());
+        return Objects.requireNonNull(tx.execute(status -> execute(request, started)));
+    }
+
+    private void validate(RunRequest request, Instant started) {
         if (!request.cutoffAt()
                         .atZone(ZoneId.of("America/Toronto"))
                         .toLocalTime()
@@ -69,11 +75,33 @@ public final class ReconRuns {
             throw new IllegalArgumentException(
                     "Require Toronto midnight cutoff <= evidenceAsOf <= now - evidenceGrace");
         }
+    }
+
+    private TransactionTemplate transaction(boolean dryRun) {
         var tx = new TransactionTemplate(manager);
         tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         tx.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
-        tx.setReadOnly(request.dryRun());
-        return Objects.requireNonNull(tx.execute(status -> execute(request, started)));
+        tx.setReadOnly(dryRun);
+        return tx;
+    }
+
+    public List<RunReport> runAll(Instant cutoff, Instant evidenceAsOf, boolean dryRun) {
+        Instant started = clock.instant();
+        var requests = List.of(RunRequest.Kind.PROCESSOR, RunRequest.Kind.BANK, RunRequest.Kind.AGING).stream()
+                .map(kind -> new RunRequest(
+                        kind,
+                        cutoff,
+                        evidenceAsOf,
+                        kind == RunRequest.Kind.PROCESSOR ? "processor-v1" : properties.ruleVersion(),
+                        List.of(),
+                        dryRun))
+                .toList();
+        requests.forEach(request -> validate(request, started));
+        // One repeatable-read snapshot and one commit for all three ordered runs.
+        return Objects.requireNonNull(transaction(dryRun)
+                .execute(status -> requests.stream()
+                        .map(request -> execute(request, started))
+                        .toList()));
     }
 
     private RunReport execute(RunRequest request, Instant started) {
@@ -114,8 +142,10 @@ public final class ReconRuns {
                         (RunReport.ObservedFinding f) -> f.finding().category())
                 .thenComparing(f -> f.finding().subjectType())
                 .thenComparing(f -> f.finding().subjectId()));
-        Map<String, Long> summary = new TreeMap<>();
-        findings.forEach(f -> summary.merge(f.finding().category(), 1L, Math::addExact));
+        Map<String, Long> counts = new TreeMap<>();
+        findings.forEach(f -> counts.merge(f.finding().category(), 1L, Math::addExact));
+        Map<String, Object> summary = new TreeMap<>(counts);
+        if (request.kind() == RunRequest.Kind.AGING) summary.put("limitations", AgingRule.LIMITATIONS);
         if (request.dryRun()) return report(null, request, inputs, summary, findings);
         String runId = ids.next("rr");
         OffsetDateTime now = started.atOffset(ZoneOffset.UTC);
@@ -159,7 +189,11 @@ public final class ReconRuns {
                     .update();
         }
         scope.forEach((key, explanation) -> {
-            if (!keys.contains(key)) issues.absent(runId, request.kind(), key, explanation, now);
+            if (!keys.contains(key)) {
+                if (request.kind() == RunRequest.Kind.AGING && key.category().equals("TIMING_DIFFERENCE"))
+                    issues.escalated(runId, key, explanation, now);
+                else issues.absent(runId, request.kind(), key, explanation, now);
+            }
         });
         jdbc.sql("UPDATE recon.run SET status='FINISHED', finished_at=?, summary=CAST(? AS jsonb) WHERE id=?")
                 .params(clock.instant().atOffset(ZoneOffset.UTC), json.write(summary), runId)
@@ -171,7 +205,7 @@ public final class ReconRuns {
             @org.jspecify.annotations.Nullable String id,
             RunRequest request,
             Map<String, String> inputs,
-            Map<String, Long> summary,
+            Map<String, Object> summary,
             List<RunReport.ObservedFinding> findings) {
         return new RunReport(
                 id,
@@ -199,6 +233,17 @@ public final class ReconRuns {
                         request.evidenceAsOf().atOffset(ZoneOffset.UTC))
                 .query((rs, row) -> available.put(rs.getString("id"), rs.getString("sha256")))
                 .list();
+        if (request.kind() == RunRequest.Kind.AGING)
+            jdbc.sql("""
+                SELECT DISTINCT f.id, f.response_sha256 FROM io.processor_fetch f
+                JOIN core.batch_transition t ON t.lines_fetch_id=f.id
+                WHERE t.recorded_at < :asOf AND f.fetched_at < :asOf AND f.recorded_at < :asOf
+                  AND t.hold_reason='UNKNOWN_PAYMENT' AND f.complete AND f.purpose='BATCH_LINES'
+                ORDER BY f.id
+                """)
+                    .param("asOf", request.evidenceAsOf().atOffset(ZoneOffset.UTC))
+                    .query((rs, n) -> available.put("processor_fetch:" + rs.getLong(1), rs.getString(2)))
+                    .list();
         if (request.inputIds().isEmpty()) return available;
         if (!available.keySet().containsAll(request.inputIds()))
             throw new IllegalArgumentException("Input unavailable at evidenceAsOf");
@@ -214,10 +259,14 @@ public final class ReconRuns {
                     mapper.readTree(rs.getString("input_hashes"))
                             .properties()
                             .forEach(e -> inputs.put(e.getKey(), e.getValue().asText()));
-                    Map<String, Long> summary = new TreeMap<>();
+                    Map<String, Object> summary = new TreeMap<>();
                     mapper.readTree(rs.getString("summary"))
                             .properties()
-                            .forEach(e -> summary.put(e.getKey(), e.getValue().longValue()));
+                            .forEach(e -> summary.put(
+                                    e.getKey(),
+                                    e.getValue().isTextual()
+                                            ? e.getValue().asText()
+                                            : e.getValue().longValue()));
                     var findings = jdbc.sql(
                                     "SELECT * FROM recon.finding WHERE run_id=? ORDER BY category, subject_type, subject_id")
                             .param(id)

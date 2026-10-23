@@ -576,8 +576,10 @@ public final class BatchSettlement {
     private void history(PayoutEvidence evidence, @Nullable String previous, String next, Instant now) {
         jdbc.sql("""
                 INSERT INTO core.batch_transition
-                    (subject_id, from_status, to_status, evidence_type, evidence_id, occurred_at, recorded_at)
-                VALUES (:batch, :previous, :next, :type, :id, :occurred, :now)
+                    (subject_id, from_status, to_status, evidence_type, evidence_id, occurred_at, recorded_at,
+                     hold_reason, lines_fetch_id)
+                SELECT :batch, :previous, :next, :type, :id, :occurred, :now, hold_reason, lines_fetch_id
+                FROM core.settlement_batch WHERE batch_id = :batch
                 """)
                 .param("batch", evidence.batchId())
                 .param("previous", previous)

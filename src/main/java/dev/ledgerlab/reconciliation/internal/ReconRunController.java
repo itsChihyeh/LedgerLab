@@ -27,24 +27,36 @@ public final class ReconRunController {
     }
 
     public record Request(
-            RunRequest.@Nullable Kind kind,
+            @Nullable String kind,
             @Nullable Instant cutoffAt,
             @Nullable Instant evidenceAsOf,
             boolean dryRun) {}
 
     @PostMapping
-    public RunReport run(@RequestBody Request request) {
+    public Object run(@RequestBody Request request) {
         if (request.kind() == null || request.cutoffAt() == null || request.evidenceAsOf() == null) {
             throw new IllegalArgumentException("kind, cutoffAt and evidenceAsOf are required");
         }
+        if (request.kind().equals("ALL")) {
+            var reports = runs.runAll(request.cutoffAt(), request.evidenceAsOf(), request.dryRun());
+            return new AllReport(
+                    reports.stream()
+                            .map(RunReport::id)
+                            .filter(java.util.Objects::nonNull)
+                            .toList(),
+                    reports);
+        }
+        var kind = RunRequest.Kind.valueOf(request.kind());
         return runs.run(new RunRequest(
-                request.kind(),
+                kind,
                 request.cutoffAt(),
                 request.evidenceAsOf(),
-                request.kind() == RunRequest.Kind.PROCESSOR ? "processor-v1" : properties.ruleVersion(),
+                kind == RunRequest.Kind.PROCESSOR ? "processor-v1" : properties.ruleVersion(),
                 List.of(),
                 request.dryRun()));
     }
+
+    public record AllReport(List<String> runIds, List<RunReport> runs) {}
 
     @GetMapping("/{id}")
     public RunReport get(@PathVariable String id) {

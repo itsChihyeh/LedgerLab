@@ -152,6 +152,13 @@ public final class IssueStore implements IssueDisposition {
         transition(issue.id(), "OPEN", "EXPLAINED", runId, "EXPLAINED", note, explanation.evidenceRefs(), now);
     }
 
+    void escalated(String runId, Finding.Key key, ReconRule.Explanation explanation, OffsetDateTime now) {
+        // AGING owns this explicit cross-kind transition; ordinary absence remains kind-scoped.
+        RunRequest.Kind source = key.subjectType().equals("payment") ? RunRequest.Kind.PROCESSOR : RunRequest.Kind.BANK;
+        absent(runId, source, key, explanation, now);
+        absent(runId, RunRequest.Kind.AGING, key, explanation, now);
+    }
+
     @Override
     public void accept(String issueId, String reason) {
         dispose(issueId, reason, "ACCEPTED");

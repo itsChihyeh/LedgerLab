@@ -218,6 +218,12 @@ MA 不再增加：这笔钱在 B1 确认时已经转过可用。
 
 ## 7. 与立项稿 2.1a 的差异
 
+### P2 T11 实现备注：INV-11 的期间与证据
+
+- 银行余额核对选已纳入输入且 `period_end < cutoff_at` 多伦多日期的每个账户／期间最新文件版本（同版本按 recorded_at、file_id 确定顺序）。1103 从 evidence_as_of 前的 `BANK_DEPOSIT_RECEIVED` / `UNAPPLIED_CASH_RECEIVED` posting 汇总，按关联银行行 `booking_date ≤ period_end` 截止，不取当前账户余额或分录写入日期；跨日迟到入账归回其记账日。
+- expected 为银行 closing_balance，actual 为账上 cash、`difference = closing_balance - cash` 和该期间 WAITING 合计；均 long 精确运算，汇总检查 JSON 安全整数范围。差额非零且恰等于期间 WAITING 合计时报 TIMING_DIFFERENCE，due_at 取其中最早 wait_until；否则报 BANK_BALANCE_MISMATCH。
+- 银行报表差异 subject 为 `bank_statement`、`账户:period_start:period_end`，具体文件版本留在证据引用中；因此新版本能解释同一期间的旧差异。流水身份选择证据时点前、选定输入中的最高行版本；重复文件中的原样行沿用原行身份，不重复累计现金。未选入输入的银行文件不能解释批次，但本地账本现金仍按可见全部分录核对。
+
 | 立项稿 | 现在 | 原因 |
 |---|---|---|
 | 批次结算直接借“结算现金” | 先借“结算在途”，银行流水到了才转现金 | S2 |

@@ -35,6 +35,8 @@ class ProcessorRuleTest {
     final MutableClock clock = new MutableClock(CAPTURED);
     final JsonMapper mapper = JsonMapper.builder().build();
     TestDatabase.Handle db;
+    javax.sql.DataSource source;
+    DataSourceTransactionManager manager;
     JdbcClient jdbc;
     TransactionTemplate tx;
     PaymentCapture capture;
@@ -45,9 +47,9 @@ class ProcessorRuleTest {
     @BeforeEach
     void setup() {
         db = TestDatabase.freshMigrated();
-        var source = db.app();
+        source = db.app();
         jdbc = JdbcClient.create(source);
-        var manager = new DataSourceTransactionManager(source);
+        manager = new DataSourceTransactionManager(source);
         tx = new TransactionTemplate(manager);
         var ids = IdGenerator.seeded(clock, 1007);
         var ledger = new JdbcLedger(source, clock, ids);
@@ -70,7 +72,7 @@ class ProcessorRuleTest {
                 clock,
                 ids,
                 new ReconProperties(Duration.ofSeconds(60), "processor-v1"),
-                List.of(new ProcessorRule(jdbc, calendar, json, mapper)),
+                List.of(new ProcessorRule(jdbc, calendar, json, mapper, new AgingPolicy(2, 2, 2))),
                 json,
                 mapper,
                 new IssueStore(jdbc, ids, clock, manager));
@@ -112,11 +114,18 @@ class ProcessorRuleTest {
     void batch(String batch, Instant created, List<PayoutEvidence.Line> lines) {
         String event = "evt_" + batch;
         inbox(event);
+        String body = mapper.writeValueAsString(List.of(ProcessorSnapshotsTest.page(
+                lines.stream()
+                        .map(l -> line(l.id(), Objects.requireNonNull(l.source()), l.gross(), l.fee()))
+                        .collect(java.util.stream.Collectors.joining(",")),
+                false)));
         long fetch = jdbc.sql("""
                 INSERT INTO io.processor_fetch (purpose, request, response_body, response_sha256, complete, fetched_at, recorded_at)
-                VALUES ('BATCH_LINES', '{}', '{}', encode(sha256(convert_to('{}','UTF8')),'hex'), true, ?, ?) RETURNING id
+                VALUES ('BATCH_LINES', '{}', ?, encode(sha256(convert_to(?,'UTF8')),'hex'), true, ?, ?) RETURNING id
                 """)
                 .params(
+                        body,
+                        body,
                         clock.instant().atOffset(ZoneOffset.UTC),
                         clock.instant().atOffset(ZoneOffset.UTC))
                 .query(Long.class)

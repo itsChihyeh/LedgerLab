@@ -21,12 +21,15 @@ public final class ProcessorRule implements ReconRule {
     private final BusinessCalendar calendar;
     private final ReconJson json;
     private final ObjectMapper mapper;
+    private final AgingPolicy aging;
 
-    public ProcessorRule(JdbcClient jdbc, BusinessCalendar calendar, ReconJson json, ObjectMapper mapper) {
+    public ProcessorRule(
+            JdbcClient jdbc, BusinessCalendar calendar, ReconJson json, ObjectMapper mapper, AgingPolicy aging) {
         this.jdbc = jdbc;
         this.calendar = calendar;
         this.json = json;
         this.mapper = mapper;
+        this.aging = aging;
     }
 
     @Override
@@ -252,7 +255,7 @@ public final class ProcessorRule implements ReconRule {
                         null,
                         "Payment appears in snapshot for its local batch " + p.batch());
             }
-            Instant due = calendar.dueAt(p.occurred(), 2);
+            Instant due = calendar.dueAt(p.occurred(), aging.paymentBusinessDays());
             // Expired missing obligations are owned by T11; do not silently explain them here.
             if (!matched.isEmpty() || (p.status().equals("CAPTURED") && due.isAfter(cutoff))) {
                 result.check(

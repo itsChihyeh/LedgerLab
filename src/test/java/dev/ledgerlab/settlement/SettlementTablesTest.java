@@ -398,7 +398,14 @@ class SettlementTablesTest {
         seedBatch();
         Sql.execute(
                 db.app(),
-                insert("core.batch_transition", "from_status", "'" + status + "'", "to_status", "'" + status + "'"));
+                insert(
+                        "core.batch_transition",
+                        "from_status",
+                        "'" + status + "'",
+                        "to_status",
+                        "'" + status + "'",
+                        "hold_reason",
+                        status.equals("HELD") ? "'UNKNOWN_PAYMENT'" : "NULL"));
         for (String column : new String[] {"from_status", "to_status"}) {
             Sql.assertRejected("23514", db.app(), insert("core.batch_transition", column, "'UNKNOWN'"));
         }

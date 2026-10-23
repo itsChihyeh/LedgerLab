@@ -14,7 +14,7 @@ public record RunReport(
         Instant evidenceAsOf,
         String ruleVersion,
         Map<String, String> inputHashes,
-        Map<String, Long> summary,
+        Map<String, Object> summary,
         List<ObservedFinding> findings) {
     public RunReport {
         inputHashes = Map.copyOf(inputHashes);
