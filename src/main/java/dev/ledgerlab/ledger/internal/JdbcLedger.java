@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.TreeSet;
 import javax.sql.DataSource;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
@@ -34,13 +35,21 @@ public class JdbcLedger implements Ledger {
     private final JdbcClient jdbc;
     private final Clock clock;
     private final IdGenerator ids;
+    private final Runnable firstPostingWritten;
     /** Bound to the transaction while it holds the funds lock; one key per ledger instance. */
     private final Object fundsLockKey = new Object();
 
+    @Autowired
     public JdbcLedger(DataSource dataSource, Clock clock, IdGenerator ids) {
+        this(dataSource, clock, ids, () -> {});
+    }
+
+    /** Package-local AC-1.10 fault injection; production always uses the no-op callback. */
+    JdbcLedger(DataSource dataSource, Clock clock, IdGenerator ids, Runnable firstPostingWritten) {
         this.jdbc = JdbcClient.create(dataSource);
         this.clock = clock;
         this.ids = ids;
+        this.firstPostingWritten = firstPostingWritten;
     }
 
     @Override
@@ -130,6 +139,9 @@ public class JdbcLedger implements Ledger {
                     .param("balanceAfter", posting.after().amount())
                     .param("recordedAt", recordedAt)
                     .update();
+            if (lineNo == 1) {
+                firstPostingWritten.run();
+            }
         }
 
         Map<Account, Long> balancesAfter = new EnumMap<>(Account.class);

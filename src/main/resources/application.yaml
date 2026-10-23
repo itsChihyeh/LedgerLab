@@ -14,3 +14,21 @@ spring:
     # Flyway's history table lives in its own schema, which app and readonly cannot see.
     default-schema: flyway
     schemas: flyway
+
+ledgerlab:
+  readonly-datasource:
+    url: ${spring.datasource.url}
+    username: readonly
+    password: ${LEDGERLAB_READONLY_PASSWORD}
+  inbox:
+    owner: ${LEDGERLAB_WORKER_ID:inbox-1}
+    batch-size: 20
+    lease-duration: 30s
+    initial-backoff: 1s
+    max-backoff: 5m
+    max-attempts: 5
+    poll-interval: 1s
+    scheduling-enabled: true
+  stripe:
+    webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
+    api-key: ${STRIPE_API_KEY:}

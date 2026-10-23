@@ -1,0 +1,22 @@
+server:
+  port: ${SIM_PORT:8081}
+spring:
+  application:
+    name: ledgerlab-simulator
+  datasource:
+    url: ${SIM_DATABASE_URL:jdbc:postgresql://localhost:5432/ledgerlab}
+    username: simulator
+    password: ${LEDGERLAB_SIMULATOR_PASSWORD}
+  flyway:
+    default-schema: sim_processor
+    schemas: sim_processor
+    create-schemas: false
+sim:
+  relay:
+    target-url: ${SIM_RELAY_TARGET_URL:http://localhost:8080/webhooks/stripe}
+  stripe:
+    webhook-secret: ${SIM_STRIPE_WEBHOOK_SECRET}
+    webhook-url: ${SIM_STRIPE_WEBHOOK_URL:http://localhost:8080/webhooks/stripe}
+  seed: ${SIM_SEED:1}
+  clock:
+    start: ${SIM_CLOCK_START:}

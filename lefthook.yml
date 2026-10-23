@@ -1,10 +1,16 @@
 # Git hooks. Install once per clone: `lefthook install`.
 # These checks are the shared gate for every agent (Claude Code, Codex) and for hand edits;
-# CI runs the same scripts. Biome joins pre-commit once the frontend exists.
+# CI runs the same scripts, including frontend Biome checks.
 
 pre-commit:
   parallel: true
   commands:
+    biome:
+      root: "frontend/"
+      glob:
+        - "frontend/*.{ts,tsx,js,json,css}"
+        - "frontend/**/*.{ts,tsx,js,json,css}"
+      run: node_modules/.bin/biome check --no-errors-on-unmatched {staged_files}
     gitleaks:
       run: gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml
     migrations-immutable:
@@ -12,6 +18,9 @@ pre-commit:
     spotless:
       glob: "*.java"
       run: ./mvnw -q spotless:check
+    simulator-spotless:
+      glob: "simulator/**/*.java"
+      run: ./mvnw -q -f simulator/pom.xml spotless:check
     skills-in-sync:
       glob: "{.agents,.claude}/skills/**"
       run: sh scripts/check-skills-sync.sh

@@ -24,8 +24,16 @@ class PaymentTablesTest {
     private TestDatabase.Handle db;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws SQLException {
         db = TestDatabase.freshMigrated();
+        Sql.execute(db.app(), """
+                INSERT INTO io.inbox_event
+                    (event_id, event_type, api_version, livemode, payload, payload_sha256,
+                     signed_at, occurred_at, received_at, recorded_at, status, next_attempt_at)
+                VALUES ('evt_test', 'charge.succeeded', 'test-version', false,
+                    '{}'::bytea, encode(sha256('{}'::bytea), 'hex'),
+                    now(), now(), now(), now(), 'RECEIVED', now())
+                """);
     }
 
     @AfterEach

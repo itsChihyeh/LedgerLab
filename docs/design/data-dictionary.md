@@ -31,6 +31,7 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 | `core.payment_transition` | 只 INSERT/SELECT | — | UPDATE、DELETE 42501 |
 | `io.inbox_event` | INSERT；UPDATE(`status`, `result`, `attempts`, `next_attempt_at`, `lease_owner`, `lease_until`, `lease_epoch`, `parked_on`, `last_error`, `processed_at`) | `payload`、`payload_sha256`、`event_id` 不在授权里 | 改 `payload` 42501 |
 | `io.inbox_conflict` | 只 INSERT/SELECT | — | UPDATE、DELETE 42501 |
+| `io.webhook_delivery` | 只 INSERT/SELECT | 投递结果、哈希格式、事件外键；UPDATE/DELETE/TRUNCATE 触发器（LL004） | 改、删、清空 42501；属主操作 LL004；readonly 只读 core 摘要视图 |
 | `recon.issue` | INSERT；UPDATE(`status`, `last_run_id`, `explanation`, `resolution_correction_id`, `updated_at`) | — | 改 `category`、`expected`、`actual` 42501 |
 | 只读视图 | — | `readonly` 只能 SELECT 视图，底表、`io`、`sim_*` 不可见 | 以 `readonly` 读底表、`io`、`sim_*` 被拒；读视图成功；任何写入被拒 |
 
@@ -149,11 +150,46 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 
 ### `io.inbox_event`
 
+P1b-4 入口自行按 Stripe 协议验证原始字节的 HMAC-SHA256，检查签名时间 ±300 秒；配置为 `ledgerlab.stripe.webhook-secret`（`STRIPE_WEBHOOK_SECRET`，必填）及 `ledgerlab.stripe.api-key`（`STRIPE_API_KEY`，P1b 可空、仅允许测试密钥）。签名有效但 JSON 不合法或缺必需的事件元数据时返回 400、不入库，因为无法构成有效的 inbox 记录。
+
 `event_id` PK（处理方给的）、`event_type`、`api_version`、`livemode`、`payload`（原始请求体，`bytea`）、`payload_sha256`、`signed_at`、`occurred_at`、`received_at`、`status`（`RECEIVED`/`PARKED`/`PROCESSED`/`REJECTED`/`IGNORED`/`DEAD`）、`result` NULL（`APPLIED`/`DUPLICATE_FACT`/`BUSINESS_CONFLICT`/`INVALID_AMOUNT`/`UNSUPPORTED_CURRENCY`/`UNSUPPORTED_CAPTURE`/`UNSUPPORTED_TYPE`/`LIVEMODE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`lease_epoch`（每次抢占 +1，写回时作条件，见 state-machines 第 5 节）、`parked_on`（等待的对象键）、`last_error`、`processed_at`。永久保留。
 
 ### `io.inbox_conflict`
 
 同一 `event_id` 不同内容的投递：`id`、`event_id`、`payload`、`payload_sha256`、`signed_at`、`received_at`。只追加；原事件行不动（AC-2.4）。
+
+P1b-2 落地（V3）：两表均有 NOT NULL 的 `recorded_at timestamptz`。事件的 `event_id` 为 text 主键，CHECK 以 `evt_` 开头；`event_type`、`api_version` 为 text，`livemode` 为 boolean，原始内容为 bytea，哈希为 text，四个事件时刻均为 timestamptz，均 NOT NULL。两表用 CHECK 保证 `payload_sha256 = encode(sha256(payload), 'hex')`。`livemode=true` 允许入库，后续处理标为 `REJECTED/LIVEMODE`。
+
+事件 `status` NOT NULL，`result` 可空，取值限于上列枚举：`PROCESSED` 必须配 `APPLIED` 或 `DUPLICATE_FACT`；`REJECTED` 必须有其他结果；其余状态结果必须为 NULL。`attempts int`、`lease_epoch bigint` 均 NOT NULL、默认 0 且非负；`next_attempt_at timestamptz` NOT NULL；`lease_owner text`、`lease_until timestamptz`、`parked_on text`、`last_error text`、`processed_at timestamptz` 可空。`PARKED` 必须填写 `parked_on`，其他状态必须为空。抢占索引为 `(status, next_attempt_at, received_at)`。
+
+冲突表所有列 NOT NULL；`id bigint GENERATED ALWAYS AS IDENTITY` 为主键，`event_id` 外键指向事件表，其余字段类型与事件表一致。UPDATE/DELETE/TRUNCATE 触发器以 `LL004` 拒绝改写（包括属主）。`core.payment.source_event_id` 同时补上到事件表的外键。
+
+`app` 对两表有 SELECT/INSERT；只对事件表的 `status, result, attempts, next_attempt_at, lease_owner, lease_until, lease_epoch, parked_on, last_error, processed_at` 按列授 UPDATE，不授 DELETE/TRUNCATE。`readonly` 无 io schema 或表权限；P1c-3 仅通过下述 core 视图读取投递摘要。
+
+### `io.webhook_delivery`（P1c-3，V5）
+
+每次通过验签且元数据有效、可入 inbox 的投递记一行，与接收事务一起提交；同内容重投不增加 inbox 行数，但增加投递记录。签名无效、JSON 或必需元数据无效的请求仍不落库。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | `bigint GENERATED ALWAYS AS IDENTITY` PK | 投递序号，相同时刻按此排序 |
+| `event_id` | `text` NOT NULL FK | 指向 `io.inbox_event.event_id` |
+| `outcome` | `text` NOT NULL | CHECK：`NEW`、`DUPLICATE`、`CONFLICT` |
+| `payload_sha256` | `text` NOT NULL | 本次投递哈希，CHECK 64 位十六进制 |
+| `signed_at`、`received_at`、`recorded_at` | `timestamptz` NOT NULL | 本次签名、收到、记录时刻 |
+
+只追加，触发器禁止 UPDATE/DELETE/TRUNCATE（LL004，包括属主）；app 仅 SELECT/INSERT，readonly 无底表权限。
+
+`core.v_payment_delivery` 由 migrator 拥有，用属主权限读取 io；仅暴露 `id`、`event_id`、`event_type`、投递 `outcome`、`received_at`、事件当前 `status`/`result`，以及原事件 `data.object.id` 提取的 `processor_payment_ref`（仅 `charge.*`）。不暴露原文、哈希或冲突原文，readonly 仅 SELECT 视图，仍无 io 权限。CONFLICT 归于原事件的 charge。
+
+### P1c-3 只读支付查询契约
+
+investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.readonly-datasource.url/username/password`，默认 URL 同主数据源、用户名 readonly、密码来自 `LEDGERLAB_READONLY_PASSWORD`。额外数据源不作为默认候选；不替换 app 数据源、事务管理器或 Flyway 连接。
+
+- `GET /api/payments/{ref}` 支持本地 `pay_…` 和处理方 `ch_…`，不存在返回 404。JSON 字段：`id`、`processorPaymentRef`、`amount`（整数分）、`currency`（CAD）、`status`、`expectedFee`、`postings`、`deliveries`、`asOf`。
+- postings 包含 `entryId`、`entryType`、`lineNo`、`accountCode`、`accountName`、`side`、`amount`，按分录 seq、行号排序。deliveries 包含 `eventId`、`eventType`、`outcome`、`status`、`result`（可空）、`receivedAt`，按 received_at、id 排序；事件状态和结果是读取快照时的当前值。
+- `GET /api/payments?limit=n` 返回 `{payments: [...], asOf: {...}}`；摘要为上述支付基本字段，无 postings/deliveries。按 recorded_at 降序、id 降序；limit 默认 20，仅接受 1～100，非整数或越界返回 400。
+- 每次接口的全部查询都在独立 `REPEATABLE READ` 只读事务中，且只访问视图。`asOf.seq` 是该快照可见的最大账本序号（空账本为 0），`asOf.at` 是取得快照的数据库语句时刻；它不是业务截止时间，也不意味着序号连续或不存在尚未提交的较小序号。
 
 ### `io.outbound_command`
 
@@ -197,6 +233,16 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 
 差异类别（首版）：`MISSING_IN_LEDGER`、`MISSING_IN_STATEMENT`、`AMOUNT_MISMATCH`、`FEE_MISMATCH`、`DUPLICATE_STATEMENT_LINE`、`BATCH_TOTAL_MISMATCH`、`REFUND_NOT_IN_STATEMENT`、`DEPOSIT_MISSING`、`DEPOSIT_AMOUNT_MISMATCH`、`UNMATCHED_BANK_LINE`、`UNAPPLIED_CASH_OPEN`、`BANK_BALANCE_MISMATCH`、`BATCH_VERSION_CONFLICT`、`STATEMENT_VERSION_CONFLICT`、`TIMING_DIFFERENCE`、`PAYOUT_STATE_CONFLICT`、`BATCH_STATE_CONFLICT`、`REFUND_STATE_CONFLICT`、`UNSUPPORTED_PAYOUT`，入站类 `EVENT_CONTENT_CONFLICT`、`EVENT_BUSINESS_CONFLICT`、`UNSUPPORTED_EVENT`、`LIVEMODE_EVENT`，以及 contracts 1.3 节的老化类别。
 
+### P1b-3 实现备注（V4 迁移）
+
+- `id` 为 text 主键，`iss_` 加 26 位 ULID；`category`、`subject_type`、`subject_id`、`detected_by`、`status` 均为 text NOT NULL，两个 subject 字段不得为空白。类别 CHECK 包含上述 23 项及老化类别 `PAYMENT_NOT_SETTLED`、`DEPOSIT_NOT_RECEIVED`、`REFUND_AWAITING_FUNDS_AGED`、`REFUND_NOT_EXECUTED`、`PAYOUT_UNRESOLVED`、`EVENT_PARKED_AGED`。
+- `first_run_id`、`last_run_id` 为可空 text；`RUN` 必须有 `first_run_id`，`INGESTION` 的两个运行号必须都为空，`AGING` 不额外限制运行号。到 `recon.run` 的外键在 P2 建表时补上。
+- `status` 限于 `OPEN`、`EXPLAINED`、`RESOLVED`、`ACCEPTED`。`EXPLAINED`、`ACCEPTED` 要求 `explanation IS NOT NULL`；`RESOLVED` 要求 `explanation` 或 `resolution_correction_id` 至少一个非 NULL；`OPEN` 不限制两者。两列为可空 text，纠错外键在 P4 建 `ledger.correction` 时补上。
+- `expected`、`actual` 为可空 jsonb；`evidence_refs` 为 jsonb NOT NULL，默认 `[]`，CHECK 为 JSON 数组。`recorded_at`、`updated_at` 为 timestamptz NOT NULL。
+- 显式命名所有 CHECK 和 UNIQUE；识别键为 UNIQUE (`category`, `subject_type`, `subject_id`)。关闭后再次出现的处理按 P2 开工前置第 ③ 条重新设计。
+- `app` 有 SELECT、INSERT，仅可 UPDATE (`status`, `last_run_id`, `explanation`, `resolution_correction_id`, `updated_at`)，无 DELETE/TRUNCATE；`migrator` 为属主；`readonly` 仅可 SELECT 显式列出全部字段的 `recon.v_issue`。
+- V4 将 V3 的 `inbox_event_check1`、`inbox_event_check2` 分别重命名为 `inbox_event_status_result`、`inbox_event_status_parked_on`，约束逻辑不变。
+
 ---
 
 ## 5. 模拟器（独立 schema，主应用不可见）
@@ -207,3 +253,19 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 - `sim_truth`：场景编号、种子、注入的故障清单和预期差异（ground truth），对账测试和 Agent 评测共用。
 
 处理方和银行的状态分开存、分开推进，避免两边共享同一个错误（I6）。
+
+### P1b-8 chaos relay（模拟器 V2）
+
+`sim_chaos.relay_log` 由 simulator 迁移、拥有；PUBLIC、migrator、app、readonly 无表和序列访问权。
+字段：`id bigint identity PK`、`receipt_id uuid NOT NULL`（每次接收独立编号）、`event_id text NULL`（无法解析时为空）、`action text NOT NULL`（PASS / DUPLICATE / DELAY / HOLD_AND_REORDER / DROP / HOLD_TIMEOUT_RELEASE）、`attempt_no integer NOT NULL`、`http_status integer NULL`、`error text NULL`、`recorded_at timestamptz NOT NULL`、`payload_sha256 text NOT NULL`（64 位小写十六进制）。
+同一 receipt 的 attempt_no 唯一；0 是接收日志（状态码和错误均空），1 起是转发结果（状态码 100～599 或错误恰好一个非空）。DROP 只有接收记录；HOLD_TIMEOUT_RELEASE 只用于转发。recorded_at 使用可控模拟时钟，便于复现场景。日志不保存签名或请求体。
+
+### P1b-7 fake Stripe 最小版（模拟器 V1）
+
+独立 Maven 项目 `simulator/`，迁移和运行都用 `simulator`，历史表在已有的 `sim_processor`，禁止 Flyway 建 schema。三张表由 simulator 拥有；PUBLIC、migrator、app、readonly 均不授访问权。
+
+- `charge`：`id text PK`（ch_）、`payment_intent text`（pi_）、`amount bigint`、`amount_captured bigint`、`currency text`、`captured boolean`、`status text`、`livemode boolean`、`created bigint`（Stripe Unix 秒）、`recorded_at timestamptz`，全部非空。准入失败场景允许覆盖金额、币种、请款状态和 livemode，不在模拟器重复主应用的准入限制。
+- `event`：`id text PK`（evt_）、`charge_id text FK charge`、`type text`、`api_version text`、`created bigint`（Unix 秒）、`payload text`（原文 JSON，按 UTF-8 投递）、`recorded_at timestamptz`，全部非空。
+- `webhook_delivery`：`id bigint identity PK`、`event_id text FK event`、`target_url text`、`signed_at bigint`（Unix 秒）、`http_status integer NULL`、`error text NULL`、`recorded_at timestamptz`；状态码与错误恰好一个非空。其余字段非空。
+
+创建 charge 和事件在一个事务提交后投递；失败不自动重试。redeliver 使用存档原文；reissue 复制原事件的 Charge 快照，仅换事件编号及事件创建时刻。模拟时钟影响对象/事件 created，签名和 recorded_at 使用独立的现实 UTC 时钟；同一进程的同事件连续投递至少递增一秒（参考已存日志），确保重投签名时间更新。

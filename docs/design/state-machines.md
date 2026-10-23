@@ -110,15 +110,19 @@ RECEIVED ──处理完成──▶ PROCESSED（result = APPLIED 或 DUPLICATE_
 PARKED（依赖的对象还不存在，例如退款事件先于支付事件到达）
 RECEIVED ──事件类型不支持、字段越界、业务冲突、livemode──▶ REJECTED（result 写原因，告警，页面可见）
 RECEIVED ──订阅范围外的类型──▶ IGNORED
-RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，next_attempt_at 退避；超过上限变 DEAD，告警）
+RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，next_attempt_at 退避；超过上限变 DEAD）
 ```
 
 - **接收事务**：先用原始请求体验 HMAC 和时间戳窗口（`|now − t| ≤ 300 秒`，两侧都查），再按 `event_id` 插入 inbox（唯一约束），然后返回 2xx。重复投递命中唯一约束：内容哈希一致就直接 2xx；**内容不同**时原事件行一个字段都不改，冲突内容另存一行到 `io.inbox_conflict` 并告警，仍返回 2xx（AC-2.4）。
-- **抢占事务**：worker 用 `FOR UPDATE SKIP LOCKED` 取 `status=RECEIVED` 且 `next_attempt_at ≤ now` 的事件，按 `received_at` 顺序；写入 `lease_owner`、`lease_until`，并把 `lease_epoch` 加 1，提交。
+- **抢占事务**：worker 用 `FOR NO KEY UPDATE SKIP LOCKED` 取 `status=RECEIVED`、`next_attempt_at ≤ now` 且没有租约或 `lease_until < now` 的事件，按 `received_at`、`event_id` 顺序；写入 `lease_owner`、`lease_until`，并把 `lease_epoch` 加 1，提交。`core.payment.source_event_id` 外键在 inbox 行上持有 `KEY SHARE`，非键更新锁与它兼容，仍能让抢占者互斥。
 - **业务事务**：业务状态、分录、事件的 `status`/`result` 在同一事务里写。最后一步是 `UPDATE … WHERE event_id = ? AND lease_epoch = <抢占时的值> AND status = 'RECEIVED'`；更新 0 行说明租约已被别人接管，整个事务回滚。所以租约过期后旧 worker 迟到的结果不会覆盖接管者的结果，也不会多记一次账。
-- **失败记录事务**：业务事务失败后，单独开事务把 `attempts`、`last_error`、`next_attempt_at` 写回（同样带 `lease_epoch` 条件）。
+- 资金锁使旧 worker 在业务事务内持锁时，新 worker 即使已提交抢占事务，也不能先提交业务事务；“新 worker 提交后旧 worker 才恢复”的交错只会发生在旧 worker 进入业务事务之前卡住时。两处均以 epoch 条件写回防止迟到结果生效，更新 0 行会回滚全部业务写入。
+- **失败记录事务**：业务事务失败后，单独开事务把 `attempts` 加 1，写回 `last_error`（最多 2000 字符）、`next_attempt_at` 并清租约；条件同时包括抢占时的 `lease_epoch` 和 `status=RECEIVED`，防止旧 worker 改动接管后的进度。P1 超过重试上限时 `DEAD` 只记状态、次数和错误，**不开差异**，留给 P2 的老化检查。
+- 默认每 1 秒轮询一次，每批最多 20 条，租约 30 秒；失败退避为 `min(1 秒 × 2^(attempts−1), 5 分钟)`，上限 5 次（第 6 次失败进入 `DEAD`）。参数均在 `ledgerlab.inbox` 下可配；worker 编号为 `owner`（环境变量 `LEDGERLAB_WORKER_ID`，默认 `inbox-1`），测试用 `scheduling-enabled=false` 关闭轮询并直接调用 `processAvailable()`。所有时间来自注入的 `Clock`，`processed_at` 取完成处理时刻；请款证据的 `receivedAt` 始终取 inbox 的 `received_at`。
+- 抢占、业务、失败记录各使用独立事务。抢占提交后、业务事务开始前，以及业务写入完成后、epoch 写回前各有一个生产空操作测试钩子，用 latch 或异常控制崩溃和接管顺序。
 - `PARKED` 事件在它依赖的对象创建时被同一事务唤醒（回到 `RECEIVED`），后台也会定期扫描。
-- P1 的“告警”和“开差异”写进 `recon.issue`，`detected_by = INGESTION`，不需要对账运行（data-dictionary 第 4 节）。
+- P1 处理 `charge.succeeded`；`charge.dispute.*` 拒绝为 `UNSUPPORTED_TYPE` 并开差异；其余类型（含 P2 的 payout 和 P3 的 refund）暂为 `IGNORED`、结果为空。任何类型的 `livemode=true` 优先拒绝为 `LIVEMODE`；具体映射见 stripe-integration 第 2 节。
+- P1 的“告警”和“开差异”写进 `recon.issue`，`detected_by = INGESTION`，不需要对账运行（data-dictionary 第 4 节）；上述 `DEAD` 不开差异。
 
 ## 6. 出站命令 Outbound command（R5）
 
