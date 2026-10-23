@@ -239,6 +239,13 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 结算单行：`file_id`、`statement_line_id`、`line_type`、`processor_ref`、`batch_id`、`gross`、`fee`、`net`、`occurred_at`、`settlement_date`、`memo`（自由文本，P7 用于提示注入测试）。
 
+### P2 T10 实现备注（V9：处理方快照）
+
+- `recon.statement_line` 的主键为 `(file_id, line_seq)`，line_seq 为正整数；保留同一快照内重复的 txn 身份。补 `recorded_at`，金额为有界 BIGINT，净额等于毛额减手续费；PAYMENT/PAYOUT_FAILURE 为正毛额，REFUND 为负毛额。只追加，migrator 为属主，app 仅 SELECT/INSERT，readonly 仅读 `v_statement_line`；触发器限制只能引用已接受的处理方文件，并拒绝属主改删清空。
+- `io.imported_file` 增加 `processor_fetch_ids` JSON 数组（默认空），关联 T04 原始分页存档；JSON 夹具不需要 fetch 编号。`processor_source` JSON 对象（默认空）保存传入 payout/lines JSON 的原始字符串，完整或拒绝的夹具都保留；HTTP 原始分页继续在 T04 存档。两列沿用文件的不可变性和最小授权，不向 readonly 暴露。处理方 raw 是规范化 JSON 内容（对象键和 payout/行排序，保留重复次数），sha256 仍由原有数据库 CHECK 校验；来源名、拉取时间和 fetch 编号不参与内容哈希。
+- 文件 version 按业务日顺序递增；received_at 为全部拉取完成时刻。导入用独立的 PostgreSQL 事务 advisory lock 串行化 SHA 去重、版本比较与插入，不取得资金锁，不写账本。任一次读取不完整或响应契约非法，整份 REJECTED(FILE_INCOMPLETE)，零 statement_line；与银行文件一致，以文件拒绝原因呈现，不新增 issue 类别。行版本冲突仍开 INGESTION 差异。
+- `v_input_evidence` 的 PROCESSOR 输入改为整个 PROCESSOR_STATEMENT 文件，不再把单个 RECON_SNAPSHOT fetch 当成完整快照；`v_processor_snapshot` 仅公开接受文件的 payout 元数据、编号与时点，含零行 payout，不暴露原始分页。两视图 app/readonly 仅读。相同行身份的新内容只追加并开 STATEMENT_VERSION_CONFLICT；对账按 fetched_at、recorded_at、file_id 确定最新快照中的该身份，重复次数只在这个快照内计数。
+
 银行流水文件另记 `account_ref`、`currency`、`opening_balance`、`closing_balance`、`period_start`、`period_end`（INV-11）。
 
 银行流水行：身份为 `(bank_txn_id, version)`（联合唯一，`bank_txn_id` 不再单独 UNIQUE）、`file_id`、`direction`（`CREDIT`/`DEBIT`）、`currency`、`status`（`BOOKED`/`PENDING`）、`amount`、`reference`（批次号或银行请求号）、`return_of` NULL（原流水或请求号）、`reason_code` NULL、`booking_date`、`value_date`、`memo`、`match_status`（`WAITING`/`MATCHED`/`UNAPPLIED`/`UNMATCHED_NO_POSTING`/`IGNORED_PENDING`）、`matched_batch_id` NULL、`wait_until` NULL。`app` 只可 UPDATE `match_status`、`matched_batch_id`。这里的 version 是同一流水的证据版本，当前有效版本为最高版本，不是按报表日期重置的文件版本。只有 PENDING→BOOKED 且其余内容（包括方向、金额、币种、reference、value_date）不变，才接受为状态前进；两份证据均保留，只有 BOOKED 参与匹配和记账。其他内容变化或 BOOKED→PENDING 均为 `STATEMENT_VERSION_CONFLICT`，旧行不动。
@@ -252,7 +259,7 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - `recon.run` 增加 `status`（RUNNING/FINISHED/FAILED）和 `recorded_at`；输入编号为 JSON 数组，哈希为按编号索引的 JSON 对象，summary 为 JSON 对象。`app` 可 INSERT/SELECT，仅可 UPDATE status、finished_at、summary；readonly 仅读 `v_run`。运行和全部发现、处置变化在一个 REPEATABLE READ 事务提交，异常全部回滚，不另开事务保存 FAILED；RUNNING 仅为事务内状态，FAILED 为预留值。
 - finding 与 issue_transition 的 id 分别使用 `fnd_`、`itr_` 加 ULID。finding 的识别键在单次运行内唯一，expected/actual 允许 JSON null；evidence_refs 必须是数组，fingerprint 为 64 位小写十六进制。只有 TIMING_DIFFERENCE 必须有 due_at，其他类别必须为空。两表都由 migrator 拥有，app 仅 INSERT/SELECT，UPDATE/DELETE/TRUNCATE 另由 LL004 触发器保护属主误操作；readonly 仅读对应 `v_finding`、`v_issue_transition`。
 - issue 新增可空 fingerprint、非负 reopen_count（默认 0），app 可 UPDATE 这两列；保留首次 expected/actual/evidence_refs 不变，最新证据从 finding 读取。first_run_id、last_run_id 补 run 外键，v_issue 追加新列。
-- `recon.v_input_evidence` 仅投影 io 存档的编号、种类、哈希、接收/拉取时刻、recorded_at 和就绪标记，不暴露原文。银行文件编号沿用 file_…，处理方快照编号为 `fetch:<id>`，只选择 RECON_SNAPSHOT；app、readonly 仅 SELECT 此视图；UNION 视图写入在 PostgreSQL 重写阶段被拒（55000），测试另查 ACL 证明没有 INSERT/UPDATE/DELETE 授权。框架不直接查询 io。空 inputIds 表示在同一快照内选择该运行种类的全部就绪输入；显式编号要求种类匹配、就绪且两个存档时刻均早于 evidence_as_of。AGING 可使用两类输入。输入排序后固定到 run，GET 返回固定的输入和发现。
+- `recon.v_input_evidence` 仅投影 io 存档的编号、种类、哈希、接收/拉取时刻、recorded_at 和就绪标记，不暴露原文。银行文件编号沿用 file_…；T09 暂用 `fetch:<id>` 的处理方输入在 T10/V9 替换为完整快照的 file_…，原始 fetch 不再单独参与运行。app、readonly 仅 SELECT 此视图；UNION 视图写入在 PostgreSQL 重写阶段被拒（55000），测试另查 ACL 证明没有 INSERT/UPDATE/DELETE 授权。框架不直接查询 io。空 inputIds 表示在同一快照内选择该运行种类的全部就绪输入；显式编号要求种类匹配、就绪且两个存档时刻均早于 evidence_as_of。AGING 可使用两类输入。输入排序后固定到 run，GET 返回固定的输入和发现。
 
 ### `recon.finding`（P2，只追加）
 

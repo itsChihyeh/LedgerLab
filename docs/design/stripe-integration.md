@@ -92,6 +92,8 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 
 ### P2 T04 实现备注：只读客户端与拉取存档
 
+T10 采用消费者定义接口的依赖方向：`reconciliation.ProcessorSnapshotReader` 只声明快照所需的两个读取；`ingestion.internal.ProcessorSnapshotAdapter` 委托 `StripeReader`，固定使用 RECON_SNAPSHOT 并作为 bean 装配。reconciliation 不依赖 ingestion，既有 Modulith 边界不变；完整快照由 reconciliation 汇总并归档，单个 fetch 不等于完整快照。
+
 - 公开入口为 `dev.ledgerlab.ingestion.StripeReader`，提供 `retrievePayout`、`listBalanceTransactionsForPayout`、`listPayoutsCreated`；其嵌套类型 `FetchPurpose` 对应 V6 的 `PAYOUT`、`BATCH_LINES`、`RECON_SNAPSHOT`。`FetchResult<T>` 带存档编号、原文哈希、`fetchedAt`、不可变的解析列表和安全失败原因；`complete()` 仅表示这一次 HTTP 查询及解析完整成功，不表示 payout 明细已就绪、金额已核对或整个对账快照已完整。
 - 使用现有 Spring `RestClient` 与 JDK HTTP 客户端，不引入 SDK 或其他依赖。`ledgerlab.stripe.api-base-url` 默认 `https://api.stripe.com`（可用 `STRIPE_API_BASE_URL` 覆盖）；`connect-timeout` 默认 `5s`、`read-timeout` 默认 `30s`，均须为正。只接受 HTTP(S) base URL，禁止 URL 内嵌凭据、查询串和 fragment；禁用重定向，3xx 作为失败存档。每个请求发送 Bearer 密钥及固定 `Stripe-Version: 2026-09-30.endive`。
 - 沿用原有密钥启动校验：空密钥不影响 webhook 入站；开始拉取时返回 `complete=false` 和 `ledgerlab.stripe.api-key is required for Stripe reads`，仍存档，且不发送 HTTP。live 或非 test 前缀继续在启动时拒绝。失败结果不携带上游响应正文或原异常，防止上游回显凭据进入日志或异常信息。

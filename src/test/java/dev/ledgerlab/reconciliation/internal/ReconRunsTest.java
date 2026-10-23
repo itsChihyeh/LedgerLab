@@ -488,23 +488,32 @@ class ReconRunsTest {
     void ac_5_9_inputsAreFrozenFilteredAndValidated() {
         for (int i = 0; i < 4; i++) {
             jdbc.sql("""
-                    INSERT INTO io.processor_fetch (purpose, request, response_body, response_sha256, complete, fetched_at, recorded_at)
-                    VALUES ('RECON_SNAPSHOT', '{}', ?, encode(sha256(convert_to(?, 'UTF8')), 'hex'), ?, ?, ?)
+                    INSERT INTO io.imported_file (id, kind, source_name, raw, sha256, statement_date, version,
+                        status, reject_reason, received_at, recorded_at)
+                    VALUES (?, 'PROCESSOR_STATEMENT', 'fixture', convert_to(?, 'UTF8'),
+                        encode(sha256(convert_to(?, 'UTF8')), 'hex'), '2026-11-12', 1, ?, NULLIF(?, ''), ?, ?)
                     """)
                     .params(
+                            "file_0000000000000000000000000" + (i + 1),
                             "snapshot" + i,
                             "snapshot" + i,
-                            i != 1,
+                            i == 1 ? "REJECTED" : "ACCEPTED",
+                            i == 1 ? "FILE_INCOMPLETE" : "",
                             (i == 2 ? EVIDENCE : CUTOFF).atOffset(ZoneOffset.UTC),
                             (i == 3 ? EVIDENCE : CUTOFF).atOffset(ZoneOffset.UTC))
                     .update();
         }
         var report = runs.run(request(false));
-        assertThat(report.inputHashes()).containsOnlyKeys("fetch:1");
+        assertThat(report.inputHashes()).containsOnlyKeys("file_00000000000000000000000001");
         assertThat(runs.get(java.util.Objects.requireNonNull(report.id()))).contains(report);
-        var explicit = new RunRequest(rule.kind, CUTOFF, EVIDENCE, "v1", List.of("fetch:1"), false);
+        var explicit =
+                new RunRequest(rule.kind, CUTOFF, EVIDENCE, "v1", List.of("file_00000000000000000000000001"), false);
         assertThat(runs.run(explicit).findings()).isEqualTo(report.findings());
-        for (String invalid : List.of("fetch:2", "fetch:3", "fetch:4", "fetch:99")) {
+        for (String invalid : List.of(
+                "file_00000000000000000000000002",
+                "file_00000000000000000000000003",
+                "file_00000000000000000000000004",
+                "fetch:99")) {
             assertThatThrownBy(
                             () -> runs.run(new RunRequest(rule.kind, CUTOFF, EVIDENCE, "v1", List.of(invalid), false)))
                     .isInstanceOf(IllegalArgumentException.class);
@@ -512,7 +521,7 @@ class ReconRunsTest {
         rule.kind = RunRequest.Kind.BANK;
         assertThat(runs.run(request(true)).inputHashes()).isEmpty();
         rule.kind = RunRequest.Kind.AGING;
-        assertThat(runs.run(request(true)).inputHashes()).containsOnlyKeys("fetch:1");
+        assertThat(runs.run(request(true)).inputHashes()).containsOnlyKeys("file_00000000000000000000000001");
     }
 
     @Test

@@ -67,7 +67,7 @@ class ReconRunHttpTest {
 
                 @Override
                 public String version() {
-                    return "p2-v1";
+                    return "processor-v1";
                 }
 
                 @Override
@@ -116,6 +116,23 @@ class ReconRunHttpTest {
                         .GET()
                         .build(),
                 HttpResponse.BodyHandlers.ofString());
+    }
+
+    @Test
+    void ac_5_10_snapshotEndpointValidatesDateAndArchivesUnavailableRead() throws Exception {
+        for (String body : List.of("{}", "{\"businessDate\":\"invalid\"}", "{\"businessDate\":\"2026-11-10\"}")) {
+            var response = HTTP.send(
+                    HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/recon/processor-snapshots"))
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString(body))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            if (body.contains("2026-11-10")) {
+                assertThat(response.statusCode()).isEqualTo(200);
+                assertThat(mapper.readTree(response.body()).path("rejectReason").asText())
+                        .isEqualTo("FILE_INCOMPLETE");
+            } else assertThat(response.statusCode()).isEqualTo(400);
+        }
     }
 
     @Test

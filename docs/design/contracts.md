@@ -130,6 +130,15 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 - 同一日期、同一账户的新版本文件：按行身份合并。银行流水的证据身份为 `(bank_txn_id, version)`，当前有效版本为该流水的最高版本；这里的行版本独立于文件版本。同一 `bank_txn_id` 只有 PENDING→BOOKED 且其余内容（包括方向、金额、币种、reference、value_date）不变，才接受为状态前进，两份证据均保留，只有 BOOKED 参与匹配和记账。其他内容变化或 BOOKED→PENDING → `STATEMENT_VERSION_CONFLICT`，旧行不动；完全相同的行不重复记账。
 - 银行流水首版是自定义 CSV，字段参照 camt.053（Mambu 说明）选取，不解析完整 XML。
 
+### P2 T10 实现备注：处理方快照与运行
+
+- `POST /api/recon/processor-snapshots` 接受 `{"businessDate":"2026-11-10"}`。按日历的当地两个午夜计算 UTC 半开区间，23/25 小时日照常处理；拉完 payout 再拉每个 payout 的全部明细，取注入 Clock 的完成时刻。返回不可变的 `fileId/status/rejectReason`，完整或拒绝均 HTTP 200；日期参数错误 400。
+- 夹具入口为 `ProcessorSnapshots.importSnapshot(sourceName, businessDate, payoutsJson, linesJsonByPayout, fetchedAt)`。两类 JSON 均为 Stripe 列表信封，调用者把完整分页合到 data，has_more=false；true、缺少某 payout 明细、额外 payout、非法行或日期范围不符都拒绝整份。payout 转账自身不形成明细；charge/refund/payout_failure 分别保存为 PAYMENT/REFUND/PAYOUT_FAILURE，memo 缺省为空。原始夹具包括跳过的转账行仍存档。
+- 规范化对对象键和 payout/行集合排序，保留重复次数。新文件按行身份比较完整业务字段（含 batch、日期、memo），变化开 STATEMENT_VERSION_CONFLICT，旧证据不改。最新行版本按 fetched_at、recorded_at、file_id 降序取其所属快照的全部重复行；新快照原样出现同一行不算跨文件重复。单一快照内同身份不同内容也保留并报版本冲突；批次合计选规范排序后的首行，给出该冲突供调查。
+- PROCESSOR HTTP 运行使用固定 `processor-v1`，其他种类沿用配置版本。支付范围为请款 occurred_at < cutoff_at；状态取 evidence_as_of 前最后一条 transition，实际费与批次关联取此前的不可变 settlement_batch_line。批次净额仅在 evidence_as_of 前已有 CONFIRMED 历史时使用，证据选择不使用当前可变支付状态。
+- 已结算支付只有在其批次有完整快照时才检查 MISSING_IN_STATEMENT；未结算且无快照行的支付，未到期报 TIMING_DIFFERENCE，到期留给 T11。未知本地支付的行按该行 occurred_at 判断范围。每条发现携带文件/行/批次/支付及已有分录引用；后续匹配行进入 checkedScope，驱动旧时间差转 EXPLAINED，解释包含该批次及行。
+- P2 报告 limitations 明示不处理已退款支付/REFUND 行；含 REFUND 的批次不做部分总额比较，留给 P3。过期未结算义务由 AGING 检查。模型测试增加完整快照、重复行、费用变更、分页中断和重跑动作；独立纯 Java 参考模型，不复用业务规则。固定种子 2026102310，每序列最多 12 步，本地 100 条、CI 跟随既有 1000 条设置；每步比较档案数、明细数、冲突数、发现集合和账本不变。
+
 ### 4.1 银行 CSV 文件格式（P2 T07，T08 解析契约）
 
 `GET /sim/bank/statements/{date}` 中 date 为 `America/Toronto` 日期 `YYYY-MM-DD`；只可导出模拟当天或过去日期，日历覆盖 2026–2027。响应为 `text/csv;charset=UTF-8`，UTF-8 无 BOM，记录分隔符 CRLF，末记录也有 CRLF。无列名行，无空白记录；字段含逗号、双引号、CR 或 LF 时加双引号，内部双引号写成两个双引号（包括 memo；解析不能直接按换行或逗号 split）。

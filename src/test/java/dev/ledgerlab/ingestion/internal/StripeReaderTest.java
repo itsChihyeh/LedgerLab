@@ -96,6 +96,53 @@ class StripeReaderTest {
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"complete", "payout_failure", "lines_failure"})
+    void ac_5_10_snapshotAdapterRequiresEveryFetchToComplete(String mode) {
+        var count = new java.util.concurrent.atomic.AtomicInteger();
+        server.createContext(
+                "/v1/payouts",
+                exchange ->
+                        respond(exchange, page(payout("po_batch"), false), mode.equals("payout_failure") ? 500 : 200));
+        server.createContext("/v1/balance_transactions", exchange -> {
+            boolean first = count.getAndIncrement() == 0;
+            respond(
+                    exchange,
+                    page(line(first ? "txn_first" : "txn_last"), first),
+                    !first && mode.equals("lines_failure") ? 500 : 200);
+        });
+        var clock = Clock.fixed(NOW, ZoneOffset.UTC);
+        var ids = dev.ledgerlab.shared.IdGenerator.seeded(clock, 10);
+        var snapshots = new dev.ledgerlab.reconciliation.internal.ProcessorSnapshots(
+                jdbc,
+                manager,
+                clock,
+                ids,
+                new dev.ledgerlab.shared.BusinessCalendar(),
+                mapper,
+                new dev.ledgerlab.reconciliation.internal.ReconJson(mapper),
+                new dev.ledgerlab.reconciliation.internal.JdbcIngestionIssues(jdbc, ids, clock));
+        var result =
+                snapshots.fetch(java.time.LocalDate.parse("2026-10-23"), new ProcessorSnapshotAdapter(reader, mapper));
+        assertThat(result.status()).isEqualTo(mode.equals("complete") ? "ACCEPTED" : "REJECTED");
+        assertThat(jdbc.sql("SELECT count(*) FROM recon.statement_line")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(mode.equals("complete") ? 2 : 0);
+        assertThat(jdbc.sql("SELECT count(*) FROM io.processor_fetch WHERE purpose='RECON_SNAPSHOT'")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(mode.equals("payout_failure") ? 1 : 2);
+        assertThat(jdbc.sql("SELECT jsonb_array_length(processor_fetch_ids) FROM io.imported_file")
+                        .query(Integer.class)
+                        .single())
+                .isEqualTo(mode.equals("payout_failure") ? 1 : 2);
+        assertThat(jdbc.sql("SELECT count(*) FROM recon.v_input_evidence WHERE ready")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(mode.equals("complete") ? 1 : 0);
+    }
+
     @Test
     void ac_5_17_threePagesAreArchivedOnceWithExactHashAndHeaders() throws Exception {
         List<String> pages = List.of(page(line("txn_3"), true), page(line("txn_2"), true), page(line("txn_1"), false));

@@ -23,4 +23,12 @@ public record RunReport(
     }
 
     public record ObservedFinding(Finding finding, String fingerprint) {}
+
+    public List<String> getLimitations() {
+        return kind == RunRequest.Kind.PROCESSOR
+                ? List.of(
+                        "P2 ignores refunded payments and REFUND lines; mixed refund batch totals require P3.",
+                        "Expired missing payments are checked by AGING, not this processor run.")
+                : List.of();
+    }
 }

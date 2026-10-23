@@ -198,5 +198,10 @@ RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，n
 - 规范化对 JSON 对象键递归排序、去掉格式空白，保留数组顺序、字符串与 null；数值只接受 long 整数。SHA-256 输入是类别、subject_type、subject_id、expected、actual 的 JSON 数组；证据引用和 due_at 不参与指纹。issue 的首次证据不覆盖，每次运行的发现独立保留。
 - 单次正式运行使用独立 REPEATABLE READ 事务：固定输入、计算全部发现、写 run/finding/issue/transition、标 FINISHED 一起提交。任何异常全部回滚；不为失败另开事务。dry run 还执行数据库 READ ONLY，报告 id=null，不生成持久编号。运行与运营处置都锁 issue；并发旧快照遇到状态更新由 PostgreSQL 拒绝，HTTP 返回 409，调用方重试，不覆盖运营结果。
 - 公开 `IssueDisposition.accept(issueId, reason)` / `resolve(issueId, note)` 只接受 OPEN 和非空白说明，在同一事务写状态及 OPERATOR transition，run_id=null。重复处置返回状态错误，INGESTION 可由这两个方法处置；本任务不开放处置 HTTP。
-- `POST /api/recon/runs` 接收 kind/cutoffAt/evidenceAsOf/dryRun，服务端规则版本取 `ledgerlab.recon.rule-version`（默认 p2-v1），自动选取时点前的就绪输入。`GET /api/recon/runs/{id}` 返回固定输入哈希、摘要及原发现，未知编号 404。证据宽限 `ledgerlab.recon.evidence-grace` 默认 60s、必须为正；两时点校验失败 400。当前无生产规则时可生成空报告，不表示已完成真实对账。
+- `POST /api/recon/runs` 接收 kind/cutoffAt/evidenceAsOf/dryRun，服务端规则版本取 `ledgerlab.recon.rule-version`（默认 p2-v1）；T10 的 PROCESSOR 固定为 processor-v1，自动选取时点前的完整快照。`GET /api/recon/runs/{id}` 返回固定输入哈希、摘要及原发现，未知编号 404。证据宽限 `ledgerlab.recon.evidence-grace` 默认 60s、必须为正；两时点校验失败 400。T09 无生产规则时可生成空报告；T10 已接入处理方规则，BANK/AGING 留给后续任务。
 - 定向真库测试覆盖 AC-5.8、AC-5.9 骨架、AC-5.21、DST 时点、角色权限、回滚和受控并发；jqwik 独立纯 Java 模型加入发现/内容变化、消失、范围外、dry run、accept、resolve 动作，固定种子 2026102309、最多 20 步，本地 100 条序列，每步核对状态、重开次数、历史数量及原 posting/余额和账本不变量。
+
+### P2 T10 实现备注：处理方发现的范围
+
+- `ProcessorRule` 只读证据，evaluate 与 checkedScope 均在运行的同一 REPEATABLE READ 快照中计算。已结算支付缺行由 MISSING_IN_STATEMENT 负责；CAPTURED 且无行、due_at > cutoff_at 才报 TIMING_DIFFERENCE，避免标准样例 P6 同时报两类。已过期且仍无行的时间差不由 PROCESSOR 自动解释，留给 T11 的升级处理；有后续行则无论是否过期都可带证据解释。
+- B2 的后续行解释 P4 时，issue_transition 同时保存该文件号、batch_id、statement_line_id、本地支付号与已有分录号；第一次运行的 finding 不改。数据库时点过滤覆盖本地创建、状态历史、结算明细、分录及完整文件，晚到结算不会污染旧运行。
