@@ -1,0 +1,150 @@
+{
+  "format_version" : 1,
+  "steps" : [ {
+    "type" : "event",
+    "at" : "2026-11-05T16:00:00Z",
+    "body" : "events/001.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T16:00:00Z",
+    "body" : "events/002.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T16:00:00Z",
+    "body" : "events/003.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T16:00:00Z",
+    "body" : "events/004.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T16:00:00Z",
+    "body" : "events/005.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T17:00:00Z",
+    "body" : "events/006.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T17:00:00Z",
+    "body" : "events/007.json",
+    "responses" : [ {
+      "method" : "GET",
+      "path" : "/v1/balance_transactions",
+      "status" : 200,
+      "body" : "rest/001.json",
+      "query" : {
+        "limit" : "100",
+        "payout" : "po_66acb59a4dce424e93e1162981934ccb"
+      }
+    } ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T17:00:00Z",
+    "body" : "events/008.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-11T04:50:00Z",
+    "body" : "events/009.json",
+    "responses" : [ ]
+  }, {
+    "type" : "snapshot",
+    "at" : "2026-11-11T08:00:00Z",
+    "business_date" : "2026-11-10",
+    "responses" : [ {
+      "method" : "GET",
+      "path" : "/v1/payouts",
+      "status" : 200,
+      "body" : "rest/002.json",
+      "query" : {
+        "created[gte]" : "1794286800",
+        "created[lt]" : "1794373200",
+        "limit" : "100"
+      }
+    }, {
+      "method" : "GET",
+      "path" : "/v1/balance_transactions",
+      "status" : 200,
+      "body" : "rest/003.json",
+      "query" : {
+        "limit" : "100",
+        "payout" : "po_66acb59a4dce424e93e1162981934ccb"
+      }
+    } ]
+  }, {
+    "type" : "bank",
+    "at" : "2026-11-12T12:00:00Z",
+    "body" : "bank/001.csv"
+  }, {
+    "type" : "checkpoint",
+    "at" : "2026-11-12T13:02:00Z",
+    "name" : "first"
+  }, {
+    "type" : "event",
+    "at" : "2026-11-12T16:00:00Z",
+    "body" : "events/010.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-12T16:00:00Z",
+    "body" : "events/011.json",
+    "responses" : [ {
+      "method" : "GET",
+      "path" : "/v1/balance_transactions",
+      "status" : 200,
+      "body" : "rest/004.json",
+      "query" : {
+        "limit" : "100",
+        "payout" : "po_78c52e142c745951bb9bc8c4138db8b8"
+      }
+    } ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-12T16:00:00Z",
+    "body" : "events/012.json",
+    "responses" : [ ]
+  }, {
+    "type" : "snapshot",
+    "at" : "2026-11-13T08:00:00Z",
+    "business_date" : "2026-11-12",
+    "responses" : [ {
+      "method" : "GET",
+      "path" : "/v1/payouts",
+      "status" : 200,
+      "body" : "rest/005.json",
+      "query" : {
+        "created[gte]" : "1794459600",
+        "created[lt]" : "1794546000",
+        "limit" : "100"
+      }
+    }, {
+      "method" : "GET",
+      "path" : "/v1/balance_transactions",
+      "status" : 200,
+      "body" : "rest/006.json",
+      "query" : {
+        "limit" : "100",
+        "payout" : "po_78c52e142c745951bb9bc8c4138db8b8"
+      }
+    } ]
+  }, {
+    "type" : "bank",
+    "at" : "2026-11-13T12:00:00Z",
+    "body" : "bank/002.csv"
+  }, {
+    "type" : "checkpoint",
+    "at" : "2026-11-13T13:02:00Z",
+    "name" : "second"
+  }, {
+    "type" : "checkpoint",
+    "at" : "2026-11-13T13:02:00Z",
+    "name" : "replay-first"
+  } ]
+}

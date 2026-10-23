@@ -21,7 +21,7 @@ public final class Processor {
     private final SimulationClock simulation;
     private final Clock clock;
     private final SeededIds ids;
-    private final WebhookSender sender;
+    private final EventDelivery sender;
     private final BalanceTransactions balances;
     private final JsonMapper json = JsonMapper.builder().build();
 
@@ -31,7 +31,7 @@ public final class Processor {
             SimulationClock simulation,
             Clock clock,
             SeededIds ids,
-            WebhookSender sender,
+            EventDelivery sender,
             BalanceTransactions balances) {
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(manager);

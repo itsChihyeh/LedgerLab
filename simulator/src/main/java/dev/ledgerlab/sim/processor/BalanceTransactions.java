@@ -54,7 +54,12 @@ public final class BalanceTransactions {
                 fee,
                 charge.path("currency").asText(),
                 null,
-                Instant.ofEpochSecond(charge.path("created").asLong()).plus(availabilityDelay));
+                Instant.ofEpochSecond(Processor.integer(
+                        request,
+                        "available_on",
+                        Instant.ofEpochSecond(charge.path("created").asLong())
+                                .plus(availabilityDelay)
+                                .getEpochSecond())));
         charge.put("balance_transaction", id);
         if (request.has("fee")) fault(charge.path("id").asText(), request);
     }

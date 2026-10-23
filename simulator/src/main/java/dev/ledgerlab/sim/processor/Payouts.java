@@ -215,7 +215,19 @@ public final class Payouts {
                 .param(id)
                 .query((row, number) -> new Plan(row.getInt(1), row.getString(2)))
                 .single();
-        return page(balances.forPayout(id), parameters, "/v1/balance_transactions", plan.failPage(), plan.duplicate());
+        var omitted = jdbc.sql(
+                        "select request::jsonb->>'omit_transaction' from sim_processor.fault_plan where target_id=? and jsonb_exists(request::jsonb, 'omit_transaction')")
+                .param(id)
+                .query(String.class)
+                .list();
+        return page(
+                balances.forPayout(id).stream()
+                        .filter(row -> !omitted.contains(row.path("id").asText()))
+                        .toList(),
+                parameters,
+                "/v1/balance_transactions",
+                plan.failPage(),
+                plan.duplicate());
     }
 
     private ObjectNode page(
@@ -256,8 +268,19 @@ public final class Payouts {
             balances.lock();
             get(id);
             if (!request.isObject() || request.isEmpty()) throw Processor.badRequest("fault plan");
-            var allowed = List.of("fail_page", "duplicate_transaction", "extra_line");
+            var allowed = List.of("fail_page", "duplicate_transaction", "extra_line", "omit_transaction", "amount");
             if (!allowed.containsAll(request.propertyNames())) throw Processor.badRequest("fault plan field");
+            if (request.has("omit_transaction")
+                    && balances.forPayout(id).stream()
+                            .noneMatch(row -> row.path("id")
+                                    .asText()
+                                    .equals(request.path("omit_transaction").asText())))
+                throw Processor.badRequest("omit_transaction");
+            if (request.has("amount"))
+                jdbc.sql("update sim_processor.payout set amount=? where id=?")
+                        .param(BalanceTransactions.money(Processor.integer(request, "amount", null)))
+                        .param(id)
+                        .update();
             if (request.has("fail_page")) {
                 long page = Processor.integer(request, "fail_page", null);
                 if (page < 0 || page > Integer.MAX_VALUE) throw Processor.badRequest("fail_page");

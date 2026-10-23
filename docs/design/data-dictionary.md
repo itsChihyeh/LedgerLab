@@ -305,6 +305,13 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 处理方和银行的状态分开存、分开推进，避免两边共享同一个错误（I6）。
 
+### P2 T12 实现备注（场景证据导出，无新迁移）
+
+- 场景正本、动作与人工预期发现存于 `simulator/src/main/resources/scenarios/*.json`；导出格式和命令见 [场景夹具](../testing/scenario-fixtures.md)。`truth.json` 仅替换外部别名，不从主应用数据推导。
+- 场景运行复用现有 `sim_processor`/`sim_bank` 表及服务，在空模拟器库上执行后回滚，导出事件原文、按请求的处理方 REST 响应及银行实际执行流水。运行接口返回证据包，不创建新的持久化会话或表；已有人工作业数据时返回 409。
+- `sim_processor.fault_plan.request` 增加 `omit_transaction` 与 `amount` 故障字段：前者在明细读取时隐藏指定已存在的 txn，后者改变后续 payout 对象的金额。原已交付事件及银行已接收转账仍保留原数值。charge 请求可用 `available_on` 指定整数 epoch 秒，写入既有 balance_transaction.available_on，控制后续批次分配。
+- 主应用回放仅消费已提交的资源文件；比较支付 subject 时按处理方编号定位本地编号，不读取模拟器数据库。金额和预期发现仍来自 JSON 场景。数据库角色权限不变。
+
 ### P2 T07 实现备注（模拟器 V4）
 
 - 全部新表及 identity 序列由 `simulator` 迁移、拥有；显式撤销 PUBLIC、migrator、app、readonly 权限；每表有 `recorded_at timestamptz`，取注入的模拟 Clock。银行无处理方表外键，也不读取处理方 schema。

@@ -19,7 +19,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 
 @Component
-public final class WebhookSender {
+public final class WebhookSender implements EventDelivery {
     private final JdbcClient jdbc;
     private final HttpClient client;
     private final Clock clock;
@@ -42,6 +42,7 @@ public final class WebhookSender {
                 || this.target.getHost() == null) throw new IllegalArgumentException("Invalid webhook URL");
     }
     // Single simulator process: serialize delivery to keep each event's signature timestamp increasing.
+    @Override
     public synchronized void deliver(String eventId, String payload) {
         long previous = jdbc.sql(
                         "select coalesce(max(signed_at), 0) from sim_processor.webhook_delivery where event_id = ?")
