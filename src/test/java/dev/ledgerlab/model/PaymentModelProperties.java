@@ -26,7 +26,7 @@ import net.jqwik.api.state.Transformer;
 class PaymentModelProperties {
     static final String SEED = "2026102201";
     private static ModelApplication app;
-    private static ModelReport report;
+    private static ModelReport report = new ModelReport();
     private static long sequenceId;
     private static boolean rebuildFailed;
     private State current;
@@ -47,13 +47,14 @@ class PaymentModelProperties {
     }
 
     @Property(seed = SEED, shrinking = ShrinkingMode.BOUNDED, generation = GenerationMode.RANDOMIZED)
-    void ac_4_11_ac_4_13_p1ActionsMatchIndependentModelAndRebuild(@ForAll("actions") ActionChain<State> chain) {
+    void ac_4_11_ac_4_13_p2ActionsMatchIndependentModelAndRebuild(@ForAll("actions") ActionChain<State> chain) {
         current = null;
         boolean passed = false;
         try {
-            chain.withInvariant("P1 ledger, payment, inbox and issue model", State::check)
+            chain.withInvariant("P1/P2 ledger, payment, batch, bank, inbox and issue model", State::check)
                     .run();
             current.drain("final-worker");
+            current.p2.finish();
             current.app.assertNoPending();
             current.check();
             if (current.rebuild) current.rebuild();
@@ -78,6 +79,8 @@ class PaymentModelProperties {
         try {
             current.app.advance(31);
             current.app.drain("cleanup-worker");
+            current.app.advance(7 * 86400);
+            current.app.expireWaiting();
         } catch (AssertionError | RuntimeException cleanupFailure) {
             report.cleanupFailures++;
             throw cleanupFailure;
@@ -103,6 +106,20 @@ class PaymentModelProperties {
                 .withAction(3, simple("DRAIN", s -> s.drain("normal-worker")))
                 .withAction(2, new Crash(false))
                 .withAction(2, new Crash(true))
+                .withAction(5, new P2Scenario.Operation(P2Scenario.Kind.CREATE_BATCH))
+                .withAction(5, new P2Scenario.Operation(P2Scenario.Kind.READY))
+                .withAction(2, new P2Scenario.Operation(P2Scenario.Kind.REPLAY_PAYOUT))
+                .withAction(2, new P2Scenario.Operation(P2Scenario.Kind.NEW_ID_READY))
+                .withAction(3, new P2Scenario.Operation(P2Scenario.Kind.INTERRUPT_FETCH))
+                .withAction(4, new P2Scenario.Operation(P2Scenario.Kind.FAIL))
+                .withAction(5, new P2Scenario.Operation(P2Scenario.Kind.REISSUE))
+                .withAction(4, new P2Scenario.Operation(P2Scenario.Kind.BANK_EXACT))
+                .withAction(2, new P2Scenario.Operation(P2Scenario.Kind.BANK_SHORT))
+                .withAction(2, new P2Scenario.Operation(P2Scenario.Kind.BANK_PENDING))
+                .withAction(2, new P2Scenario.Operation(P2Scenario.Kind.BOOK_PENDING))
+                .withAction(2, new P2Scenario.Operation(P2Scenario.Kind.BANK_DUPLICATE_FILE))
+                .withAction(1, new P2Scenario.Operation(P2Scenario.Kind.BANK_UNKNOWN))
+                .withAction(2, new P2Scenario.Operation(P2Scenario.Kind.ADVANCE_DAYS))
                 .withAction(1, (Action.Independent<State>) () -> Arbitraries.integers()
                         .between(1, 240)
                         .map(seconds -> step("ADVANCE_CLOCK", "advance " + seconds + "s", s -> s.app.advance(seconds))))
@@ -113,12 +130,16 @@ class PaymentModelProperties {
         return (Action.Independent<State>) () -> Arbitraries.just(step(name, name, operation));
     }
 
-    private static Transformer<State> step(String action, String description, Consumer<State> operation) {
+    static Transformer<State> step(String action, String description, Consumer<State> operation) {
         return Transformer.mutate(description, state -> {
             report.action(action);
             state.length++;
             operation.accept(state);
         });
+    }
+
+    static void feature(String name) {
+        report.features.merge(name, 1L, Math::addExact);
     }
 
     static final class NewCharge implements Action.Independent<State> {
@@ -208,13 +229,20 @@ class PaymentModelProperties {
         final PaymentModel model = new PaymentModel();
         final Map<Integer, Long> baseline;
         final long entriesBefore;
+        final P2Scenario p2;
         int counter;
         int length;
 
         State(long sequence) {
+            this(sequence, null);
+        }
+
+        State(long sequence, ModelApplication supplied) {
             // Once a reconstruction fails, keep rebuilding while jqwik shrinks/replays it.
-            rebuild = rebuildFailed || sequence % 10 == 0;
-            app = rebuild ? new ModelApplication() : PaymentModelProperties.app;
+            rebuild = supplied == null && (rebuildFailed || sequence % 10 == 0);
+            app = supplied != null ? supplied : rebuild ? new ModelApplication() : PaymentModelProperties.app;
+            app.clock.set(java.time.Instant.parse(sequence % 2 == 0 ? "2026-11-10T14:00:00Z" : "2026-10-30T14:00:00Z"));
+            app.processor.clear();
             app.log.clear();
             baseline = app.balances();
             entriesBefore = app.jdbc
@@ -223,6 +251,7 @@ class PaymentModelProperties {
                     .single();
             // No SQL LIKE metacharacters: exact prefix filtering cannot include another sequence.
             prefix = "model" + sequence + "x";
+            p2 = new P2Scenario(this);
         }
 
         void rebuild() {
@@ -306,8 +335,9 @@ class PaymentModelProperties {
             try {
                 assertThat(app.audit.check()).as("global INV-1..5/8").isEmpty();
                 Map<Integer, Long> expectedBalances = new HashMap<>(baseline);
-                expectedBalances.merge(1101, model.balanceDelta(), Long::sum);
-                expectedBalances.merge(2101, model.balanceDelta(), Long::sum);
+                expectedBalances.merge(1101, model.balanceDelta(), Math::addExact);
+                expectedBalances.merge(2101, model.balanceDelta(), Math::addExact);
+                model.settlement.deltas().forEach((code, delta) -> expectedBalances.merge(code, delta, Math::addExact));
                 Map<Integer, Long> balances = app.balances();
                 assertThat(balances).as("snapshot + model deltas, all accounts").isEqualTo(expectedBalances);
 
@@ -319,27 +349,33 @@ class PaymentModelProperties {
                                 Map.entry(rs.getString(1), new PaymentModel.Outcome(rs.getString(2), rs.getString(3))))
                         .list()
                         .forEach(entry -> actualOutcomes.put(entry.getKey(), entry.getValue()));
+                Map<String, PaymentModel.Outcome> expectedOutcomes = new HashMap<>(model.outcomes);
+                expectedOutcomes.putAll(model.settlement.outcomes);
                 assertThat(actualOutcomes)
                         .as("every event, including pending events")
-                        .isEqualTo(model.outcomes);
+                        .isEqualTo(expectedOutcomes);
 
                 Map<String, Long> payments = new HashMap<>();
                 app.jdbc
                         .sql(
-                                "SELECT processor_payment_ref, amount, status FROM core.payment WHERE processor_payment_ref LIKE :prefix")
+                                "SELECT processor_payment_ref, amount, status, batch_id, actual_fee FROM core.payment WHERE processor_payment_ref LIKE :prefix")
                         .param("prefix", "ch_" + prefix + "%")
                         .query((rs, n) -> {
-                            assertThat(rs.getString(3)).isEqualTo("CAPTURED");
+                            String batch = model.settlement.paymentBatches.get(rs.getString(1));
+                            assertThat(rs.getString(3)).isEqualTo(batch == null ? "CAPTURED" : "SETTLED");
+                            assertThat(rs.getString(4)).isEqualTo(batch);
+                            assertThat(rs.getObject(5)).isEqualTo(model.settlement.actualFees.get(rs.getString(1)));
                             return Map.entry(rs.getString(1), rs.getLong(2));
                         })
                         .list()
                         .forEach(entry -> payments.put(entry.getKey(), entry.getValue()));
                 assertThat(payments).isEqualTo(model.payments);
-                assertThat(balances.get(2101) - baseline.get(2101))
-                        .as("INV-9 P1")
-                        .isEqualTo(payments.values().stream()
-                                .mapToLong(Long::longValue)
-                                .sum());
+                assertThat(Math.subtractExact(balances.get(2101), baseline.get(2101)))
+                        .as("INV-9 captured gross in this sequence")
+                        .isEqualTo(payments.entrySet().stream()
+                                .filter(e -> !model.settlement.paymentBatches.containsKey(e.getKey()))
+                                .map(Map.Entry::getValue)
+                                .reduce(0L, Math::addExact));
 
                 Map<String, Long> entries = new HashMap<>();
                 app.jdbc
@@ -358,11 +394,12 @@ class PaymentModelProperties {
                                 .sql("SELECT count(*) FROM ledger.journal_entry")
                                 .query(Long.class)
                                 .single())
-                        .isEqualTo(entriesBefore + model.payments.size());
+                        .isEqualTo(entriesBefore + model.payments.size() + model.settlement.entries.size());
 
                 assertThat(groupCounts("recon.issue", "category", "subject_id")).isEqualTo(model.issueCounts());
                 assertThat(groupCounts("io.inbox_conflict", "event_id", "event_id"))
                         .isEqualTo(model.conflicts);
+                p2.check();
             } catch (AssertionError failure) {
                 report.violations++;
                 throw failure;

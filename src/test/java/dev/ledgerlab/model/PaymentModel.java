@@ -41,6 +41,7 @@ final class PaymentModel {
     final Map<String, Long> payments = new HashMap<>();
     final Map<String, Set<String>> issues = new HashMap<>();
     final Map<String, Long> conflicts = new HashMap<>();
+    final SettlementModel settlement = new SettlementModel();
 
     void receive(Input input, Instant at) {
         Received original = events.putIfAbsent(input.id(), new Received(input, at));
@@ -126,6 +127,6 @@ final class PaymentModel {
     }
 
     long balanceDelta() {
-        return payments.values().stream().mapToLong(Long::longValue).sum();
+        return payments.values().stream().reduce(0L, Math::addExact);
     }
 }

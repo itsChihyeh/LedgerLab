@@ -9,6 +9,7 @@ import java.util.Map;
 
 final class ModelReport {
     final Map<String, Long> actions = new LinkedHashMap<>();
+    final Map<String, Long> features = new LinkedHashMap<>();
     long sequences;
     long passed;
     long steps;
@@ -37,6 +38,17 @@ final class ModelReport {
         }) {
             actions.put(name, 0L);
         }
+        for (P2Scenario.Kind kind : P2Scenario.Kind.values()) actions.put(kind.name(), 0L);
+        for (String name : new String[] {
+            "MULTI_PAYMENT_BATCH",
+            "ACTUAL_FEE_DIFFERS",
+            "ZERO_FEE_BATCH",
+            "READY_BEFORE_CREATED",
+            "BANK_WAITING",
+            "BANK_MATCHED",
+            "BANK_UNAPPLIED",
+            "BANK_IGNORED_PENDING"
+        }) features.put(name, 0L);
     }
 
     void action(String name) {
@@ -44,18 +56,20 @@ final class ModelReport {
     }
 
     void write(String seed) throws IOException {
-        StringBuilder text = new StringBuilder("# P1 model test report (AC-4.11, AC-4.13)\n\n");
+        StringBuilder text = new StringBuilder("# P1/P2 model test report (AC-4.11, AC-4.13)\n\n");
         text.append("- Seed: ")
                 .append(seed)
                 .append("\n- Sequence executions: ")
                 .append(sequences)
                 .append("\n- Passed executions: ")
                 .append(passed)
+                .append("\n- Generated actions: ")
+                .append(steps)
                 .append("\n- Mean generated length: ")
                 .append(String.format(Locale.ROOT, "%.2f", sequences == 0 ? 0.0 : (double) steps / sequences))
                 .append("\n- Maximum generated length: ")
                 .append(maxLength)
-                .append("\n- Configured length range: 1..24 (plus final drain)")
+                .append("\n- Configured length range: 1..24 (plus final drain and WAITING expiry)")
                 .append("\n- Invariant/model check failures: ")
                 .append(violations)
                 .append("\n- Checkpoints: ")
@@ -79,11 +93,14 @@ final class ModelReport {
                 .append("| Action | Executions |\n|---|---:|\n");
         actions.forEach((name, count) ->
                 text.append('|').append(name).append('|').append(count).append("|\n"));
+        text.append("\n| P2 feature | Occurrences |\n|---|---:|\n");
+        features.forEach((name, count) ->
+                text.append('|').append(name).append('|').append(count).append("|\n"));
         text.append(
-                        "\nChecks: global LedgerAudit INV-1..5/8; all account balance deltas; per-event outcomes; payment amounts/status; issue categories; conflict copies; INV-9 and INV-10 P1 portions.\n")
-                .append("\nINV-6、7、11：不适用，P2/P3/P5 扩展时加入。\n")
+                        "\nChecks: global LedgerAudit INV-1..5/8; all account balance deltas; per-event outcomes; payment amounts/status/fees/batches; batch totals/states; P2 posting multisets; all bank versions/matches/deadlines; issue identities; conflict copies; whole-database INV-9 (2101/1102) and INV-11 (unique BOOKED credits minus WAITING); INV-10 captured source keys.\n")
+                .append("\nINV-6、7：P3/P5 退款、提现不在本生成器中；银行输入为 CAD CREDIT。\n")
                 .append(
-                        "\nThis only covers generated actions understood by the independent model. It is not a concurrency test; controlled interleavings/barriers remain separate. AC-4.13 compares all balances, payments, inbox outcomes, source-key entry/posting multisets and issue identities on separate freshly migrated databases.\n")
+                        "\nThis only covers generated actions understood by the independent model. It is not a concurrency test; controlled interleavings/barriers remain separate. AC-4.13 replays raw signed webhooks, local processor REST pages, bank files, scans and clock changes; compares all balances, payments, batches, batch lines, bank versions, inbox outcomes, source-key entry/posting multisets and issue identities/statuses on separate freshly migrated databases.\n")
                 .append(
                         "\nLast failing execution (jqwik console/Surefire output has the minimized chain):\n\n```text\n")
                 .append(lastFailure)
