@@ -28,14 +28,33 @@ export interface PaymentDetail extends Payment {
     side: string;
     amount: number;
   }[];
-  deliveries: {
-    eventId: string;
-    eventType: string;
-    outcome: string;
-    status: string;
-    result: string | null;
-    receivedAt: string;
-  }[];
+  deliveries: Delivery[];
+  asOf: AsOf;
+}
+
+export interface Delivery {
+  id: number;
+  eventId: string;
+  eventType: string;
+  outcome: string;
+  status: string;
+  result: string | null;
+  receivedAt: string;
+  subject: "payment" | "batch" | null;
+}
+
+export interface EventDetail {
+  eventId: string;
+  eventType: string;
+  apiVersion: string;
+  livemode: boolean;
+  occurredAt: string;
+  receivedAt: string;
+  status: string;
+  result: string | null;
+  subject: "payment" | "batch" | null;
+  subjectId: string | null;
+  deliveries: Delivery[];
   asOf: AsOf;
 }
 
@@ -247,6 +266,7 @@ export interface BatchDetail {
   entries: Entry[];
   postings: PaymentDetail["postings"];
   bankLines: BankLine[];
+  deliveries: Delivery[];
   asOf: AsOf;
 }
 export interface BankDetail {

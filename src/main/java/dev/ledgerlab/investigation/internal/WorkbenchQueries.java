@@ -103,6 +103,7 @@ final class WorkbenchQueries {
             List<Entry> entries,
             List<PaymentQueries.Posting> postings,
             List<BankLine> bankLines,
+            List<EventQueries.Delivery> deliveries,
             PaymentQueries.AsOf asOf) {}
 
     BatchList batches(int limit) {
@@ -137,6 +138,10 @@ final class WorkbenchQueries {
                     entries,
                     postings(entries.stream().map(Entry::id).toList()),
                     matchedBankLines(id),
+                    jdbc.sql("""
+                            SELECT id, event_id, event_type, outcome, received_at, status, result, 'batch' AS subject
+                            FROM core.v_batch_delivery WHERE batch_id = ? ORDER BY received_at, id
+                            """).param(id).query(EventQueries.DELIVERY).list(),
                     asOf);
         });
     }

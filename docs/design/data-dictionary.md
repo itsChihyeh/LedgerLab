@@ -223,6 +223,14 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - 所有列表 limit 默认 20，范围 1–100；非整数或越界 400。批次列表按 recorded_at、batch_id 降序。详情未知编号 404。前端类型正本为 `frontend/src/api.ts`。
 - `POST /api/recon/issues/{id}/accept` 接受 `{reason}`，`/resolve` 接受 `{note}`，在 reconciliation 委托既有 IssueDisposition，走 app 数据源。成功 204；缺失/null/空白说明 400，未知差异 404，非 OPEN 或并发状态冲突 409。状态与 OPERATOR 历史同事务写入，不改账或历史发现。
 
+### P2 T13b 实现备注（V12：批次投递与事件摘要）
+
+- 新增 migrator 拥有的 `core.v_batch_delivery`，以属主权限读取 io，列为 `id,event_id,event_type,outcome,received_at,status,result,batch_id`；仅匹配 `payout.*`，批次号从原事件 `data.object.id` 提取。CONFLICT 仍归于原事件对象，不读取冲突原文。
+- 新增 `core.v_event`（`event_id,event_type,api_version,livemode,occurred_at,received_at,status,result,subject,subject_id`）及 `core.v_event_delivery`（投递七字段加 `subject`）。`subject` 为 charge.* 的 `payment` 或 payout.* 的 `batch`；其他类型为 null。`subject_id` 从原事件对象提取，是处理方支付号或批次号，不要求本地业务对象已创建；不支持的类型或缺失对象编号为 null。P2 不推断退款等其他关联。
+- 三个视图均仅向 readonly 授 SELECT，app 无新增权限，readonly 仍无 io schema／底表访问权。显式列出安全字段，不暴露 payload、签名、哈希、冲突原文或 worker 错误文本。
+- 支付详情 deliveries 合并本支付 charge 投递和当前 batch_id 的 payout 投递；批次详情新增自己的 deliveries。每条统一为 `{id,eventId,eventType,outcome,receivedAt,status,result,subject}`，按 received_at、id 升序，subject 分别为 payment/batch。新 event_id 的相同事实投递 outcome 为 NEW，处理后 result 为 DUPLICATE_FACT；同 event_id 重投的 outcome 为 DUPLICATE。
+- `GET /api/events/{eventId}` 返回 `{eventId,eventType,apiVersion,livemode,occurredAt,receivedAt,status,result,subject,subjectId,deliveries,asOf}`，不存在 404。deliveries 含该事件全部 NEW/DUPLICATE/CONFLICT 投递，按 received_at、id 升序；status/result 均为快照中的当前值。沿用 QuerySnapshot 的 readonly 连接、独立 REPEATABLE READ 事务和注入 Clock 的 asOf，不提供原文接口。
+
 ### `io.outbound_command`
 
 `id cmd_…`、`kind`（`SUBMIT_REFUND`/`SUBMIT_PAYOUT`/`QUERY_REFUND`/`QUERY_PAYOUT`）、`subject_id`、`request_id`（对外幂等键，所有重试相同）、`status`（`PENDING`/`IN_FLIGHT`/`UNKNOWN`/`DONE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`lease_epoch`、`first_sent_at`（第一次真正发出的时刻，写入后不改）、`external_ref`、`last_outcome`、`created_at`。

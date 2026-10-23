@@ -45,7 +45,8 @@ class WorkbenchQueryTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"sample-a-1-3", "ac-5-3"})
-    void ac_1_11_ac_5_15_everyQueryUsesOneReadonlySnapshotAndShowsExternalEvidence(String scenario) throws Exception {
+    void ac_1_11_ac_2_16_ac_5_15_everyQueryUsesOneReadonlySnapshotAndShowsExternalEvidence(String scenario)
+            throws Exception {
         var db = TestDatabase.freshBlank();
         Path directory = Path.of("src/test/resources/scenarios", scenario);
         try (var processor = new ScenarioHttpReplay(directory);
@@ -118,6 +119,7 @@ class WorkbenchQueryTest {
             JsonNode overview = api.ok("/api/overview");
             assertThat(overview.path("accounts").size()).isEqualTo(8);
             if (scenario.equals("sample-a-1-3")) {
+                verifyBatchReplay(api, jdbc, processor, directory, app.getBean(InboxWorker.class), paymentRef, batchId);
                 assertThat(overview.path("inTransit").asLong()).isZero();
                 assertThat(overview.path("bankCash").asLong()).isEqualTo(9680);
                 assertThat(overview.path("merchantAvailable").asLong()).isEqualTo(9680);
@@ -239,6 +241,89 @@ class WorkbenchQueryTest {
                 .isEqualTo(ledger);
         assertThat(api.ok("/api/overview").path("openIssuesByCategory").has("FEE_MISMATCH"))
                 .isFalse();
+    }
+
+    private void verifyBatchReplay(
+            Api api,
+            JdbcClient jdbc,
+            ScenarioHttpReplay processor,
+            Path directory,
+            InboxWorker worker,
+            String paymentRef,
+            String batchId)
+            throws Exception {
+        JsonNode before = api.ok("/api/payments/" + paymentRef);
+        JsonNode batchBefore = api.ok("/api/batches/" + batchId);
+        JsonNode accounts = api.ok("/api/overview").path("accounts");
+        var postings = jdbc.sql("SELECT row_to_json(p)::text FROM ledger.posting p ORDER BY entry_id, line_no")
+                .query(String.class)
+                .list();
+        String original = Files.readString(directory.resolve("events/003.json"));
+        String eventId = "evt_batch_replay";
+        String body = original.replace(api.json.readTree(original).path("id").asString(), eventId);
+        JsonNode responses = api.json
+                .readTree(Files.readAllBytes(directory.resolve("manifest.json")))
+                .path("steps")
+                .get(2)
+                .path("responses");
+        processor.expect(responses);
+        byte[] raw = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(api.http
+                        .send(
+                                HttpRequest.newBuilder(URI.create(api.base + "/webhooks/stripe"))
+                                        .header("Content-Type", "application/json")
+                                        .header(
+                                                "Stripe-Signature",
+                                                StripeSignatures.sign(
+                                                        raw, api.clock.instant().getEpochSecond()))
+                                        .POST(HttpRequest.BodyPublishers.ofByteArray(raw))
+                                        .build(),
+                                HttpResponse.BodyHandlers.ofString())
+                        .statusCode())
+                .isEqualTo(200);
+        worker.processAvailable();
+        processor.assertConsumed();
+        JsonNode after = api.ok("/api/payments/" + paymentRef);
+        JsonNode batchAfter = api.ok("/api/batches/" + batchId);
+        assertThat(after.path("deliveries").size())
+                .isEqualTo(before.path("deliveries").size() + 1);
+        assertThat(batchAfter.path("deliveries").size())
+                .isEqualTo(batchBefore.path("deliveries").size() + 1);
+        JsonNode added = after.path("deliveries").get(after.path("deliveries").size() - 1);
+        assertThat(added.path("subject").asString()).isEqualTo("batch");
+        assertThat(added.path("eventId").asString()).isEqualTo(eventId);
+        assertThat(added.path("eventType").asString()).isEqualTo("payout.reconciliation_completed");
+        assertThat(added.path("outcome").asString()).isEqualTo("NEW");
+        assertThat(added.path("result").asString()).isEqualTo("DUPLICATE_FACT");
+        assertThat(added.path("status").asString()).isEqualTo("PROCESSED");
+        assertThat(batchAfter
+                        .path("deliveries")
+                        .get(batchAfter.path("deliveries").size() - 1))
+                .isEqualTo(added);
+        var expectedIds = jdbc.sql("SELECT id FROM io.webhook_delivery ORDER BY received_at, id")
+                .query(Long.class)
+                .list();
+        assertThat(after.path("deliveries")
+                        .valueStream()
+                        .map(d -> d.path("id").asLong())
+                        .toList())
+                .isEqualTo(expectedIds);
+        assertThat(after.path("deliveries").get(0).path("subject").asString()).isEqualTo("payment");
+        for (JsonNode delivery : batchAfter.path("deliveries"))
+            assertThat(delivery.path("subject").asString()).isEqualTo("batch");
+        JsonNode event = api.ok("/api/events/" + eventId);
+        assertThat(event.path("subject").asString()).isEqualTo("batch");
+        assertThat(event.path("subjectId").asString()).isEqualTo(batchId);
+        assertThat(event.path("result").asString()).isEqualTo("DUPLICATE_FACT");
+        assertThat(event.path("deliveries").size()).isEqualTo(1);
+        assertThat(event.path("deliveries").get(0)).isEqualTo(added);
+        assertThat(event.toString()).doesNotContain("payload", "signature", "sha256", "signedAt", "signed_at");
+        assertThat(after.path("postings")).isEqualTo(before.path("postings"));
+        assertThat(api.ok("/api/overview").path("accounts")).isEqualTo(accounts);
+        assertThat(jdbc.sql("SELECT row_to_json(p)::text FROM ledger.posting p ORDER BY entry_id, line_no")
+                        .query(String.class)
+                        .list())
+                .isEqualTo(postings);
     }
 
     private record Api(HttpClient http, String base, ObjectMapper json, MutableClock clock) {

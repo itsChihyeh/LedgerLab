@@ -77,19 +77,17 @@ final class PaymentQueries {
                             rs.getString("side"),
                             rs.getLong("amount")))
                     .list();
-            List<Delivery> deliveries = jdbc.sql("""
-                    SELECT event_id, event_type, outcome, status, result, received_at
+            List<EventQueries.Delivery> deliveries = jdbc.sql("""
+                    SELECT id, event_id, event_type, outcome, status, result, received_at, 'payment' AS subject
                     FROM core.v_payment_delivery WHERE processor_payment_ref = :ref
+                    UNION ALL
+                    SELECT id, event_id, event_type, outcome, status, result, received_at, 'batch' AS subject
+                    FROM core.v_batch_delivery WHERE batch_id = :batch
                     ORDER BY received_at, id
                     """)
                     .param("ref", payment.processorPaymentRef())
-                    .query((rs, row) -> new Delivery(
-                            rs.getString("event_id"),
-                            rs.getString("event_type"),
-                            rs.getString("outcome"),
-                            rs.getString("status"),
-                            rs.getString("result"),
-                            rs.getTimestamp("received_at").toInstant()))
+                    .param("batch", state.batchId())
+                    .query(EventQueries.DELIVERY)
                     .list();
             return new PaymentDetail(
                     payment.id(),
@@ -147,7 +145,7 @@ final class PaymentQueries {
             @Nullable PaymentBatch batch,
             @Nullable BankDeposit bankDeposit,
             List<Posting> postings,
-            List<Delivery> deliveries,
+            List<EventQueries.Delivery> deliveries,
             AsOf asOf) {}
 
     record PaymentList(List<Payment> payments, AsOf asOf) {}
@@ -160,14 +158,6 @@ final class PaymentQueries {
             String accountName,
             String side,
             long amount) {}
-
-    record Delivery(
-            String eventId,
-            String eventType,
-            String outcome,
-            String status,
-            @Nullable String result,
-            Instant receivedAt) {}
 
     record AsOf(long seq, Instant at) {}
 }
