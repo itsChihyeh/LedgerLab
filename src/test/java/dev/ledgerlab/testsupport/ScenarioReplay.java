@@ -49,6 +49,11 @@ public final class ScenarioReplay {
     }
 
     public void run() throws Exception {
+        runUntil("");
+    }
+
+    /** Replay through a named checkpoint, retaining the same independent truth assertions. */
+    public void runUntil(String checkpointName) throws Exception {
         JsonNode manifest = json.readTree(Files.readAllBytes(directory.resolve("manifest.json")));
         JsonNode truth = json.readTree(Files.readAllBytes(directory.resolve("truth.json")));
         assertThat(manifest.path("format_version").asInt()).isEqualTo(1);
@@ -111,6 +116,8 @@ public final class ScenarioReplay {
                 default -> throw new AssertionError("Unknown replay step: " + step);
             }
             processor.assertConsumed();
+            if (step.path("type").asText().equals("checkpoint")
+                    && step.path("name").asText().equals(checkpointName)) break;
         }
         // Later imports and runs cannot rewrite earlier reports.
         for (var checkpoint : reports.values())

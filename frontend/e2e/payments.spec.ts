@@ -1,11 +1,9 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { type APIRequestContext, expect, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import type { PaymentDetail } from "../src/api";
 
-const backend = "http://localhost:8080";
-// Same throwaway test credential as StripeSignatures.SECRET, never a real Stripe secret.
-const secret = "whsec_test_only";
+import { backend, deliver } from "./helpers";
 
 function event(id: string, charge: string) {
   return JSON.stringify({
@@ -28,21 +26,6 @@ function event(id: string, charge: string) {
       },
     },
   });
-}
-
-async function deliver(request: APIRequestContext, body: string) {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const signature = createHmac("sha256", secret)
-    .update(`${timestamp}.${body}`)
-    .digest("hex");
-  const response = await request.post(`${backend}/webhooks/stripe`, {
-    data: body,
-    headers: {
-      "Content-Type": "application/json",
-      "Stripe-Signature": `t=${timestamp},v1=${signature}`,
-    },
-  });
-  expect(response.status(), await response.text()).toBe(200);
 }
 
 test("ac_1_14 shows one capture and all three delivery results", async ({
@@ -86,7 +69,7 @@ test("ac_1_14 shows one capture and all three delivery results", async ({
 
   await page.goto("/");
   await page.getByRole("link", { name: charge, exact: true }).click();
-  await expect(page).toHaveURL(`/payments/${charge}`);
+  await expect(page).toHaveURL(`/#/payments/${charge}`);
   await expect(page.getByRole("heading", { name: "交易详情" })).toBeVisible();
   await expect(
     page.locator("dd").filter({ hasText: /^CAD 100\.00$/ }),
@@ -103,10 +86,10 @@ test("ac_1_14 shows one capture and all three delivery results", async ({
     .getByRole("table", { name: "账本 posting（2 条）" })
     .locator("tbody tr");
   await expect(postings).toHaveCount(2);
-  await expect(postings.nth(0)).toHaveText(
+  await expect(postings.nth(0)).toContainText(
     /PAYMENT_CAPTURED.*1101.*processor_receivable.*借（D）.*CAD 100\.00/,
   );
-  await expect(postings.nth(1)).toHaveText(
+  await expect(postings.nth(1)).toContainText(
     /PAYMENT_CAPTURED.*2101.*merchant_pending.*贷（C）.*CAD 100\.00/,
   );
   const deliveries = page
@@ -120,7 +103,7 @@ test("ac_1_14 shows one capture and all three delivery results", async ({
     `${firstId}charge.succeeded重复投递PROCESSEDAPPLIED`,
   );
   await expect(deliveries.nth(2)).toHaveText(
-    `${secondId}charge.succeededNEWPROCESSEDDUPLICATE_FACT`,
+    `${secondId}charge.succeededNEWPROCESSED重复（DUPLICATE_FACT）`,
   );
   await expect(page.locator("footer")).toContainText(
     /asOf · 截至账本序号 [1-9]\d*/,

@@ -231,6 +231,14 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - 支付详情 deliveries 合并本支付 charge 投递和当前 batch_id 的 payout 投递；批次详情新增自己的 deliveries。每条统一为 `{id,eventId,eventType,outcome,receivedAt,status,result,subject}`，按 received_at、id 升序，subject 分别为 payment/batch。新 event_id 的相同事实投递 outcome 为 NEW，处理后 result 为 DUPLICATE_FACT；同 event_id 重投的 outcome 为 DUPLICATE。
 - `GET /api/events/{eventId}` 返回 `{eventId,eventType,apiVersion,livemode,occurredAt,receivedAt,status,result,subject,subjectId,deliveries,asOf}`，不存在 404。deliveries 含该事件全部 NEW/DUPLICATE/CONFLICT 投递，按 received_at、id 升序；status/result 均为快照中的当前值。沿用 QuerySnapshot 的 readonly 连接、独立 REPEATABLE READ 事务和注入 Clock 的 asOf，不提供原文接口。
 
+### P2 T14 实现备注：页面与证据导航
+
+- 前端使用 hash 路由：`#/` 总览、`#/payments/{ref}` 交易、`#/batches/{id}` 批次、`#/recon` 工作台、`#/recon/{id}` 差异。P1 的 `/payments/{ref}` 直达链接继续可用。列表按接口现有上限展示最近支付／批次 20 条、筛选后的差异 100 条，页面明确标注；状态／类别筛选保存在 hash 查询参数，刷新及后退可恢复。
+- 金额沿用 `formatCad`；未就绪净额／批次合计显示“待确认”，不当成零。商户欠款取 overview 的 `merchantOwes`，为正时替换“商户可用”显示，不显示负可提现。P2 的真实入口无法产生负可用，AC-1.11 这一半的 E2E 留 P3，测试有明确注记。
+- 差异金额直接用后端 `amounts`，同时显示 CAD 和整数分；展示处置历史、每次 finding 的原预期／实际／证据，不由当前处置反推历史。接受必须输入非空白原因，成功后重新查询，409 提示刷新核对。
+- 证据页精确使用 T13/T13b 的批次行文件号／行序号、事件脱敏摘要、银行流水编号。相关 posting 按差异明确引用的 entryId，在其关联支付／批次／银行详情中定位，保留该来源响应的 asOf，不新增后端接口、不拼成跨请求的统一快照。总览各数据区也分别保留自己的 asOf。
+- E2E 两轮分别以空 Testcontainers 数据库重放 T12 的 `sample-a-1-3` 和 `ac-5-3`（截至 first 检查点，恰好七条差异）。复用场景真值断言和真实签名 webhook、处理方 HTTP 回放、银行 CSV 导入及对账；不直接 SQL 造账。仅测试启动器在 loopback 8090 提供就绪、注入 Clock 读数、受控 worker 排空和 B1 回放准备；生产应用没有这些入口。演示辅助函数 `frontend/e2e/helpers.ts#replayB1Confirmation` 只替换 event_id 后重签并投递原 B1 确认内容。
+
 ### `io.outbound_command`
 
 `id cmd_…`、`kind`（`SUBMIT_REFUND`/`SUBMIT_PAYOUT`/`QUERY_REFUND`/`QUERY_PAYOUT`）、`subject_id`、`request_id`（对外幂等键，所有重试相同）、`status`（`PENDING`/`IN_FLIGHT`/`UNKNOWN`/`DONE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`lease_epoch`、`first_sent_at`（第一次真正发出的时刻，写入后不改）、`external_ref`、`last_outcome`、`created_at`。
