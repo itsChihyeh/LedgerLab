@@ -8,6 +8,7 @@ import dev.ledgerlab.settlement.PayoutEvidence;
 import dev.ledgerlab.settlement.PayoutEvidence.Lines;
 import java.time.Clock;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
@@ -36,7 +37,9 @@ final class PayoutProcessing {
         if (live
                 || !(eventType.equals("payout.created")
                         || eventType.equals("payout.reconciliation_completed")
-                        || eventType.equals("payout.paid"))) return null;
+                        || eventType.equals("payout.paid")
+                        || eventType.equals("payout.failed")
+                        || eventType.equals("payout.canceled"))) return null;
         Payout payout =
                 StripeReadParser.payout(mapper.readTree(payload).path("data").path("object"));
         return prepare(eventId, eventType, "inbox_event", eventId, payout);
@@ -45,7 +48,7 @@ final class PayoutProcessing {
     PayoutEvidence prepare(
             String sourceEvent, String eventType, String evidenceType, String evidenceId, Payout payout) {
         PayoutEvidence evidence = evidence(sourceEvent, eventType, evidenceType, evidenceId, payout, null);
-        if (!eventType.equals("payout.paid")
+        if ((eventType.equals("payout.created") || eventType.equals("payout.reconciliation_completed"))
                 && evidence.supported()
                 && evidence.ready()
                 && settlement.needsLines(evidence)) {
@@ -68,6 +71,51 @@ final class PayoutProcessing {
             evidence = evidence(sourceEvent, eventType, evidenceType, evidenceId, payout, lines);
         }
         return evidence;
+    }
+
+    void recheckByPayment(String paymentRef, String captureEventId) {
+        for (var batch : settlement.unknownPaymentBatches()) {
+            String raw = jdbc.sql("""
+                    SELECT response_body FROM io.processor_fetch
+                    WHERE id = :id AND complete AND purpose = 'BATCH_LINES'
+                      AND request->'query'->>'payout' = :batch
+                    """)
+                    .param("id", batch.fetchId())
+                    .param("batch", batch.batchId())
+                    .query(String.class)
+                    .single();
+            var items = new ArrayList<PayoutEvidence.Line>();
+            for (var page : mapper.readTree(raw)) {
+                for (var node : mapper.readTree(page.asString()).path("data")) {
+                    var line = StripeReadParser.balanceTransaction(node);
+                    items.add(new PayoutEvidence.Line(
+                            line.id(),
+                            line.type(),
+                            line.source(),
+                            line.amount(),
+                            line.fee(),
+                            line.net(),
+                            line.currency(),
+                            line.created()));
+                }
+            }
+            settlement.recheckByPayment(
+                    paymentRef,
+                    new PayoutEvidence(
+                            batch.sourceEventId(),
+                            "inbox_event",
+                            captureEventId,
+                            "payout.reconciliation_completed",
+                            batch.batchId(),
+                            batch.amount(),
+                            batch.currency(),
+                            batch.automatic(),
+                            batch.method(),
+                            "completed",
+                            batch.arrivalDate(),
+                            batch.created(),
+                            new Lines(batch.fetchId(), items)));
+        }
     }
 
     BatchSettlement.Result apply(PayoutEvidence evidence) {

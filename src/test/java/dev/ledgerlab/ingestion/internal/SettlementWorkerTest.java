@@ -4,12 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.sun.net.httpserver.HttpServer;
 import dev.ledgerlab.ingestion.StripeReader;
-import dev.ledgerlab.ledger.Account;
-import dev.ledgerlab.ledger.EntryRequest;
-import dev.ledgerlab.ledger.EntryType;
 import dev.ledgerlab.ledger.Ledger;
-import dev.ledgerlab.ledger.PostingLine;
-import dev.ledgerlab.ledger.SubjectType;
 import dev.ledgerlab.ledger.internal.JdbcLedger;
 import dev.ledgerlab.ledger.internal.JdbcLedgerAudit;
 import dev.ledgerlab.payments.PaymentCapture;
@@ -306,6 +301,373 @@ class SettlementWorkerTest {
     }
 
     @Test
+    void ac_5_2_amountMismatchKeepsCaptureAndArchivesExpectedAndActual() {
+        capture();
+        lines = page(line("txn_payment", "charge", "ch_p1", 9999, 320), false);
+        event(
+                "evt_ready",
+                "payout.reconciliation_completed",
+                payout("po_b1", "completed").put("amount", 9679));
+        runWorker();
+        assertHold("AMOUNT_MISMATCH", "AMOUNT_MISMATCH");
+        assertThat(jdbc.sql("SELECT expected->>'gross' FROM recon.issue")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("10000");
+        assertThat(jdbc.sql("SELECT actual->'line'->>'gross' FROM recon.issue")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("9999");
+        assertThat(jdbc.sql("SELECT status FROM core.payment")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("CAPTURED");
+        assertThat(count("ledger.posting")).isEqualTo(2);
+    }
+
+    @Test
+    void ac_5_19_feeAboveGrossHoldsWholePositivePayout() {
+        capture();
+        lines = page(
+                line("txn_small", "charge", "ch_small", 50, 60) + ","
+                        + line("txn_payment", "charge", "ch_p1", 10000, 320),
+                false);
+        event(
+                "evt_ready",
+                "payout.reconciliation_completed",
+                payout("po_b1", "completed").put("amount", 9670));
+        runWorker();
+        assertHold("FEE_EXCEEDS_GROSS", "AMOUNT_MISMATCH");
+        assertThat(jdbc.sql("SELECT actual->'line'->>'fee' FROM recon.issue")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("60");
+        assertThat(count("ledger.posting")).isEqualTo(2);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"adjustment", "dispute", "refund"})
+    void ac_5_2_unsupportedLinesAreHeldWithEvidence(String type) {
+        lines = page(line("txn_other", type, "ch_p1", 10000, 320), false);
+        ready();
+        assertHold("UNSUPPORTED_LINE", "UNSUPPORTED_EVENT");
+        assertThat(count("ledger.posting")).isZero();
+    }
+
+    private void assertHold(String reason, String category) {
+        assertThat(state()).isEqualTo("HELD");
+        assertThat(jdbc.sql("SELECT hold_reason FROM core.settlement_batch WHERE batch_id = 'po_b1'")
+                        .query(String.class)
+                        .single())
+                .isEqualTo(reason);
+        assertThat(jdbc.sql("SELECT category, detected_by, subject_type, subject_id FROM recon.issue")
+                        .query()
+                        .singleRow())
+                .containsEntry("category", category)
+                .containsEntry("detected_by", "INGESTION")
+                .containsEntry("subject_type", "batch")
+                .containsEntry("subject_id", "po_b1");
+        assertThat(inbox("evt_ready")).containsEntry("status", "PROCESSED").containsEntry("result", "APPLIED");
+        assertThat(count("core.settlement_batch_line")).isZero();
+        assertThat(count("io.processor_fetch")).isEqualTo(1);
+    }
+
+    @Test
+    void ac_4_1_captureRechecksArchivedUnknownPaymentInSameTransaction() {
+        ready();
+        assertThat(state()).isEqualTo("HELD");
+        assertThat(count("recon.issue")).isZero();
+        assertThat(count("ledger.posting")).isZero();
+        // The next HTTP response is unusable: recovery must use the pinned archive.
+        lines = "unavailable";
+        capture();
+        assertThat(state()).isEqualTo("CONFIRMED");
+        assertThat(lineRequests).hasValue(1);
+        assertThat(balances()).containsExactly(0L, 9680L, 0L, 0L, 9680L, 0L, 0L, 0L);
+        assertThat(count("ledger.posting")).isEqualTo(7);
+    }
+
+    @Test
+    void ac_4_1_captureRollbackAlsoRollsBackRecheckAndCanRetry() {
+        ready();
+        event("evt_capture", "charge.succeeded", charge("ch_p1", 10000));
+        worker(new WorkerHooks() {
+                    @Override
+                    public void afterBusiness(String eventId) {
+                        assertThat(state()).isEqualTo("CONFIRMED");
+                        assertThat(count("ledger.posting")).isEqualTo(7);
+                        throw new IllegalStateException("Injected capture rollback after recheck");
+                    }
+                })
+                .processAvailable();
+        assertThat(state()).isEqualTo("HELD");
+        assertThat(count("core.payment")).isZero();
+        assertThat(count("core.settlement_batch_line")).isZero();
+        assertThat(count("ledger.posting")).isZero();
+        assertThat(count("io.processor_fetch")).isEqualTo(1);
+        clock.set(NOW.plusSeconds(1));
+        runWorker();
+        assertThat(state()).isEqualTo("CONFIRMED");
+        assertThat(inbox("evt_capture")).containsEntry("result", "APPLIED");
+        assertThat(lineRequests).hasValue(1);
+    }
+
+    ObjectNode charge(String id, long amount) {
+        return (ObjectNode) mapper.readTree("""
+                {"id":"%s","payment_intent":"pi_synthetic","amount":%d,"amount_captured":%d,"currency":"cad",
+                 "captured":true,"status":"succeeded","livemode":false,"created":1792756700}
+                """.formatted(id, amount, amount));
+    }
+
+    void modelLines(boolean changed, boolean returned) {
+        lines = page(
+                returned
+                        ? line("txn_returned", "payout_failure", "po_b1", 9680, 0)
+                        : line("txn_payment", "charge", "ch_p1", changed ? 10001 : 10000, changed ? 321 : 320),
+                false);
+    }
+
+    void modelUnsupportedLine() {
+        lines = page(line("txn_payment", "refund", "ch_p1", 10000, 320), false);
+    }
+
+    void modelExcessFee() {
+        lines = page(line("txn_payment", "charge", "ch_p1", 50, 60), false);
+    }
+
+    @Nullable
+    String holdReason() {
+        return (String) jdbc.sql("SELECT hold_reason FROM core.settlement_batch WHERE batch_id = 'po_b1'")
+                .query()
+                .singleRow()
+                .get("hold_reason");
+    }
+
+    List<@Nullable String> issueIdentities() {
+        return jdbc.sql(
+                        "SELECT category || ':' || subject_id FROM recon.issue WHERE detected_by = 'INGESTION' AND subject_type = 'batch'")
+                .query(String.class)
+                .list();
+    }
+
+    void assertSettlementInvariants() {
+        assertThat(jdbc.sql("SELECT balance FROM ledger.account WHERE code = '2101'")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(jdbc.sql("SELECT COALESCE(SUM(amount), 0) FROM core.payment WHERE status = 'CAPTURED'")
+                        .query(Long.class)
+                        .single());
+        assertThat(jdbc.sql("SELECT balance FROM ledger.account WHERE code = '1102'")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(
+                        jdbc.sql("SELECT COALESCE(SUM(net), 0) FROM core.settlement_batch WHERE status = 'CONFIRMED'")
+                                .query(Long.class)
+                                .single());
+    }
+
+    @Test
+    void ac_5_3_normalizedVersionIgnoresOrderingFormattingAndCurrencyCase() {
+        capture();
+        event("evt_p2", "charge.succeeded", charge("ch_p2", 10000));
+        runWorker();
+        String first = line("txn_payment", "charge", "ch_p1", 10000, 320);
+        String second = line("txn_p2", "charge", "ch_p2", 10000, 320);
+        lines = page(first + "," + second, false);
+        event(
+                "evt_ready",
+                "payout.reconciliation_completed",
+                payout("po_b1", "completed").put("amount", 19360));
+        runWorker();
+        lines = page(second + "," + first, false).replace("cad", "CAD").replace(",", ",\n  ");
+        event(
+                "evt_duplicate",
+                "payout.reconciliation_completed",
+                payout("po_b1", "completed").put("amount", 19360));
+        runWorker();
+        assertThat(inbox("evt_duplicate")).containsEntry("result", "DUPLICATE_FACT");
+        assertThat(count("recon.issue")).isZero();
+        assertThat(count("ledger.posting")).isEqualTo(9);
+        assertThat(jdbc.sql("SELECT count(DISTINCT response_sha256) FROM io.processor_fetch")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(2);
+    }
+
+    @Test
+    void ac_5_2_contractFeeDifferenceIsSettledAtActualFee() {
+        capture();
+        lines = page(line("txn_payment", "charge", "ch_p1", 10000, 321), false);
+        event(
+                "evt_ready",
+                "payout.reconciliation_completed",
+                payout("po_b1", "completed").put("amount", 9679));
+        runWorker();
+        assertThat(state()).isEqualTo("CONFIRMED");
+        assertThat(jdbc.sql("SELECT expected_fee, actual_fee FROM core.payment")
+                        .query()
+                        .singleRow())
+                .containsEntry("expected_fee", 320L)
+                .containsEntry("actual_fee", 321L);
+        assertThat(count("recon.issue")).isZero();
+        assertThat(balances()).containsExactly(0L, 9679L, 0L, 0L, 9679L, 0L, 0L, 0L);
+    }
+
+    @Test
+    void ac_4_1_unrelatedCaptureAndClockAdvanceLeaveUnknownPaymentHeld() {
+        ready();
+        event("evt_other", "charge.succeeded", charge("ch_other", 10000));
+        runWorker();
+        clock.set(NOW.plus(Duration.ofDays(5)));
+        polling.poll();
+        assertThat(state()).isEqualTo("HELD");
+        assertThat(count("core.batch_transition")).isEqualTo(3);
+        assertThat(count("recon.issue")).isZero();
+        assertThat(count("core.settlement_batch_line")).isZero();
+        assertThat(lineRequests).hasValue(1);
+    }
+
+    @Test
+    void ac_4_1_otherHoldReasonsNeverAutomaticallyRecover() {
+        capture();
+        lines = page(line("txn_payment", "charge", "ch_p1", 9999, 319), false);
+        ready();
+        long history = count("core.batch_transition");
+        modelLines(false, false);
+        event("evt_capture_again", "charge.succeeded", charge("ch_p1", 10000));
+        runWorker();
+        assertThat(state()).isEqualTo("HELD");
+        assertThat(count("core.batch_transition")).isEqualTo(history);
+        event("evt_ready_again", "payout.reconciliation_completed", payout("po_b1", "completed"));
+        runWorker();
+        assertThat(state()).isEqualTo("HELD");
+        assertThat(lineRequests).hasValue(1);
+        assertThat(count("ledger.posting")).isEqualTo(2);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"payout.failed,false", "payout.failed,true", "payout.canceled,false", "payout.canceled,true"})
+    void ac_4_1_failureParksThenOnlyRecordsHistoryForUnconfirmedBatch(String type, boolean held) {
+        event("evt_failed", type, payout("po_b1", "completed"));
+        runWorker();
+        assertThat(inbox("evt_failed")).containsEntry("status", "PARKED");
+        if (held) ready();
+        else announce();
+        String before = state();
+        runWorker();
+        assertThat(state()).isEqualTo(before);
+        assertThat(inbox("evt_failed")).containsEntry("result", "APPLIED");
+        assertThat(count("ledger.posting")).isZero();
+        assertThat(count("recon.issue")).isZero();
+        if (held)
+            assertThat(jdbc.sql("SELECT hold_reason FROM core.settlement_batch")
+                            .query(String.class)
+                            .single())
+                    .isEqualTo("UNKNOWN_PAYMENT");
+    }
+
+    @Test
+    void ac_1_4b_payoutFailureAndEntryRollbackTogether() {
+        capture();
+        ready();
+        event("evt_failed", "payout.failed", payout("po_b1", "completed"));
+        worker(new WorkerHooks() {
+                    @Override
+                    public void afterBusiness(String eventId) {
+                        assertThat(state()).isEqualTo("PAYOUT_FAILED");
+                        assertThat(count("ledger.posting")).isEqualTo(9);
+                        throw new IllegalStateException("Injected failure rollback");
+                    }
+                })
+                .processAvailable();
+        assertThat(state()).isEqualTo("CONFIRMED");
+        assertThat(count("ledger.posting")).isEqualTo(7);
+        clock.set(NOW.plusSeconds(1));
+        runWorker();
+        assertThat(state()).isEqualTo("PAYOUT_FAILED");
+        assertThat(count("ledger.posting")).isEqualTo(9);
+    }
+
+    @Test
+    void ac_5_3_changedCompleteVersionIsArchivedOncePerIssueWithoutChangingFacts() {
+        capture();
+        ready();
+        var original = jdbc.sql("SELECT * FROM core.settlement_batch").query().singleRow();
+        var originalLines =
+                jdbc.sql("SELECT * FROM core.settlement_batch_line").query().listOfRows();
+        var originalEntries = jdbc.sql("SELECT * FROM ledger.journal_entry ORDER BY seq")
+                .query()
+                .listOfRows();
+        lines = page(line("txn_payment", "charge", "ch_p1", 10001, 321), false);
+        for (int i = 0; i < 2; i++) {
+            event("evt_changed_" + i, "payout.reconciliation_completed", payout("po_b1", "completed"));
+            runWorker();
+            assertThat(inbox("evt_changed_" + i)).containsEntry("result", "BUSINESS_CONFLICT");
+        }
+        assertThat(jdbc.sql("SELECT * FROM core.settlement_batch").query().singleRow())
+                .isEqualTo(original);
+        assertThat(jdbc.sql("SELECT * FROM core.settlement_batch_line").query().listOfRows())
+                .isEqualTo(originalLines);
+        assertThat(jdbc.sql("SELECT * FROM ledger.journal_entry ORDER BY seq")
+                        .query()
+                        .listOfRows())
+                .isEqualTo(originalEntries);
+        assertThat(count("io.processor_fetch")).isEqualTo(3);
+        assertThat(jdbc.sql("SELECT category FROM recon.issue")
+                        .query(String.class)
+                        .list())
+                .containsExactly("BATCH_VERSION_CONFLICT");
+        interrupted = true;
+        event("evt_incomplete", "payout.reconciliation_completed", payout("po_b1", "completed"));
+        runWorker();
+        assertThat(inbox("evt_incomplete")).containsEntry("status", "RECEIVED").containsEntry("attempts", 1);
+        assertThat(count("recon.issue")).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"payout.failed", "payout.canceled"})
+    void ac_1_4b_ac_5_18_exampleHUsesRealFailureEventAndReissuedBatch(String type) {
+        capture();
+        ready();
+        event("evt_failed", type, payout("po_b1", "completed"));
+        runWorker();
+        assertThat(state()).isEqualTo("PAYOUT_FAILED");
+        assertThat(balances()).containsExactly(9680L, 0L, 0L, 0L, 9680L, 0L, 0L, 0L);
+        event("evt_failed_again", type, payout("po_b1", "completed"));
+        runWorker();
+        assertThat(inbox("evt_failed_again")).containsEntry("result", "DUPLICATE_FACT");
+        lines = page(line("txn_return", "payout_failure", "po_b1", 9680, 0), false);
+        event("evt_reissued", "payout.reconciliation_completed", payout("po_reissued", "completed"));
+        runWorker();
+        assertThat(balances()).containsExactly(0L, 9680L, 0L, 0L, 9680L, 0L, 0L, 0L);
+        assertThat(jdbc.sql(
+                                "SELECT posting_count FROM ledger.journal_entry WHERE source_key = 'batch:po_reissued:settled'")
+                        .query(Integer.class)
+                        .single())
+                .isEqualTo(2);
+        assertThat(count("ledger.posting")).isEqualTo(11);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"payout.failed", "payout.canceled"})
+    void ac_5_3_bankedFailureOpensStateConflictWithoutPosting(String type) {
+        capture();
+        ready();
+        JdbcClient.create(db.migrator())
+                .sql("UPDATE core.settlement_batch SET status = 'BANKED' WHERE batch_id = 'po_b1'")
+                .update();
+        event("evt_failed", type, payout("po_b1", "completed"));
+        runWorker();
+        assertThat(state()).isEqualTo("BANKED");
+        assertThat(count("ledger.posting")).isEqualTo(7);
+        assertThat(jdbc.sql("SELECT category FROM recon.issue")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("BATCH_STATE_CONFLICT");
+        assertThat(inbox("evt_failed")).containsEntry("result", "BUSINESS_CONFLICT");
+    }
+
+    @Test
     void ac_5_1_ac_1_4b_exampleASettlesExactlyFivePostings() {
         capture();
         assertThat(balances()).containsExactly(10000L, 0L, 0L, 10000L, 0L, 0L, 0L, 0L);
@@ -463,13 +825,13 @@ class SettlementWorkerTest {
     }
 
     @Test
-    void ac_2_8_sameFactWithNewEventSkipsFetchAndPosting() {
+    void ac_2_8_sameFactWithNewEventComparesFetchWithoutPosting() {
         capture();
         ready();
         event("evt_again", "payout.reconciliation_completed", payout("po_b1", "completed"));
         runWorker();
         assertThat(inbox("evt_again")).containsEntry("result", "DUPLICATE_FACT");
-        assertThat(lineRequests).hasValue(1);
+        assertThat(lineRequests).hasValue(2);
         assertThat(count("ledger.posting")).isEqualTo(7);
     }
 
@@ -513,34 +875,6 @@ class SettlementWorkerTest {
         assertThat(List.of(
                         inbox("evt_ready_a").get("result"), inbox("evt_ready_b").get("result")))
                 .containsExactlyInAnyOrder("APPLIED", "DUPLICATE_FACT");
-    }
-
-    @Test
-    void ac_5_18_exampleHReissuesOnlyFailedPayoutWithTwoPostings() {
-        capture();
-        ready();
-        tx.executeWithoutResult(status -> {
-            ledger.lockFunds();
-            ledger.post(new EntryRequest(
-                    EntryType.BATCH_PAYOUT_FAILED,
-                    "batch:po_b1:payout_failed",
-                    NOW,
-                    SubjectType.BATCH,
-                    "po_b1",
-                    List.of(
-                            PostingLine.debit(Account.PROCESSOR_RECEIVABLE, 9680),
-                            PostingLine.credit(Account.SETTLEMENT_IN_TRANSIT, 9680))));
-            jdbc.sql("UPDATE core.settlement_batch SET status = 'PAYOUT_FAILED' WHERE batch_id = 'po_b1'")
-                    .update();
-        });
-        lines = page(line("txn_returned", "payout_failure", "po_b1", 9680, 0), false);
-        event("evt_reissue", "payout.reconciliation_completed", payout("po_b2", "completed"));
-        runWorker();
-        assertThat(jdbc.sql("SELECT posting_count FROM ledger.journal_entry WHERE source_key = 'batch:po_b2:settled'")
-                        .query(Integer.class)
-                        .single())
-                .isEqualTo(2);
-        assertThat(balances()).containsExactly(0L, 9680L, 0L, 0L, 9680L, 0L, 0L, 0L);
     }
 
     @Test

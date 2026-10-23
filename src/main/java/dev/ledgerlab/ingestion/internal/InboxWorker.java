@@ -1,5 +1,6 @@
 package dev.ledgerlab.ingestion.internal;
 
+import dev.ledgerlab.payments.CaptureResult;
 import dev.ledgerlab.payments.PaymentCapture;
 import dev.ledgerlab.reconciliation.IngestionIssues;
 import dev.ledgerlab.settlement.PayoutEvidence;
@@ -136,8 +137,12 @@ public final class InboxWorker {
 
     private @Nullable String route(Claim claim) {
         if (claim.type().equals("charge.succeeded")) {
-            return capture.capture(parser.parse(claim.id(), claim.payload(), claim.live(), claim.receivedAt()))
-                    .name();
+            var evidence = parser.parse(claim.id(), claim.payload(), claim.live(), claim.receivedAt());
+            var result = capture.capture(evidence);
+            if (result == CaptureResult.APPLIED || result == CaptureResult.DUPLICATE_FACT) {
+                payouts.recheckByPayment(evidence.chargeId(), claim.id());
+            }
+            return result.name();
         }
         if (claim.live()) {
             openIssue(claim, "LIVEMODE_EVENT", "LIVEMODE");
@@ -147,7 +152,7 @@ public final class InboxWorker {
             openIssue(claim, "UNSUPPORTED_EVENT", "UNSUPPORTED_TYPE");
             return "UNSUPPORTED_TYPE";
         }
-        // payout.failed/canceled stay ignored until T06; refunds arrive in P3.
+        // Refunds arrive in P3.
         return null;
     }
 

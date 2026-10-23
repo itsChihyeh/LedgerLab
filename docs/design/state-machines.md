@@ -85,7 +85,7 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 | `ANNOUNCED` | `HELD` | payout 不符合准入（手动、即时、负 payout、`reconciliation_status=not_applicable`），原因 `UNSUPPORTED_PAYOUT` | — |
 | `RECEIVED` | `CONFIRMED` | 逐项核对通过 | `BATCH_SETTLED` |
 | `RECEIVED` | `HELD` | 有行对不上本地记录（不认识的支付、金额不同、退款没记、行已属于别的批次、行类型不支持） | — |
-| `CONFIRMED` | `PAYOUT_FAILED` | webhook `payout.failed`，且银行没有对应入账 | `BATCH_PAYOUT_FAILED` |
+| `CONFIRMED` | `PAYOUT_FAILED` | webhook `payout.failed`／`payout.canceled`，且银行没有对应入账 | `BATCH_PAYOUT_FAILED` |
 | `HELD` | `RECEIVED` | 引用的对象到齐或纠错完成后重新核对 | — |
 | `CONFIRMED` | `BANKED` | 银行流水入账行按批次号精确匹配，金额相等 | `BANK_DEPOSIT_RECEIVED` |
 
@@ -101,12 +101,23 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 
 ### P2 T05 实现备注：批次确认与入站恢复
 
+以下记录 T05 交付时的行为；版本比较、HELD 恢复、失败事件和随机模型已由下方 T06 备注更新。
+
 - `settlement.BatchSettlement` 是批次业务入口，依赖 payments 的窄查询／状态更新接口和 ledger；ingestion 负责 HTTP、证据映射和调度，settlement 不反向依赖 ingestion。每次业务处理先取 `ledger.lockFunds()`，再锁批次；不存在的批次也由资金锁串行化建立。
 - `ANNOUNCED → RECEIVED → CONFIRMED`、五项合计、已核对明细、支付 `CAPTURED → SETTLED`、支付历史和一个 `BATCH_SETTLED` 在同一业务事务提交。V6 要求批次先成为 `CONFIRMED` 才可插入明细，事务内按此顺序写入。`RECEIVED` 是这条成功路径的事务内状态；**AC-5.16 在第三条 posting 后故障时回滚到原有的 `ANNOUNCED`，不是持久化的 `RECEIVED`**。若本次就绪事件首次建立批次，失败连新批次也一起回滚；独立提交的 fetch 存档保留。重试重新拉取、核对和记账。
 - `payout.paid` 只追加一行当前状态到当前状态的历史；批次尚不存在时 inbox `PARKED`，`parked_on = batch:{po_…}`。建批次与唤醒同依赖的 PARKED 事件在同一事务，唤醒后为 `RECEIVED`、清 `parked_on` 并立即可重试。停放与建批次都在资金锁保护下，避免并发丢失唤醒。此规则同样适用于 T06 的 `payout.failed`／`payout.canceled`；这两类在 T05 仍为 `IGNORED`。PARKED 老化扫描留给 T11。
 - 已存在批次的 created，以及非 `ANNOUNCED` 批次的再次就绪，追加证据历史并返回 `DUPLICATE_FACT`。重复 created 即使快照已 completed 也不再拉取，不让 HTTP 故障阻塞已知重复；已确认批次也可在拉取前短路。并发拉取仍需在业务事务重新查状态，保证只记一次。T05 不实现内容冲突版本比较或 HELD 自动恢复，留给 T06。
 - `HELD` 是已成功处理证据的业务结果，inbox 为 `PROCESSED/APPLIED`。T05 对不支持的 payout 开 `UNSUPPORTED_PAYOUT`、`INGESTION`、batch 主体差异；其余行核对失败先记录 `hold_reason`，差异分类与恢复留给 T06。本地支付缺失先 `HELD(UNKNOWN_PAYMENT)`，不把暂时乱序立即报为 `MISSING_IN_LEDGER`。REFUND 和未知行暂以 `UNSUPPORTED_LINE` 隔离；已知 `PAYOUT_FAILED` 批次的同额、零手续费退回行可确认（AC-5.18），不能在另一批次再次使用。
 - 新增 `SettlementWorkerTest` 真库／本地 HTTP 场景覆盖 AC-5.1、AC-5.16–5.18、AC-1.4b、AC-2.8 及 paid 停放恢复。故障测试使用透传 JDBC 包装，在真实写入第三条 posting 后抛异常，不改生产账本接口。`SettlementModelProperties` 增加独立纯 Java 批次参考模型和 jqwik 有状态动作：created、created 已就绪、就绪、paid、不支持的 payout；随机排列和新 event_id 重复，每步比较状态、历史、余额、posting 数并查账本不变量。固定种子 `2026102305`，100 条序列、每条最多 16 个动作；P1 原有模型保留：本地默认 100 条，CI 的 1000 条配置不变。
+
+### P2 T06 实现备注：核对失败、重核、版本与打款失败
+
+- HELD 沿用 inbox `PROCESSED/APPLIED`，不新增 result 或数据库枚举。核对失败不插入批次行、不记批次分录；原文固定保存在 `lines_fetch_id` 指向的完整 `io.processor_fetch` 中。差异为 `detected_by=INGESTION`、subject 为 batch，`expected`／`actual` 保存核对值、行身份和处理方引用，`evidence_refs` 关联入站事件／拉取存档。
+- 沿用现有差异类别：`AMOUNT_MISMATCH`、`FEE_EXCEEDS_GROSS` 均报 `AMOUNT_MISMATCH`（费用超过毛额是金额契约违规）；`UNSUPPORTED_LINE` 报 `UNSUPPORTED_EVENT`；`LINE_IN_OTHER_BATCH` 报 `DUPLICATE_STATEMENT_LINE`；`TOTAL_MISMATCH` 报 `BATCH_TOTAL_MISMATCH`。具体原因仍在批次 `hold_reason` 和差异 `actual.reason` 中。`UNKNOWN_PAYMENT` 不立即开差异，留给 T11 老化。实际手续费与合同手续费不同仍按实际值结算，T10 对账再报 `FEE_MISMATCH`。
+- ingestion 在 `PaymentCapture.capture` 返回 `APPLIED`／`DUPLICATE_FACT` 后，同一事务同步调用 settlement 的按支付号重核入口。按批次号锁定 `HELD(UNKNOWN_PAYMENT)` 候选，读取其固定 `lines_fetch_id` 的完整存档，仅重核含该支付号的批次；不发 HTTP。多笔支付尚未到齐时继续 HELD；到齐后 `HELD → RECEIVED → CONFIRMED`，清 `hold_reason`，支付与批次记账一起提交或回滚。其他 HELD 原因不自动恢复。
+- 已 `CONFIRMED`／`BANKED`／`PAYOUT_FAILED` 的再次就绪事件完整拉取后比较规范化版本：跳过 `type=payout` 转账行，按 `balance_txn_id` 排序，对行身份、类型、引用、gross／fee／net、转小写的币种、业务时间 epoch seconds 的 JSON 数组算 SHA-256，另比较 payout 金额。相同为 `PROCESSED/DUPLICATE_FACT`；不同为 `REJECTED/BUSINESS_CONFLICT`，开 `BATCH_VERSION_CONFLICT`，新 fetch 即冲突版本存档。原批次字段、明细和分录不改，只追加证据历史；同一差异识别键不重复建 issue。原始字节哈希仅用于存档完整性。未就绪或不完整拉取不参与比较；重复 created 仍只记历史。
+- `payout.failed`／`payout.canceled` 不拉明细：批次不存在时 `PARKED`；`ANNOUNCED`／`HELD` 只记历史、`PROCESSED/APPLIED`，保留 HELD 原因；`CONFIRMED` 同事务转 `PAYOUT_FAILED`，按已核对 net 记 `BATCH_PAYOUT_FAILED`（借 1101／贷 1102），source key 为 `batch:{id}:payout_failed`；重复失败为 `PROCESSED/DUPLICATE_FACT`。`BANKED` 时仅记历史、开 `BATCH_STATE_CONFLICT`，inbox `REJECTED/BUSINESS_CONFLICT`。之后退回行仍须匹配失败批次的金额、币种、状态且未被其他批次使用；样例 H 使用真实失败事件建立前置。
+- `SettlementWorkerTest` 覆盖 AC-5.2、5.3、5.19、4.1、1.4b、5.18，包括规范化去重、冲突重复告警、不完整版本、请款与重核回滚、失败与分录回滚、BANKED 冲突。`SettlementModelProperties` 的独立纯 Java 模型新增请款、变更版本、失败／取消、退回重发、跨批次复用、异常费用和不支持行；从 S0 或 S1 开始随机组合，每步检查账本不变量、INV-9 的 2101／1102、余额、状态、hold reason、历史、明细／posting 数和差异身份。重发动作要求原批次已失败，跨批次复用要求已结算；其余可任意乱序，使用新 event_id 重复事实。种子 `2026102306`，最多 24 步，次数跟随 Maven 的 jqwik 配置（本地 100、CI 1000），动作执行／前置不满足计数和状态分布写入 Surefire 的 jqwik 报告。并发与事务故障仍由受控定向测试覆盖，不把随机模型当作并发证明。
 
 ## 5. 入站事件 Inbox（R6）
 

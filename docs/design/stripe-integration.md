@@ -101,6 +101,13 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 - payout 返回 id、amount、currency、automatic、method、status、reconciliationStatus、arrivalDate、created；balance transaction 返回 id、type、source、amount、fee、net、currency、created。金额必须是可表示为 `long` 的 JSON 整数，拒绝小数、字符串、空值和溢出；时间从整数 epoch seconds 转为 `Instant`。创建区间是 `[from, to)`，对应 `created[gte]` 与 `created[lt]`；边界须为整秒且递增，避免截断造成范围变化。无效区间或 payout 编号也存档为失败，不发 HTTP。
 - T04 测试以 JDK `HttpServer` 和 Testcontainers PostgreSQL 验证完整／中断分页、原文及哈希、整数解析、请求头、配置与密钥失败、事件关联、事务外 HTTP 和存档独立提交，支撑 AC-5.10、AC-5.17；不代表批次核对／快照导入已完成。只追加权限复用 T02 的 `SettlementTablesTest.ac_1_13_appendOnlyEvidenceRejectsAppUpdatesAndOwnerRewrites`，密钥启动拒绝复用 `StripePropertiesTest`（AC-8.2）。inbox worker 接线仍留给 T05。
 
+### P2 T06 实现备注：异常证据与版本
+
+- `payout.failed`／`payout.canceled` 已接入 inbox，不拉 balance transactions；按批次状态记录失败、冲突或历史，具体状态和 inbox 结果见 [state-machines 第 4 节 T06 备注](state-machines.md#p2-t06-实现备注核对失败重核版本与打款失败)。批次尚不存在时停放，建批次时原子唤醒。
+- 已确认及后续状态的 `payout.reconciliation_completed` 再次完整拉取，比较按行身份排序的规范化业务内容与 payout 金额；新 fetch 作为冲突证据保存，原批次 `lines_fetch_id` 和已确认行不覆盖。分页中断只存档并重试，不做版本判断；JSON 空白、行顺序和币种大小写不制造冲突。重复 `payout.created` 仍不再拉取。
+- `HELD(UNKNOWN_PAYMENT)` 的重核在请款事务里读取固定的 `lines_fetch_id`：校验存档为 `complete=true`、`purpose=BATCH_LINES` 且 query 的 payout 匹配，按 T04 的 JSON 字符串数组格式逐页解析。即使后来 HTTP 响应变化也只用这次完整证据；该事务不发外部请求。其他 HELD 原因不自动重核。
+- 实际手续费与合同手续费不同时，批次仍按实际 `fee` 记账；手续费大于行毛额才 HELD 并开 `AMOUNT_MISMATCH`。P2 的 refund、adjustment、dispute 等行以 `UNSUPPORTED_LINE` 隔离，其原文留在 fetch，不能写入已核对批次行。
+
 ## 4. 编号与时间
 
 | 我们的字段 | Stripe 来源 |

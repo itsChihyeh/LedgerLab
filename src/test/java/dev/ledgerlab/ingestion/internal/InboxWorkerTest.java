@@ -333,8 +333,8 @@ class InboxWorkerTest {
     @CsvSource({
         "customer.created,false,IGNORED,",
         "refund.updated,false,IGNORED,",
-        "payout.failed,false,IGNORED,",
-        "payout.canceled,false,IGNORED,",
+        "payout.failed,true,REJECTED,LIVEMODE",
+        "payout.canceled,true,REJECTED,LIVEMODE",
         "charge.dispute.created,false,REJECTED,UNSUPPORTED_TYPE",
         "customer.created,true,REJECTED,LIVEMODE",
         "charge.dispute.created,true,REJECTED,LIVEMODE"
