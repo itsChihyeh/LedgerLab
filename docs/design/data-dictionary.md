@@ -132,6 +132,17 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 
 批次行：`(batch_id, line_no)` PK、`line_type`（`PAYMENT`/`REFUND`/`PAYOUT_FAILURE`；其他 Stripe 类型如 `adjustment`、`dispute` 不支持 → 批次 `HELD`）、`processor_ref`、`balance_txn_id`（Stripe `txn_…`，UNIQUE）、`gross`、`fee`、`net`。
 
+### P2 T02 实现备注（V6 迁移）
+
+- `settlement_batch` 补充不可改的 `currency text`、`automatic boolean`、`method text`、`occurred_at timestamptz`（payout created）、`recorded_at timestamptz`，以及可改的 `updated_at timestamptz`，均非空。`batch_id` 必须以 `po_` 开头且有后缀；`source_event_id` 外键指向 inbox。`settlement_date`、`arrival_date`、`lines_fetch_id` 和五项合计可空，保留尚未就绪的批次；`lines_fetch_id` 外键指向 `io.processor_fetch.id`。
+- `payout_amount` 和 `net` 的范围为 −9007199254740991～9007199254740991 分，其余四项合计为 0～9007199254740991 分。原始 payout 金额允许为负或零，币种、automatic、method 不在表上强制支持范围，以便存下 `HELD(UNSUPPORTED_PAYOUT)` 的证据。合计齐全时必须满足净额公式；`CONFIRMED`、`BANKED`、`PAYOUT_FAILED` 必须五项合计齐全、`net > 0` 且等于 `payout_amount`。这些表约束不替代后续业务准入及逐行核对。
+- `HELD` 当且仅当 `hold_reason` 非空；原因枚举为 `UNKNOWN_PAYMENT`、`AMOUNT_MISMATCH`、`UNSUPPORTED_LINE`、`UNSUPPORTED_PAYOUT`、`FEE_EXCEEDS_GROSS`、`LINE_IN_OTHER_BATCH`、`TOTAL_MISMATCH`、`LINES_NOT_READY`。
+- 批次行另有非空 `occurred_at`（balance transaction created）和 `recorded_at`；`line_no integer` 从 1 起，`batch_id` 是外键。金额保留处理方方向：`PAYMENT`、`PAYOUT_FAILURE` 的 `gross` 为 1～99999999，`REFUND` 的 `gross` 为 −99999999～−1；`fee` 为 0～99999999，`net` 为 −99999999～99999999，并满足 `net = gross - fee`。`balance_txn_id` 必须以 `txn_` 开头且有后缀、跨批次唯一。插入触发器锁住批次行并检查其状态为 `CONFIRMED`（否则 `23514`），保证未核对通过的明细仅留在 fetch 原文中；行插入后可随批次进入 `BANKED` 或 `PAYOUT_FAILED`。
+- `batch_transition` 与 `payment_transition` 同形：`id bigint GENERATED ALWAYS AS IDENTITY` 主键，`subject_id` 外键指向批次；`from_status` 可空，其他字段非空，两状态列均检查批次状态枚举。
+- `io.processor_fetch.id` 采用 `bigint GENERATED ALWAYS AS IDENTITY`，`event_id` 可空且外键指向 inbox；其余字段非空：`purpose`（`BATCH_LINES` / `PAYOUT` / `RECON_SNAPSHOT`）、`request jsonb`、`response_body text`、`response_sha256 text`、`complete boolean`、`fetched_at timestamptz`、`recorded_at timestamptz`。多页原文存为数组文本，SHA-256 对保存文本的 UTF-8 字节计算，并用 CHECK 验证；不把原文转为 jsonb 后再算哈希。未拉完的响应也可存档，`complete=false`。
+- 批次行、状态历史、fetch 的 UPDATE、DELETE、TRUNCATE 均由触发器拒绝（`LL004`），包括属主误操作。补齐 V2 留下的 `payment.batch_id` 外键。
+- 四张表均由 `migrator` 持有；`app` 只有 INSERT/SELECT，批次额外仅可 UPDATE `status`、`hold_reason`、`settlement_date`、`arrival_date`、五项合计、`lines_fetch_id`、`updated_at`。`readonly` 仅可 SELECT 显式列出全部字段的 `core.v_settlement_batch`、`core.v_settlement_batch_line`、`core.v_batch_transition`，不能访问底表或 `io`。
+
 ### `core.*_transition`
 
 每类对象一张：`subject_id`、`from_status`、`to_status`、`evidence_type`、`evidence_id`、`occurred_at`、`recorded_at`。只追加。
