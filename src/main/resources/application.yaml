@@ -32,3 +32,6 @@ ledgerlab:
   stripe:
     webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
     api-key: ${STRIPE_API_KEY:}
+    api-base-url: ${STRIPE_API_BASE_URL:https://api.stripe.com}
+    connect-timeout: 5s
+    read-timeout: 30s

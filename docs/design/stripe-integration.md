@@ -82,6 +82,17 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 
 否则幂等键过期后的重发可能变成第二笔退款（例如原退款在列表第二页，只查第一页就会以为不存在）。
 
+### P2 T04 实现备注：只读客户端与拉取存档
+
+- 公开入口为 `dev.ledgerlab.ingestion.StripeReader`，提供 `retrievePayout`、`listBalanceTransactionsForPayout`、`listPayoutsCreated`；其嵌套类型 `FetchPurpose` 对应 V6 的 `PAYOUT`、`BATCH_LINES`、`RECON_SNAPSHOT`。`FetchResult<T>` 带存档编号、原文哈希、`fetchedAt`、不可变的解析列表和安全失败原因；`complete()` 仅表示这一次 HTTP 查询及解析完整成功，不表示 payout 明细已就绪、金额已核对或整个对账快照已完整。
+- 使用现有 Spring `RestClient` 与 JDK HTTP 客户端，不引入 SDK 或其他依赖。`ledgerlab.stripe.api-base-url` 默认 `https://api.stripe.com`（可用 `STRIPE_API_BASE_URL` 覆盖）；`connect-timeout` 默认 `5s`、`read-timeout` 默认 `30s`，均须为正。只接受 HTTP(S) base URL，禁止 URL 内嵌凭据、查询串和 fragment；禁用重定向，3xx 作为失败存档。每个请求发送 Bearer 密钥及固定 `Stripe-Version: 2026-09-30.endive`。
+- 沿用原有密钥启动校验：空密钥不影响 webhook 入站；开始拉取时返回 `complete=false` 和 `ledgerlab.stripe.api-key is required for Stripe reads`，仍存档，且不发送 HTTP。live 或非 test 前缀继续在启动时拒绝。失败结果不携带上游响应正文或原异常，防止上游回显凭据进入日志或异常信息。
+- HTTP 与解析在 `NOT_SUPPORTED` 中执行（若调用方已有事务则暂挂）；结束后用 `REQUIRES_NEW` 短事务 INSERT 一行 `io.processor_fetch`，失败调用也如此。`fetched_at` 在 HTTP 尝试结束后取注入的 `Clock`，`recorded_at` 在存档事务内取同一时钟。调用方回滚不撤销存档。可选 `eventId` 必须引用已提交的 inbox 事件；无事件关联的主动查询传 `null`。数据库不可用或存档约束失败时抛出不带原始数据的 `Stripe fetch archive failed`，不能伪装成有存档的结果。
+- 单对象的 `response_body` 是原始响应文本（未收到响应时为空串）。列表查询统一存为 **JSON 字符串数组**，每个字符串是按接收顺序保存的一页完整原文，包括非 2xx 或非法 JSON 的原文；这样不会重排对象字段、丢掉空白或无法保留坏 JSON。没收到任何完整响应时为 `[]`。SHA-256 对最终保存文本的 UTF-8 字节计算，与 V6 CHECK 一致；这是原始证据哈希，不是后续业务版本的规范化指纹。`request` 保存 GET 路径、筛选参数、purpose、协议版本、每页尝试的参数及收到的 HTTP 状态、最终 outcome，不保存 Authorization。
+- 列表使用 `limit=100`，以每页最后一项的 `id` 作 `starting_after`，直到布尔值 `has_more=false`；空页却声称还有下一页、游标重复、非 2xx、超时、非法 JSON／字段，全部为 `complete=false`。失败时解析列表为空，只能通过存档查看半截证据。不在客户端去重、跳过 `type=payout` 或拒绝未知业务类型，保留重复行、带符号金额及可空的 balance transaction `source`，由后续核对识别差异。
+- payout 返回 id、amount、currency、automatic、method、status、reconciliationStatus、arrivalDate、created；balance transaction 返回 id、type、source、amount、fee、net、currency、created。金额必须是可表示为 `long` 的 JSON 整数，拒绝小数、字符串、空值和溢出；时间从整数 epoch seconds 转为 `Instant`。创建区间是 `[from, to)`，对应 `created[gte]` 与 `created[lt]`；边界须为整秒且递增，避免截断造成范围变化。无效区间或 payout 编号也存档为失败，不发 HTTP。
+- T04 测试以 JDK `HttpServer` 和 Testcontainers PostgreSQL 验证完整／中断分页、原文及哈希、整数解析、请求头、配置与密钥失败、事件关联、事务外 HTTP 和存档独立提交，支撑 AC-5.10、AC-5.17；不代表批次核对／快照导入已完成。只追加权限复用 T02 的 `SettlementTablesTest.ac_1_13_appendOnlyEvidenceRejectsAppUpdatesAndOwnerRewrites`，密钥启动拒绝复用 `StripePropertiesTest`（AC-8.2）。inbox worker 接线仍留给 T05。
+
 ## 4. 编号与时间
 
 | 我们的字段 | Stripe 来源 |
