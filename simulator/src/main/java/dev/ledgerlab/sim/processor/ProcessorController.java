@@ -1,6 +1,7 @@
 package dev.ledgerlab.sim.processor;
 
 import java.util.Map;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -36,5 +37,10 @@ public final class ProcessorController {
     @GetMapping("/events/{id}")
     public Map<String, Object> inspect(@PathVariable String id) {
         return processor.inspect(id);
+    }
+
+    @ExceptionHandler(ArithmeticException.class)
+    public org.springframework.http.ResponseEntity<Map<String, String>> invalidAmount(ArithmeticException error) {
+        return org.springframework.http.ResponseEntity.badRequest().body(Map.of("error", "Invalid amount range"));
     }
 }

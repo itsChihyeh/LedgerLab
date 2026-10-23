@@ -21,6 +21,14 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。决策见 ADR-
 
 P1b relay 提供 `POST /relay/stripe` 和 `PUT/GET /sim/relay/plan`，下游由 `sim.relay.target-url` 指定；规则顺序匹配事件号/类型，默认 PASS。HOLD_AND_REORDER 等后续 k 个事件完成转发后释放；扣留满 240 秒仍未凑够则自动原样转发，日志记 `HOLD_TIMEOUT_RELEASE`。DELAY 与扣留超时使用可控模拟时钟及内存调度队列；进程重启不保留计划和待发请求。完整计划格式见 `simulator/README.md`。
 
+P2 T03 fake Stripe 增加 charge 的 balance transaction、payout 生命周期与只读 REST；协议标记仍固定 `2026-09-30.endive`。字段对照官方 [Payout](https://docs.stripe.com/api/payouts/object)、[Balance Transaction](https://docs.stripe.com/api/balance_transactions/object)、[列表分页](https://docs.stripe.com/api/balance_transactions/list)。`sim.stripe.availability-delay` 默认 PT0S，按模拟时间决定 charge 净额何时可用；payout 默认归集全部可用且未分配的 CAD 行，另列一条负向 `type=payout`（主应用跳过）。失败不重用原支付行，而是新增 `payout_failure`、`source=原 po_`、`net=返还金额`，在 Payout 的 `failure_balance_transaction` 中引用，供下一批次使用（样例 H）。退款执行接口留在 P3。
+
+`POST /sim/payouts`、`/{id}/reconcile`、`/{id}/paid`、`/{id}/failed` 分别生成完整对象快照事件；相同转换重试返回已有事件号，不重复投递或返还资金。标准自动 payout 的明细从 in_progress 转 completed；手动或 instant 的 reconciliation_status 为 not_applicable，拒绝 reconcile。允许 paid 后再收到 failed，failed 后不允许 paid；reconcile 独立于打款状态。默认 arrival_date 为创建时刻加 24 小时，仅是模拟器预计日期，不复刻 Stripe 银行假日日历、不驱动银行入账。
+
+只读接口为 `GET /v1/payouts/{id}`、`GET /v1/payouts?created[gte]=…&created[lt]=…`、`GET /v1/balance_transactions?payout=…`，Bearer 必须精确匹配 `sim.stripe.api-key`（仅 test 前缀，未配置时只读 API 全部 401）。排序为 created DESC、id DESC，同秒 id 顺序是模拟器固定规则；limit 默认 10、范围 1～100，无效/不属于筛选结果的游标返回 400。为便于检查，fake 的行接口在 in_progress 时也可读；适配器仍必须等 completed，不能据此放宽第 2 节契约。
+
+手续费覆盖与 payout/行/分页故障在 `sim_processor.fault_plan` 追加存档；重复行故障把副本紧跟在本页原行后，故意使该页最多多一行，游标按未复制集合推进，不会因相同 id 陷入循环。未知 charge/adjustment 行只污染指定 payout 的明细，不重新计算 payout 金额。`POST /sim/clock/advance {"seconds":n}`（非负整数）推进模拟时钟并同步执行到期 relay 回调；`GET /sim/clock` 返回 ISO-8601 `now`。时钟不改变现实签名时间，快进操作仍应由单一场景驱动者执行。
+
 两点要如实写进 README：
 
 - 测试模式下结算单和 webhook 都来自 Stripe，两者的独立性比模拟器模式弱（真实对账也是如此，处理方的报表就是处理方的话）。对账准确率（误报、漏报）的评测只在模拟器模式做，那里有真值。

@@ -273,6 +273,15 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 处理方和银行的状态分开存、分开推进，避免两边共享同一个错误（I6）。
 
+### P2 T03 实现备注（模拟器 V3）
+
+- 新表仍由 `simulator` 迁移并拥有，PUBLIC、migrator、app、readonly 均无访问权。`payout`、`balance_transaction`、`fault_plan` 均有非空 `recorded_at timestamptz`，取注入的现实 UTC Clock；业务时间来自 SimulationClock。新表业务时刻存 `timestamptz`，REST 转成 Stripe Unix 秒，V1 的 bigint 时间列不变。
+- `payout`：`id text PK`、`amount bigint`（允许故障注入负值）、`currency text`、`automatic boolean`、`method text`（standard/instant）、`status text`（pending/in_transit/paid/failed/canceled）、`reconciliation_status text`（in_progress/completed/not_applicable）、`arrival_date/created timestamptz`、`failure_code text NULL`；另有 `duplicate_transaction text NULL`、`fail_page integer NOT NULL DEFAULT 0`（0 关闭，正数为失败页）。
+- `balance_transaction`：`id text PK`、`type text`（charge/refund/payout/payout_failure/adjustment）、`source text`、`amount/fee/net bigint`、`currency text`、`created/available_on timestamptz`、`payout text NULL FK payout`、`reporting_category text`。CHECK `net = amount - fee`，金额各列和 payout 金额严格位于 ±2^53 以内。source 不设 charge 外键，以支持未知支付故障及 payout/refund 来源。
+- `fault_plan`：`id text PK`、`target_id text`、`request text`（原始控制 JSON）、`recorded_at timestamptz`。charge 的 fee 覆盖、payout 参数覆盖和每次故障计划修改均追加记录。列表复制行仅在响应中生成；extra_line 是带全新 txn 编号的持久行，直接属于指定 payout，不改变 payout 金额；fail_page 按当前游标偏移/limit 推导，重复请求同一页稳定失败。
+- `event.charge_id` 在 V3 改成可空，原外键保留；payout 事件使用新增 `payout_id text NULL FK payout`，旧 charge 事件不变。两种事件均保存完整对象快照，redeliver 原样重签，reissue 保留类型及对象快照。
+- 资金写入事务首先以 SHARE ROW EXCLUSIVE 锁定 balance_transaction 表，防止多个请求或进程重复分配。默认 payout 归集已可用、未分配的 CAD 行（不含 payout 自身），负/零净额不创建；失败不解绑定旧行，只新增一条 payout_failure 返还行。amount 覆盖是故意制造不一致的故障：仍归集原集合，payout 借记采用覆盖金额，后续故障场景需独立重置数据，不承诺自动修复不一致。
+
 ### P1b-8 chaos relay（模拟器 V2）
 
 `sim_chaos.relay_log` 由 simulator 迁移、拥有；PUBLIC、migrator、app、readonly 无表和序列访问权。
