@@ -14,6 +14,7 @@ final class RefundReference {
     long failed;
     long executed;
     long successes;
+    long batchedRefunds;
 
     void observe(int index, String observation) {
         Refund refund = refunds.get(index);
@@ -59,6 +60,17 @@ final class RefundReference {
         allocate();
     }
 
+    boolean batchRefund(int index) {
+        Refund refund = refunds.get(index);
+        if (refund.batched
+                || !List.of("READY", "SUBMITTED", "UNKNOWN", "SUCCEEDED").contains(refund.state)) return false;
+        observe(index, "SUCCEEDED");
+        refund.batched = true;
+        batchedRefunds += refund.amount;
+        settle(19900);
+        return true;
+    }
+
     private void allocate() {
         for (Refund refund : refunds) {
             if (!refund.state.equals("AWAITING_FUNDS")) continue;
@@ -73,6 +85,7 @@ final class RefundReference {
         final long amount;
         String state = "AWAITING_FUNDS";
         boolean commandCreated;
+        boolean batched;
 
         Refund(long amount) {
             this.amount = amount;

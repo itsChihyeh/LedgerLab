@@ -34,14 +34,22 @@ public final class RefundInbox {
             ObjectMapper mapper,
             Clock clock,
             BatchSettlement batches,
-            RefundEvidence evidence) {
+            RefundEvidence evidence,
+            dev.ledgerlab.refunds.RefundSettlement refundSettlement) {
         this.jdbc = jdbc;
         this.manager = manager;
         this.capture = capture;
         this.issues = issues;
         this.mapper = mapper;
         this.clock = clock;
-        payouts = new PayoutProcessing(org.mockito.Mockito.mock(StripeReader.class), batches, jdbc, mapper, clock);
+        payouts = new PayoutProcessing(
+                org.mockito.Mockito.mock(StripeReader.class),
+                batches,
+                jdbc,
+                mapper,
+                clock,
+                org.mockito.Mockito.mock(dev.ledgerlab.refunds.ProcessorRefundGateway.class),
+                refundSettlement);
         refunds = new RefundProcessing(new RefundParser(mapper), evidence, issues, mapper);
         intake = new InboxIntake(jdbc, new TransactionTemplate(manager), issues, mapper, clock);
     }

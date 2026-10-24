@@ -462,7 +462,16 @@ class RefundWebhookTest {
     }
 
     private RefundInbox inbox(RefundEvidence target) {
-        return new RefundInbox(f.jdbc, f.manager, f.capture, f.issues, f.mapper, f.clock, f.batches, target);
+        return new RefundInbox(
+                f.jdbc,
+                f.manager,
+                f.capture,
+                f.issues,
+                f.mapper,
+                f.clock,
+                f.batches,
+                target,
+                new dev.ledgerlab.refunds.RefundSettlement(f.jdbc, f.ledger, f.payments, target));
     }
 
     private OutboundWorker outbound() {

@@ -101,9 +101,15 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 
 - T04 的 `refunds` 模块依赖 `ledger`、`payments`、`shared`；T07 增加 outbound SPI 与 reconciliation 的公开差异入口。受理先取资金锁，再通过 `PaymentRefunds` 锁支付行并检查剩余可退额；支付额度增加、退款插入、历史、`REFUND_ACCEPTED`、队列放行与命令落库同事务完成。CAPTURED 和 SETTLED 均可受理，VOIDED 拒绝；金额允许 1～99999999 分。
 - 新退款先作为 AWAITING_FUNDS 加入集合；`RefundQueue.release()` 只检查调用事务已持有资金锁，不主动取锁。等待退款先按 id 锁行，再按 `queue_seq` 求最长可覆盖前缀，合计用 `Math.addExact`，遇到第一个不能覆盖的退款即停止。READY 与 SUBMIT_REFUND 命令同事务创建，重复调用不会重复建命令。
-- `BatchSettlement` 在 BATCH_SETTLED 与银行等待行唤醒之后同步调用 release；取消只允许 AWAITING_FUNDS 且必须有原因，恢复支付额度、记 REFUND_CANCELLED 后同步放行。同事务回滚也撤销队列状态与命令。退款失败的接线由 T07 的 RefundEvidence 完成，提现失败／退回留 P5。
+- `BatchSettlement` 在 BATCH_SETTLED 之后同步调用 release，然后唤醒银行等待行（P3 T10 调整顺序）；取消只允许 AWAITING_FUNDS 且必须有原因，恢复支付额度、记 REFUND_CANCELLED 后同步放行。同事务回滚也撤销队列状态与命令。退款失败的接线由 T07 的 RefundEvidence 完成，提现失败／退回留 P5。
 - 公开接口只新增 `Ledger.assertFundsLocked()`（复用事务持锁标记）和 `payments.PaymentRefunds` 的窄支付行接口。settlement 模块允许依赖列表仅增加 refunds；不改变其他模块边界。
 - AC-3.13 通过包内可替换的额度协作者验证丢失更新：故障实现只存在于测试，生产没有去锁开关。真实 PostgreSQL 的资金分录与退款额度不变量检查见 [T04 测试说明](../testing/refund-acceptance.md)。
+
+### P3 T10 实现备注：批次退款行
+
+- 先核对全批明细，再对 READY／SUBMITTED／UNKNOWN 的退款通过统一 `RefundEvidence` 入口应用成功证据；来源 BATCH_LINE，证据号为 balance transaction 的 txn_，occurred_at 取该行 created。已 SUCCEEDED 不重复执行。退款执行、批次确认与分录、退款 batch_id、FIFO 放行、银行 WAITING 唤醒同事务提交或回滚；外部拉取存档独立保留。
+- 每笔退款按 re_ 匹配；退款行 gross 为负，refunds 合计取其相反数。BATCH_SETTLED 仍贷 1101 的 N+F，不再次扣退款；普通支付加退款的批次仍为五条 posting。fee 沿用数据字典的非负整数范围；退款行若有非零 fee，也计入本批 F，不改变退款本金或原支付手续费；本批总手续费超过支付毛额时 HELD(FEE_EXCEEDS_GROSS)，避免产生负的 G−F posting。
+- 定向测试覆盖样例 A 第 7、19 步（第 9～11 步提现只用账本夹具建立前置余额，不实现 P5）、两笔部分退款、失败／等待／取消／金额冲突、跨批次复用、HTTP 重试、并发去重和事务回滚。每例检查 INV-1～5、INV-9 的 2101／1102／2103 及 INV-10。退款 jqwik 模型增加 REFUND_BATCH 动作，独立计算执行额、入批额和净在途金额，保留种子 2026102407 与最多 12 步、本地 100／CI 1000 条序列。
 
 ### 4.2 提现门槛（S3）
 

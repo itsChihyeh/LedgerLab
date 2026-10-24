@@ -49,6 +49,24 @@ class SettlementTablesTest {
         Sql.execute(db.app(), CONFIRM, insert("core.settlement_batch_line"), insert("core.batch_transition"));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"UNKNOWN_REFUND", "REFUND_STATE_CONFLICT"})
+    void ac_3_1_refundHoldReasonsKeepDatabaseConstraintsAndRoleBoundary(String reason) throws SQLException {
+        seedBatch();
+        Sql.execute(db.app(), "UPDATE core.settlement_batch SET status='HELD', hold_reason='" + reason + "'");
+        assertThat(Sql.queryLong(
+                        db.readonly(),
+                        "SELECT count(*) FROM core.v_settlement_batch WHERE hold_reason='" + reason + "'"))
+                .isEqualTo(1);
+        Sql.assertRejected("23514", db.app(), "UPDATE core.settlement_batch SET hold_reason='INVALID_REFUND_REASON'");
+        Sql.assertRejected("23514", db.app(), "UPDATE core.settlement_batch SET hold_reason=NULL");
+        Sql.assertRejected("42501", db.readonly(), "UPDATE core.v_settlement_batch SET hold_reason='UNKNOWN_PAYMENT'");
+        assertThat(Sql.queryLong(
+                        db.migrator(),
+                        "SELECT count(*) FROM flyway.flyway_schema_history WHERE version='18' AND success"))
+                .isEqualTo(1);
+    }
+
     @Test
     void ac_1_13_migrationFromEmptyDatabaseCreatesMigratorOwnedTables() throws SQLException {
         // freshMigrated's template is built from the role bootstrap and all Flyway migrations.

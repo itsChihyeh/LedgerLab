@@ -3,12 +3,17 @@ package dev.ledgerlab.ingestion.internal;
 import dev.ledgerlab.ingestion.StripeReader;
 import dev.ledgerlab.ingestion.StripeReader.FetchPurpose;
 import dev.ledgerlab.ingestion.StripeReader.Payout;
+import dev.ledgerlab.refunds.ProcessorRefundGateway;
+import dev.ledgerlab.refunds.RefundSettlement;
 import dev.ledgerlab.settlement.BatchSettlement;
 import dev.ledgerlab.settlement.PayoutEvidence;
 import dev.ledgerlab.settlement.PayoutEvidence.Lines;
 import java.time.Clock;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import org.jspecify.annotations.Nullable;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
@@ -22,14 +27,24 @@ final class PayoutProcessing {
     private final JdbcClient jdbc;
     private final ObjectMapper mapper;
     private final Clock clock;
+    private final ProcessorRefundGateway refundGateway;
+    private final RefundSettlement refunds;
 
     PayoutProcessing(
-            StripeReader reader, BatchSettlement settlement, JdbcClient jdbc, ObjectMapper mapper, Clock clock) {
+            StripeReader reader,
+            BatchSettlement settlement,
+            JdbcClient jdbc,
+            ObjectMapper mapper,
+            Clock clock,
+            ProcessorRefundGateway refundGateway,
+            RefundSettlement refunds) {
         this.reader = reader;
         this.settlement = settlement;
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.clock = clock;
+        this.refundGateway = refundGateway;
+        this.refunds = refunds;
     }
 
     @Nullable
@@ -68,7 +83,13 @@ final class PayoutProcessing {
                                     line.currency(),
                                     line.created()))
                             .toList());
-            evidence = evidence(sourceEvent, eventType, evidenceType, evidenceId, payout, lines);
+            evidence = evidence(
+                    sourceEvent,
+                    eventType,
+                    evidenceType,
+                    evidenceId,
+                    payout,
+                    new Lines(lines.fetchId(), lines.items(), refundIdentities(lines.items(), null)));
         }
         return evidence;
     }
@@ -114,8 +135,59 @@ final class PayoutProcessing {
                             "completed",
                             batch.arrivalDate(),
                             batch.created(),
-                            new Lines(batch.fetchId(), items)));
+                            new Lines(batch.fetchId(), items, refundIdentities(items, batch.batchId()))));
         }
+    }
+
+    private Map<String, PayoutEvidence.RefundIdentity> refundIdentities(
+            List<PayoutEvidence.Line> lines, @Nullable String archivedBatch) {
+        var identities = new HashMap<String, PayoutEvidence.RefundIdentity>();
+        for (var line : lines) {
+            String ref = line.source();
+            if (!line.type().equals("refund")
+                    || ref == null
+                    || !ref.matches("re_[A-Za-z0-9_]+")
+                    || line.gross() >= 0
+                    || identities.containsKey(ref)
+                    || refunds.find(ref, null).isPresent()) continue;
+            if (archivedBatch != null) {
+                // Capture rechecks run inside the funds transaction: replay the original archived identity only.
+                var body = jdbc.sql("""
+                        SELECT response_body FROM io.processor_fetch
+                        WHERE purpose='REFUND_QUERY' AND complete AND request->>'path'=:path
+                            AND fetched_at <= (SELECT min(recorded_at) FROM core.batch_transition
+                                WHERE subject_id=:batch AND to_status='HELD' AND hold_reason='UNKNOWN_PAYMENT')
+                        ORDER BY id DESC LIMIT 1
+                        """)
+                        .param("path", "/v1/refunds/" + ref)
+                        .param("batch", archivedBatch)
+                        .query(String.class)
+                        .optional();
+                if (body.isPresent()) {
+                    var node = mapper.readTree(body.orElseThrow());
+                    if (ref.equals(node.path("id").asString()))
+                        identities.put(
+                                ref,
+                                new PayoutEvidence.RefundIdentity(
+                                        node.path("metadata")
+                                                .path("ledgerlab_refund_id")
+                                                .asString(null),
+                                        StripeReadParser.integer(node, "amount"),
+                                        StripeReadParser.text(node, "charge")));
+                }
+                continue;
+            }
+            var response = refundGateway.retrieve(ref);
+            if (response.value() instanceof ProcessorRefundGateway.Incomplete incomplete)
+                throw new IllegalStateException("Incomplete refund identity fetch: " + incomplete.reason());
+            if (response.value() instanceof ProcessorRefundGateway.Found found && found.details() != null) {
+                var details = found.details();
+                identities.put(
+                        ref,
+                        new PayoutEvidence.RefundIdentity(details.refundId(), details.amount(), details.chargeRef()));
+            }
+        }
+        return identities;
     }
 
     BatchSettlement.Result apply(PayoutEvidence evidence) {

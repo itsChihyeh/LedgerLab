@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.ledgerlab.refunds.ProcessorRefundFact;
 import dev.ledgerlab.refunds.RefundResult;
+import dev.ledgerlab.settlement.PayoutEvidence;
 import java.util.ArrayList;
 import java.util.List;
 import net.jqwik.api.Arbitraries;
@@ -51,7 +52,8 @@ class RefundStatefulProperties {
         PENDING,
         SUCCEEDED,
         FAILED,
-        TIMEOUT
+        TIMEOUT,
+        REFUND_BATCH
     }
 
     static final class Operations implements Action.Independent<State> {
@@ -73,6 +75,7 @@ class RefundStatefulProperties {
         final List<RefundResult> accepted = new ArrayList<>();
         final JdbcRefundEvidence evidence;
         int batches;
+        int refundBatches;
 
         State(RefundFixture fixture) {
             f = fixture;
@@ -84,6 +87,47 @@ class RefundStatefulProperties {
         void apply(Kind kind, long amount, int index) {
             f.clock.set(f.clock.instant().plusSeconds(1));
             switch (kind) {
+                case REFUND_BATCH -> {
+                    if (accepted.isEmpty()) return;
+                    int selected = index % accepted.size();
+                    if (!model.batchRefund(selected)) return;
+                    var refund = accepted.get(selected);
+                    String ref = "ch_refund_batch_" + ++refundBatches;
+                    f.payment(ref, 20000);
+                    var base = f.batchEvidence("po_refund_batch_" + refundBatches, ref, 20000, 100);
+                    var baseLines = java.util.Objects.requireNonNull(base.lines());
+                    var items = new ArrayList<>(baseLines.items());
+                    items.add(new PayoutEvidence.Line(
+                            "txn_refund_model_" + selected,
+                            "refund",
+                            "re_model_" + selected,
+                            -refund.amount(),
+                            0,
+                            -refund.amount(),
+                            "cad",
+                            f.clock.instant()));
+                    var batch = new PayoutEvidence(
+                            base.eventId(),
+                            base.evidenceType(),
+                            base.evidenceId(),
+                            base.eventType(),
+                            base.batchId(),
+                            19900 - refund.amount(),
+                            base.currency(),
+                            base.automatic(),
+                            base.method(),
+                            base.reconciliationStatus(),
+                            base.arrivalDate(),
+                            base.created(),
+                            new PayoutEvidence.Lines(
+                                    baseLines.fetchId(),
+                                    items,
+                                    java.util.Map.of(
+                                            "re_model_" + selected,
+                                            new PayoutEvidence.RefundIdentity(
+                                                    refund.refundId(), refund.amount(), "ch_p1"))));
+                    f.tx.executeWithoutResult(tx -> f.batches.process(batch));
+                }
                 case PENDING, SUCCEEDED, FAILED, TIMEOUT -> {
                     if (accepted.isEmpty()) return;
                     int selected = index % accepted.size();
@@ -141,9 +185,9 @@ class RefundStatefulProperties {
             assertThat(f.balance(2102)).isEqualTo(model.settled - model.reserved);
             assertThat(f.balance(2103)).isEqualTo(model.reserved - model.executed);
             assertThat(f.balance(1103)).isZero();
-            assertThat(f.balance(1102)).isEqualTo(model.settled);
+            assertThat(f.balance(1102)).isEqualTo(model.settled - model.batchedRefunds);
             assertThat(f.balance(2101)).isEqualTo(batches == 0 ? 10000 : 0);
-            assertThat(f.balance(1101)).isEqualTo((batches == 0 ? 10000 : 0) - model.executed);
+            assertThat(f.balance(1101)).isEqualTo((batches == 0 ? 10000 : 0) - model.executed + model.batchedRefunds);
             assertThat(f.count("core.refund")).isEqualTo(model.refunds.size());
             assertThat(f.count("io.outbound_command"))
                     .isEqualTo(
@@ -156,6 +200,11 @@ class RefundStatefulProperties {
                 assertThat(actual.queueSeq()).isGreaterThan(lastSeq);
                 lastSeq = actual.queueSeq();
                 assertThat(f.status(actual.refundId())).isEqualTo(model.refunds.get(i).state);
+                assertThat(f.jdbc.sql("SELECT batch_id IS NOT NULL FROM core.refund WHERE id=:id")
+                                .param("id", actual.refundId())
+                                .query(Boolean.class)
+                                .single())
+                        .isEqualTo(model.refunds.get(i).batched);
                 assertThat(f.jdbc.sql("SELECT initial_result->'body'->>'status' FROM core.refund WHERE id=:id")
                                 .param("id", actual.refundId())
                                 .query(String.class)

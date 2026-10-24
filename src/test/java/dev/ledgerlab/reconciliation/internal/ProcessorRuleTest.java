@@ -57,6 +57,9 @@ class ProcessorRuleTest {
         var json = new ReconJson(mapper);
         var calendar = new BusinessCalendar();
         capture = new PaymentCapture(ledger, jdbc, issues, ids, clock, mapper);
+        var history = new dev.ledgerlab.refunds.internal.RefundHistory(jdbc);
+        var queue = new dev.ledgerlab.refunds.internal.JdbcRefundQueue(jdbc, ledger, clock, ids, history);
+        var payments = new dev.ledgerlab.payments.PaymentRefunds(jdbc, ledger);
         settlement = new BatchSettlement(
                 jdbc,
                 ledger,
@@ -65,8 +68,13 @@ class ProcessorRuleTest {
                 clock,
                 mapper,
                 new BankStatements(jdbc, ledger, issues, clock, ids, calendar, mapper, manager, 2),
-                new dev.ledgerlab.refunds.internal.JdbcRefundQueue(
-                        jdbc, ledger, clock, ids, new dev.ledgerlab.refunds.internal.RefundHistory(jdbc)));
+                queue,
+                new dev.ledgerlab.refunds.RefundSettlement(
+                        jdbc,
+                        ledger,
+                        payments,
+                        new dev.ledgerlab.refunds.internal.JdbcRefundEvidence(
+                                jdbc, ledger, payments, queue, history, issues, mapper, clock)));
         snapshots = new ProcessorSnapshots(jdbc, manager, clock, ids, calendar, mapper, json, issues);
         runs = new ReconRuns(
                 jdbc,

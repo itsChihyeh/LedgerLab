@@ -74,6 +74,12 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 - 本地退款及命令在发送前已提交，所以不存在等待退款落库的 PARKED 路径。重投同 event_id 只新增投递记录，不重新运行已拒绝的业务；同内容新 event_id 会按处理时的本地事实重新判断，原拒绝与差异保留。空库重放须先恢复退款受理／命令，再输入这些 webhook，不能依赖停放补齐顺序。
 - 固定合成夹具 `src/test/resources/contracts/refund-updated-failed.json` 与模拟器同名夹具逐字节一致。主应用验证全部映射字段和事件时间，模拟器生成失败退款事件后仅规范化生成的编号与时间，逐字段比较完整 JSON。夹具不是实际 Stripe 录制，P6 验证范围不变。
 
+### P3 T10 实现备注：批次行关联退款
+
+- 完整拉取 balance transactions 后，refund 行 source 为 re_、金额为负。已知 re_ 直接交批次核对；未知 re_ 在业务事务外调用 T08 `ProcessorRefundGateway.retrieve`，该网关沿用 REFUND_QUERY 独立存档，再把 metadata.ledgerlab_refund_id、退款本金和 charge 身份交给核对事务复查。查询对象的当前状态不替代批次行成功证据，退款执行时间仍取行 created。
+- HTTP／解析失败（包括 T08 现有的直接 retrieve 404 不确定语义）走 inbox 重试；成功取回但无本地 metadata／本地退款不存在则 HELD(UNKNOWN_REFUND)。成功查询的 metadata、charge、amount 与本地身份冲突时不能绑到另一笔退款。
+- UNKNOWN_PAYMENT 批次因请款到达而重核时，不在资金事务内发 HTTP：使用首次 UNKNOWN_PAYMENT 历史时点之前的完整 REFUND_QUERY 存档恢复身份；已有 re_ 仍优先按本地关联核对。原明细仍固定使用 lines_fetch_id。其他 HELD 原因不自动重核。
+
 ### P2 T05 实现备注：就绪拉取与兜底轮询
 
 - `PayoutProcessing` 复用 T04 的 Payout 解析与 `StripeReader`，传给 settlement 的证据类型不依赖 ingestion。created 已带 `completed` 时也拉取；`in_progress` 不拉；不支持的 payout 直接隔离，不拉明细。`type=payout` 的转出行跳过，charge 和已知失败打款退回行参加核对，其余行暂隔离。拉取未完成只保留 `complete=false` 存档，worker 重试，不形成批次版本。

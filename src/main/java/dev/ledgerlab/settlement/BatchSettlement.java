@@ -9,7 +9,9 @@ import dev.ledgerlab.ledger.SubjectType;
 import dev.ledgerlab.payments.PaymentSettlement;
 import dev.ledgerlab.payments.PaymentSettlement.Payment;
 import dev.ledgerlab.reconciliation.IngestionIssues;
+import dev.ledgerlab.refunds.ProcessorRefundFact;
 import dev.ledgerlab.refunds.RefundQueue;
+import dev.ledgerlab.refunds.RefundSettlement;
 import dev.ledgerlab.settlement.PayoutEvidence.Line;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -47,6 +49,7 @@ public final class BatchSettlement {
     private final ObjectMapper mapper;
     private final BankStatements bankStatements;
     private final RefundQueue refundQueue;
+    private final RefundSettlement refunds;
 
     public BatchSettlement(
             JdbcClient jdbc,
@@ -56,7 +59,8 @@ public final class BatchSettlement {
             Clock clock,
             ObjectMapper mapper,
             BankStatements bankStatements,
-            RefundQueue refundQueue) {
+            RefundQueue refundQueue,
+            RefundSettlement refunds) {
         this.jdbc = jdbc;
         this.ledger = ledger;
         this.payments = payments;
@@ -65,6 +69,7 @@ public final class BatchSettlement {
         this.mapper = mapper;
         this.bankStatements = bankStatements;
         this.refundQueue = refundQueue;
+        this.refunds = refunds;
     }
 
     /** Optimization only: process rechecks under the funds and batch locks. */
@@ -195,6 +200,7 @@ public final class BatchSettlement {
         long gross = 0;
         long fees = 0;
         long returned = 0;
+        long refunded = 0;
         long net = 0;
         var identities = new HashSet<String>();
         var subjects = new HashSet<String>();
@@ -202,9 +208,15 @@ public final class BatchSettlement {
             if (!supportedLineType(line)
                     || line.source() == null
                     || !line.currency().equalsIgnoreCase("cad")
-                    || line.gross() < 1
-                    || line.gross() > 99999999
+                    || (line.type().equals("refund")
+                            ? line.gross() > -1
+                                    || line.gross() < -99999999
+                                    || !line.source().matches("re_[A-Za-z0-9_]+")
+                            : line.gross() < 1 || line.gross() > 99999999)
                     || line.fee() < 0
+                    || line.fee() > 99999999
+                    || line.net() < -99999999
+                    || line.net() > 99999999
                     || !identities.add(line.id())
                     || !subjects.add(line.type() + ":" + line.source())) {
                 hold(
@@ -212,11 +224,11 @@ public final class BatchSettlement {
                         previous,
                         "UNSUPPORTED_LINE",
                         now,
-                        Map.of("line_types", List.of("charge", "payout_failure")),
+                        Map.of("line_types", List.of("charge", "refund", "payout_failure")),
                         line);
                 return Result.APPLIED;
             }
-            if (line.fee() > line.gross()) {
+            if (!line.type().equals("refund") && line.fee() > line.gross()) {
                 hold(
                         evidence,
                         previous,
@@ -240,6 +252,9 @@ public final class BatchSettlement {
             if (line.type().equals("charge")) {
                 gross = Math.addExact(gross, line.gross());
                 fees = Math.addExact(fees, line.fee());
+            } else if (line.type().equals("refund")) {
+                refunded = Math.addExact(refunded, Math.negateExact(line.gross()));
+                fees = Math.addExact(fees, line.fee());
             } else {
                 if (line.fee() != 0) {
                     hold(evidence, previous, "UNSUPPORTED_LINE", now, Map.of("fee", 0), line);
@@ -247,6 +262,10 @@ public final class BatchSettlement {
                 }
                 returned = Math.addExact(returned, line.gross());
             }
+        }
+        if (fees > gross) {
+            hold(evidence, previous, "FEE_EXCEEDS_GROSS", now, Map.of("max_fee", gross), Map.of("fees", fees));
+            return Result.APPLIED;
         }
         long announcedAmount = jdbc.sql("SELECT payout_amount FROM core.settlement_batch WHERE batch_id = :batch")
                 .param("batch", evidence.batchId())
@@ -264,6 +283,8 @@ public final class BatchSettlement {
         }
         transition(evidence, previous, "RECEIVED", now);
         Map<String, Payment> matched = new HashMap<>();
+        Map<String, RefundSettlement.Refund> matchedRefunds = new HashMap<>();
+        var refundIds = new HashSet<String>();
         for (Line line : lines) {
             String source = Objects.requireNonNull(line.source());
             if (jdbc.sql("SELECT count(*) FROM core.settlement_batch_line WHERE balance_txn_id = :id")
@@ -316,6 +337,36 @@ public final class BatchSettlement {
                     return Result.APPLIED;
                 }
                 matched.put(source, fact);
+            } else if (line.type().equals("refund")) {
+                var identity = fetched.refunds().get(source);
+                var found = refunds.lock(source, identity == null ? null : identity.refundId());
+                if (found.isEmpty()) {
+                    hold(evidence, "RECEIVED", "UNKNOWN_REFUND", now, Map.of("known_refund", true), line);
+                    return Result.APPLIED;
+                }
+                var refund = found.orElseThrow();
+                String mismatch = refund.amount() != Math.negateExact(line.gross())
+                                || (identity != null && identity.amount() != refund.amount())
+                        ? "AMOUNT_MISMATCH"
+                        : (refund.batchId() != null && !refund.batchId().equals(evidence.batchId()))
+                                ? "LINE_IN_OTHER_BATCH"
+                                : !List.of("READY", "SUBMITTED", "UNKNOWN", "SUCCEEDED")
+                                                        .contains(refund.status())
+                                                || (refund.processorRef() != null
+                                                        && !refund.processorRef()
+                                                                .equals(source))
+                                                || (identity != null
+                                                        && (!identity.chargeRef()
+                                                                        .equals(refund.chargeRef())
+                                                                || !Objects.equals(identity.refundId(), refund.id())))
+                                                || !refundIds.add(refund.id())
+                                        ? "REFUND_STATE_CONFLICT"
+                                        : null;
+                if (mismatch != null) {
+                    hold(evidence, "RECEIVED", mismatch, now, refund, line);
+                    return Result.APPLIED;
+                }
+                matchedRefunds.put(source, refund);
             } else {
                 boolean matches = jdbc.sql("""
                         SELECT count(*) FROM core.settlement_batch
@@ -344,12 +395,13 @@ public final class BatchSettlement {
             }
         }
         jdbc.sql("""
-                UPDATE core.settlement_batch SET gross = :gross, fees = :fees, refunds = 0,
+                UPDATE core.settlement_batch SET gross = :gross, fees = :fees, refunds = :refunds,
                     payout_failures_returned = :returned, net = :net, lines_fetch_id = :fetch,
                     settlement_date = :date WHERE batch_id = :batch
                 """)
                 .param("gross", gross)
                 .param("fees", fees)
+                .param("refunds", refunded)
                 .param("returned", returned)
                 .param("net", net)
                 .param("fetch", fetched.fetchId())
@@ -366,7 +418,13 @@ public final class BatchSettlement {
                     """)
                     .param("batch", evidence.batchId())
                     .param("number", ++lineNumber)
-                    .param("type", line.type().equals("charge") ? "PAYMENT" : "PAYOUT_FAILURE")
+                    .param(
+                            "type",
+                            switch (line.type()) {
+                                case "charge" -> "PAYMENT";
+                                case "refund" -> "REFUND";
+                                default -> "PAYOUT_FAILURE";
+                            })
                     .param("source", line.source())
                     .param("id", line.id())
                     .param("gross", line.gross())
@@ -384,6 +442,19 @@ public final class BatchSettlement {
                         evidence.evidenceId(),
                         evidence.created(),
                         now);
+            } else if (line.type().equals("refund")) {
+                var refund = Objects.requireNonNull(matchedRefunds.get(line.source()));
+                if (!refund.status().equals("SUCCEEDED"))
+                    refunds.execute(new ProcessorRefundFact(
+                            refund.id(),
+                            line.source(),
+                            ProcessorRefundFact.Status.succeeded,
+                            null,
+                            ProcessorRefundFact.Source.BATCH_LINE,
+                            line.id(),
+                            line.occurredAt(),
+                            Math.negateExact(line.gross()),
+                            refund.chargeRef()));
             }
         }
         var postings = new ArrayList<PostingLine>();
@@ -402,8 +473,10 @@ public final class BatchSettlement {
                 SubjectType.BATCH,
                 evidence.batchId(),
                 postings));
-        bankStatements.wakeWaiting(evidence.batchId());
+        for (var matchedRefund : matchedRefunds.entrySet())
+            refunds.attach(matchedRefund.getValue().id(), matchedRefund.getKey(), evidence.batchId());
         refundQueue.release();
+        bankStatements.wakeWaiting(evidence.batchId());
         return Result.APPLIED;
     }
 
@@ -416,7 +489,9 @@ public final class BatchSettlement {
     }
 
     private static boolean supportedLineType(Line line) {
-        return line.type().equals("charge") || line.type().equals("payout_failure");
+        return line.type().equals("charge")
+                || line.type().equals("refund")
+                || line.type().equals("payout_failure");
     }
 
     private void hold(PayoutEvidence evidence, String previous, String reason, Instant now) {
@@ -449,6 +524,23 @@ public final class BatchSettlement {
                 .update();
         history(evidence, previous, "HELD", now);
         if (reason.equals("UNKNOWN_PAYMENT")) return;
+        if (reason.equals("UNKNOWN_REFUND")) {
+            Line line = (Line) actual;
+            issues.open(
+                    "MISSING_IN_LEDGER",
+                    "refund",
+                    Objects.requireNonNull(line.source()),
+                    mapper.writeValueAsString(expected),
+                    mapper.writeValueAsString(line),
+                    mapper.writeValueAsString(List.of(
+                            Map.of(
+                                    "table",
+                                    "io.processor_fetch",
+                                    "id",
+                                    Objects.requireNonNull(evidence.lines()).fetchId()),
+                            Map.of("table", "core.settlement_batch", "id", evidence.batchId()))));
+            return;
+        }
         String category = switch (reason) {
             case "FEE_EXCEEDS_GROSS", "AMOUNT_MISMATCH" -> "AMOUNT_MISMATCH";
             case "UNSUPPORTED_LINE" -> "UNSUPPORTED_BATCH_LINE";
@@ -529,7 +621,11 @@ public final class BatchSettlement {
                 .param("batch", evidence.batchId())
                 .query((rs, row) -> new Line(
                         rs.getString("balance_txn_id"),
-                        rs.getString("line_type").equals("PAYMENT") ? "charge" : "payout_failure",
+                        switch (rs.getString("line_type")) {
+                            case "PAYMENT" -> "charge";
+                            case "REFUND" -> "refund";
+                            default -> "payout_failure";
+                        },
                         rs.getString("processor_ref"),
                         rs.getLong("gross"),
                         rs.getLong("fee"),

@@ -5,17 +5,33 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.sun.net.httpserver.HttpServer;
 import dev.ledgerlab.ingestion.StripeReader;
+import dev.ledgerlab.ledger.Account;
+import dev.ledgerlab.ledger.EntryRequest;
+import dev.ledgerlab.ledger.EntryType;
 import dev.ledgerlab.ledger.Ledger;
+import dev.ledgerlab.ledger.PostingLine;
+import dev.ledgerlab.ledger.SubjectType;
 import dev.ledgerlab.ledger.internal.JdbcLedger;
 import dev.ledgerlab.ledger.internal.JdbcLedgerAudit;
 import dev.ledgerlab.payments.PaymentCapture;
+import dev.ledgerlab.payments.PaymentRefunds;
 import dev.ledgerlab.payments.PaymentSettlement;
 import dev.ledgerlab.reconciliation.internal.JdbcIngestionIssues;
+import dev.ledgerlab.refunds.ProcessorRefundFact;
+import dev.ledgerlab.refunds.RefundEvidence;
+import dev.ledgerlab.refunds.RefundSettlement;
+import dev.ledgerlab.refunds.Refunds;
+import dev.ledgerlab.refunds.internal.JdbcRefundEvidence;
+import dev.ledgerlab.refunds.internal.JdbcRefundQueue;
+import dev.ledgerlab.refunds.internal.JdbcRefunds;
+import dev.ledgerlab.refunds.internal.RefundHistory;
 import dev.ledgerlab.settlement.BankStatements;
 import dev.ledgerlab.settlement.BatchSettlement;
 import dev.ledgerlab.shared.BusinessCalendar;
 import dev.ledgerlab.shared.IdGenerator;
+import dev.ledgerlab.testsupport.InboxHistoryAssertions;
 import dev.ledgerlab.testsupport.MutableClock;
+import dev.ledgerlab.testsupport.RefundAssertions;
 import dev.ledgerlab.testsupport.StripeSignatures;
 import dev.ledgerlab.testsupport.TestDatabase;
 import java.io.IOException;
@@ -83,6 +99,12 @@ class SettlementWorkerTest {
     private boolean failThird;
     private BankStatements bankStatements;
     private int failAfterPosting;
+    private Refunds refunds;
+    private RefundEvidence refundEvidence;
+    private String refundBody = "{}";
+    private int refundHttpStatus = 200;
+    private final AtomicInteger refundRequests = new AtomicInteger();
+    private boolean checkReleaseBeforeBank;
 
     @BeforeEach
     void start() throws IOException {
@@ -103,6 +125,13 @@ class SettlementWorkerTest {
         capture = new PaymentCapture(ledger, jdbc, issues, ids, clock, mapper);
         bankStatements =
                 new BankStatements(jdbc, ledger, issues, clock, ids, new BusinessCalendar(), mapper, manager, 2);
+        var refundHistory = new RefundHistory(jdbc);
+        var refundQueue = new JdbcRefundQueue(jdbc, ledger, clock, ids, refundHistory);
+        var refundPayments = new PaymentRefunds(jdbc, ledger);
+        refunds =
+                new JdbcRefunds(jdbc, ledger, refundPayments, refundQueue, refundHistory, clock, ids, mapper, manager);
+        refundEvidence =
+                new JdbcRefundEvidence(jdbc, ledger, refundPayments, refundQueue, refundHistory, issues, mapper, clock);
         var batches = new BatchSettlement(
                 jdbc,
                 ledger,
@@ -111,8 +140,22 @@ class SettlementWorkerTest {
                 clock,
                 mapper,
                 bankStatements,
-                new dev.ledgerlab.refunds.internal.JdbcRefundQueue(
-                        jdbc, ledger, clock, ids, new dev.ledgerlab.refunds.internal.RefundHistory(jdbc)));
+                () -> {
+                    if (checkReleaseBeforeBank) {
+                        assertThat(bankState("bt_b2_early")).isEqualTo("WAITING");
+                        assertThat(jdbc.sql(
+                                                "SELECT count(*) FROM ledger.journal_entry WHERE source_key='batch:po_b2:settled'")
+                                        .query(Long.class)
+                                        .single())
+                                .isEqualTo(1);
+                        assertThat(jdbc.sql("SELECT status FROM core.refund WHERE processor_refund_ref='re_r1'")
+                                        .query(String.class)
+                                        .single())
+                                .isEqualTo("SUCCEEDED");
+                    }
+                    refundQueue.release();
+                },
+                new RefundSettlement(jdbc, ledger, refundPayments, refundEvidence));
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         lines = page(line("txn_payment", "charge", "ch_p1", 10000, 320), false);
         payout = payout("po_b1", "completed").toString();
@@ -136,6 +179,14 @@ class SettlementWorkerTest {
                 out.write(body);
             }
         });
+        server.createContext("/v1/refunds/", exchange -> {
+            refundRequests.incrementAndGet();
+            byte[] body = refundBody.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(refundHttpStatus, body.length);
+            try (var out = exchange.getResponseBody()) {
+                out.write(body);
+            }
+        });
         server.start();
         http = HttpClient.newHttpClient();
         var client = RestClient.builder()
@@ -154,7 +205,21 @@ class SettlementWorkerTest {
                 manager,
                 mapper,
                 clock);
-        processing = new PayoutProcessing(reader, batches, jdbc, mapper, clock);
+        processing = new PayoutProcessing(
+                reader,
+                batches,
+                jdbc,
+                mapper,
+                clock,
+                new StripeRefundAdapter(
+                        client,
+                        new StripeProperties(StripeSignatures.SECRET, "sk_test_" + "t10_synthetic"),
+                        jdbc,
+                        manager,
+                        mapper,
+                        clock,
+                        issues),
+                new RefundSettlement(jdbc, ledger, refundPayments, refundEvidence));
         intake = new InboxIntake(jdbc, tx, issues, mapper, clock);
         pollers = () -> new SettlementPolling(
                 reader,
@@ -209,8 +274,20 @@ class SettlementWorkerTest {
 
     @AfterEach
     void stop() {
-        dev.ledgerlab.testsupport.InboxHistoryAssertions.assertConsistent(jdbc);
-        assertThat(audit.check()).isEmpty();
+        InboxHistoryAssertions.assertConsistent(jdbc);
+        RefundAssertions.invariants(jdbc, audit);
+        assertThat(jdbc.sql("""
+                SELECT balance=(SELECT coalesce(sum(amount),0) FROM core.payment WHERE status='CAPTURED')
+                FROM ledger.account WHERE code=2101
+                """).query(Boolean.class).single())
+                .as("INV-9 pending payments")
+                .isTrue();
+        assertThat(jdbc.sql("""
+                SELECT balance=(SELECT coalesce(sum(net),0) FROM core.settlement_batch WHERE status='CONFIRMED')
+                FROM ledger.account WHERE code=1102
+                """).query(Boolean.class).single())
+                .as("INV-9 settlement in transit")
+                .isTrue();
         server.stop(0);
         http.close();
         db.drop();
@@ -228,13 +305,7 @@ class SettlementWorkerTest {
                 new WorkerProperties("t05", 1, Duration.ofSeconds(30), Duration.ofSeconds(1), Duration.ofMinutes(5), 5),
                 hooks,
                 processing,
-                new RefundProcessing(
-                        new RefundParser(mapper),
-                        fact -> {
-                            throw new AssertionError("Unexpected refund in settlement fixture");
-                        },
-                        issues,
-                        mapper));
+                new RefundProcessing(new RefundParser(mapper), refundEvidence, issues, mapper));
     }
 
     void runWorker() {
@@ -249,7 +320,7 @@ class SettlementWorkerTest {
     }
 
     void assertLedger() {
-        dev.ledgerlab.testsupport.InboxHistoryAssertions.assertConsistent(jdbc);
+        InboxHistoryAssertions.assertConsistent(jdbc);
         assertThat(audit.check()).isEmpty();
     }
 
@@ -328,6 +399,546 @@ class SettlementWorkerTest {
 
     private static String page(String items, boolean more) {
         return "{\"data\":[" + items + "],\"has_more\":" + more + "}";
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"pending", "succeeded"})
+    void ac_3_1_ac_2_9_refundBatchSettlesAndLaterWebhookDeduplicates(String status) {
+        capture();
+        ready();
+        bank("bt_b1", 9680);
+        payment("ch_p2", 5000);
+        String payment = jdbc.sql("SELECT id FROM core.payment WHERE processor_payment_ref='ch_p1'")
+                .query(String.class)
+                .single();
+        String refund = refunds.accept(payment, "r1", 2000, "r1").refundId();
+        tx.executeWithoutResult(ignored -> refundEvidence.apply(new ProcessorRefundFact(
+                refund,
+                "re_r1",
+                ProcessorRefundFact.Status.valueOf(status),
+                null,
+                ProcessorRefundFact.Source.COMMAND_RESPONSE,
+                "command-r1",
+                NOW)));
+        lines = page(
+                line("txn_p2", "charge", "ch_p2", 5000, 175) + "," + line("txn_r1", "refund", "re_r1", -2000, 0),
+                false);
+        event(
+                "evt_b2",
+                "payout.reconciliation_completed",
+                payout("po_b2", "completed").put("amount", 2825));
+        runWorker();
+        assertThat(jdbc.sql("SELECT status FROM core.settlement_batch WHERE batch_id='po_b2'")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("CONFIRMED");
+        assertThat(balances()).containsExactly(0L, 2825L, 9680L, 0L, 12505L, 0L, 0L, 0L);
+        assertThat(jdbc.sql("SELECT batch_id FROM core.refund WHERE id=:id")
+                        .param("id", refund)
+                        .query(String.class)
+                        .single())
+                .isEqualTo("po_b2");
+        assertThat(jdbc.sql("SELECT posting_count FROM ledger.journal_entry WHERE source_key='batch:po_b2:settled'")
+                        .query(Integer.class)
+                        .single())
+                .isEqualTo(5);
+        event("evt_refund_late", "refund.updated", (ObjectNode) mapper.readTree("""
+                {"id":"re_r1","object":"refund","amount":2000,"charge":"ch_p1","currency":"cad",
+                 "status":"succeeded","livemode":false,"created":1792756700,
+                 "metadata":{"ledgerlab_refund_id":"%s"}}
+                """.formatted(refund)));
+        runWorker();
+        assertThat(inbox("evt_refund_late")).containsEntry("result", "DUPLICATE_FACT");
+        assertThat(jdbc.sql("SELECT count(*) FROM ledger.journal_entry WHERE entry_type='REFUND_EXECUTED'")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(1);
+        RefundAssertions.invariants(jdbc, audit);
+    }
+
+    private String refundS3(long amount, String status) {
+        capture();
+        ready();
+        bank("bt_b1", 9680);
+        String payment = jdbc.sql("SELECT id FROM core.payment WHERE processor_payment_ref='ch_p1'")
+                .query(String.class)
+                .single();
+        String id = refunds.accept(payment, "t10-r1", amount, "t10-r1").refundId();
+        if (!status.equals("READY")) observeRefund(id, "re_r1", status);
+        return id;
+    }
+
+    private void observeRefund(String id, String ref, String status) {
+        tx.executeWithoutResult(ignored -> refundEvidence.apply(new ProcessorRefundFact(
+                id,
+                ref,
+                ProcessorRefundFact.Status.valueOf(status),
+                null,
+                ProcessorRefundFact.Source.COMMAND_RESPONSE,
+                "command-" + ref,
+                NOW)));
+    }
+
+    private void payment(String ref, long amount) {
+        event("evt_" + ref, "charge.succeeded", (ObjectNode) mapper.readTree("""
+                {"id":"%s","amount":%d,"amount_captured":%d,"currency":"cad",
+                 "captured":true,"status":"succeeded","livemode":false,"created":1792756700}
+                """.formatted(ref, amount, amount)));
+        runWorker();
+    }
+
+    private void refundBatch(String batch, String paymentRef, long refundAmount, String extra) {
+        lines = page(line("txn_" + batch, "charge", paymentRef, 5000, 175) + "," + extra, false);
+        event(
+                "evt_" + batch,
+                "payout.reconciliation_completed",
+                payout(batch, "completed").put("amount", 4825 - refundAmount));
+        runWorker();
+    }
+
+    private String refundObject(String id, String ref, long amount, String charge) {
+        return """
+                {"id":"%s","object":"refund","amount":%d,"charge":"%s","currency":"cad",
+                 "status":"succeeded","livemode":false,"created":1792756600,
+                 "metadata":{"ledgerlab_refund_id":"%s"}}
+                """.formatted(ref, amount, charge, id);
+    }
+
+    private void assertRefundBatchHeld(String reason, String category) {
+        assertThat(jdbc.sql("SELECT hold_reason FROM core.settlement_batch WHERE batch_id='po_b2'")
+                        .query(String.class)
+                        .single())
+                .isEqualTo(reason);
+        assertThat(jdbc.sql("SELECT category FROM recon.issue")
+                        .query(String.class)
+                        .list())
+                .contains(category);
+        assertThat(jdbc.sql("SELECT count(*) FROM ledger.journal_entry WHERE subject_id='po_b2'")
+                        .query(Long.class)
+                        .single())
+                .isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM core.settlement_batch_line WHERE batch_id='po_b2'")
+                        .query(Long.class)
+                        .single())
+                .isZero();
+    }
+
+    @Test
+    void ac_2_9_unknownProcessorRefIsRetrievedArchivedAndUsedAsBatchEvidence() {
+        String id = refundS3(2000, "READY");
+        // The command result is unknown and has not supplied re_r1 yet.
+        jdbc.sql("UPDATE core.refund SET status='UNKNOWN' WHERE id=:id")
+                .param("id", id)
+                .update();
+        refundBody = refundObject(id, "re_r1", 2000, "ch_p1");
+        payment("ch_p2", 5000);
+        refundBatch("po_b2", "ch_p2", 2000, line("txn_r1", "refund", "re_r1", -2000, 0));
+        assertThat(refundRequests).hasValue(1);
+        assertThat(jdbc.sql("SELECT status || ':' || processor_refund_ref || ':' || batch_id FROM core.refund")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("SUCCEEDED:re_r1:po_b2");
+        assertThat(jdbc.sql("SELECT count(*) FROM io.processor_fetch WHERE purpose='REFUND_QUERY' AND complete")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(1);
+        assertThat(jdbc.sql("SELECT occurred_at FROM ledger.journal_entry WHERE entry_type='REFUND_EXECUTED'")
+                        .query((rs, row) -> rs.getTimestamp(1).toInstant())
+                        .single())
+                .isEqualTo(Instant.ofEpochSecond(1792756700));
+        assertThat(jdbc.sql(
+                                "SELECT evidence_source || ':' || evidence_ref FROM core.refund_transition WHERE to_status='SUCCEEDED'")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("BATCH_LINE:txn_r1");
+        long postings = count("ledger.posting");
+        event(
+                "evt_b2_repeat",
+                "payout.reconciliation_completed",
+                payout("po_b2", "completed").put("amount", 2825));
+        runWorker();
+        assertThat(inbox("evt_b2_repeat")).containsEntry("result", "DUPLICATE_FACT");
+        assertThat(refundRequests).hasValue(1);
+        assertThat(count("ledger.posting")).isEqualTo(postings);
+        assertThat(count("recon.issue")).isZero();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"pending", "succeeded"})
+    void ac_5_14_twoPartialRefundsOnOnePaymentMatchTheirOwnProcessorRefs(String firstStatus) {
+        String first = refundS3(2000, firstStatus);
+        String payment = jdbc.sql("SELECT payment_id FROM core.refund WHERE id=:id")
+                .param("id", first)
+                .query(String.class)
+                .single();
+        String second = refunds.accept(payment, "r2", 1000, "r2").refundId();
+        observeRefund(second, "re_r2", "succeeded");
+        payment("ch_p2", 5000);
+        refundBatch(
+                "po_b2",
+                "ch_p2",
+                3000,
+                line("txn_r1", "refund", "re_r1", -2000, 0) + "," + line("txn_r2", "refund", "re_r2", -1000, 0));
+        assertThat(jdbc.sql("SELECT count(*) FROM core.refund WHERE batch_id='po_b2' AND status='SUCCEEDED'")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(2);
+        assertThat(jdbc.sql("SELECT refunds FROM core.settlement_batch WHERE batch_id='po_b2'")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(3000);
+        assertThat(count("recon.issue")).isZero();
+        assertThat(balances()).containsExactly(0L, 1825L, 9680L, 0L, 11505L, 0L, 0L, 0L);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "pending,1999,AMOUNT_MISMATCH,AMOUNT_MISMATCH",
+        "failed,2000,REFUND_STATE_CONFLICT,REFUND_STATE_CONFLICT"
+    })
+    void ac_3_1_invalidRefundHoldsBatchWithoutExecuting(String status, long amount, String hold, String category) {
+        refundS3(2000, status);
+        payment("ch_p2", 5000);
+        long before = count("ledger.posting");
+        refundBatch("po_b2", "ch_p2", amount, line("txn_r1", "refund", "re_r1", -amount, 0));
+        assertRefundBatchHeld(hold, category);
+        assertThat(count("ledger.posting")).isEqualTo(before);
+        assertThat(refundRequests).hasValue(0);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"foreign", "rfd_00000000000000000000000000"})
+    void ac_3_1_unknownRefundOpensRefundSubjectMissingIssue(String metadata) {
+        refundS3(2000, "READY");
+        refundBody = refundObject(metadata, "re_foreign", 2000, "ch_p1");
+        payment("ch_p2", 5000);
+        long before = count("ledger.posting");
+        refundBatch("po_b2", "ch_p2", 2000, line("txn_foreign", "refund", "re_foreign", -2000, 0));
+        assertRefundBatchHeld("UNKNOWN_REFUND", "MISSING_IN_LEDGER");
+        assertThat(jdbc.sql("SELECT subject_type || ':' || subject_id FROM recon.issue")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("refund:re_foreign");
+        assertThat(count("ledger.posting")).isEqualTo(before);
+    }
+
+    @Test
+    void ac_2_9_retrieveFailureRetriesInboxWithoutCreatingBatchThenSucceeds() {
+        String id = refundS3(2000, "READY");
+        payment("ch_p2", 5000);
+        refundBody = refundObject(id, "re_r1", 2000, "ch_p1");
+        refundHttpStatus = 503;
+        refundBatch("po_b2", "ch_p2", 2000, line("txn_r1", "refund", "re_r1", -2000, 0));
+        assertThat(inbox("evt_po_b2")).containsEntry("status", "RECEIVED").containsEntry("attempts", 1);
+        assertThat(jdbc.sql("SELECT count(*) FROM core.settlement_batch WHERE batch_id='po_b2'")
+                        .query(Long.class)
+                        .single())
+                .isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM io.processor_fetch WHERE purpose='REFUND_QUERY' AND NOT complete")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(1);
+        refundHttpStatus = 200;
+        clock.set(NOW.plusSeconds(10));
+        runWorker();
+        assertThat(inbox("evt_po_b2")).containsEntry("result", "APPLIED");
+        assertThat(jdbc.sql("SELECT status FROM core.settlement_batch WHERE batch_id='po_b2'")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("CONFIRMED");
+    }
+
+    @Test
+    void ac_3_1_refundCannotBeReusedWithNewTransactionIdInAnotherBatch() {
+        refundS3(2000, "succeeded");
+        payment("ch_p2", 5000);
+        refundBatch("po_first", "ch_p2", 2000, line("txn_r1", "refund", "re_r1", -2000, 0));
+        payment("ch_p3", 5000);
+        long before = count("ledger.posting");
+        refundBatch("po_b2", "ch_p3", 2000, line("txn_r1_other", "refund", "re_r1", -2000, 0));
+        assertRefundBatchHeld("LINE_IN_OTHER_BATCH", "DUPLICATE_STATEMENT_LINE");
+        assertThat(count("ledger.posting")).isEqualTo(before);
+    }
+
+    @Test
+    void ac_2_9_refundExecutionAndBatchRollbackTogetherButFetchSurvives() {
+        String id = refundS3(2000, "READY");
+        refundBody = refundObject(id, "re_r1", 2000, "ch_p1");
+        payment("ch_p2", 5000);
+        var before = balances();
+        long entries = count("ledger.journal_entry");
+        failAfterPosting = 3; // two execution postings, then the first batch posting
+        refundBatch("po_b2", "ch_p2", 2000, line("txn_r1", "refund", "re_r1", -2000, 0));
+        assertThat(inbox("evt_po_b2")).containsEntry("status", "RECEIVED").containsEntry("attempts", 1);
+        assertThat(balances()).isEqualTo(before);
+        assertThat(count("ledger.journal_entry")).isEqualTo(entries);
+        assertThat(jdbc.sql("SELECT status FROM core.refund")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("READY");
+        assertThat(jdbc.sql("SELECT count(*) FROM core.refund_transition WHERE to_status='SUCCEEDED'")
+                        .query(Long.class)
+                        .single())
+                .isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM io.processor_fetch WHERE purpose='REFUND_QUERY' AND complete")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(1);
+        clock.set(NOW.plusSeconds(10));
+        runWorker();
+        assertThat(jdbc.sql("SELECT count(*) FROM ledger.journal_entry WHERE entry_type='REFUND_EXECUTED'")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(1);
+    }
+
+    @Test
+    void ac_3_3_refundExecutionPrecedesBatchThenQueueReleaseThenBankWakeup() {
+        String first = refundS3(5000, "pending");
+        String payment = jdbc.sql("SELECT payment_id FROM core.refund WHERE id=:id")
+                .param("id", first)
+                .query(String.class)
+                .single();
+        String waiting = refunds.accept(payment, "waiting", 5000, "waiting").refundId();
+        payment("ch_p2", 10000);
+        bankStatements.importBankStatement(
+                "early.csv",
+                bankCsv("bt_b2_early", 4680, "CREDIT", "CAD", "BOOKED", "po_b2", "2026-10-24", "2026-10-24", 1));
+        lines = page(
+                line("txn_p2", "charge", "ch_p2", 10000, 320) + "," + line("txn_r1", "refund", "re_r1", -5000, 0),
+                false);
+        checkReleaseBeforeBank = true;
+        event(
+                "evt_b2",
+                "payout.reconciliation_completed",
+                payout("po_b2", "completed").put("amount", 4680));
+        runWorker();
+        assertThat(jdbc.sql("SELECT status FROM core.refund WHERE id=:id")
+                        .param("id", waiting)
+                        .query(String.class)
+                        .single())
+                .isEqualTo("READY");
+        assertThat(bankState("bt_b2_early")).isEqualTo("MATCHED");
+        assertThat(jdbc.sql(
+                                "SELECT entry_type FROM ledger.journal_entry WHERE entry_type IN ('REFUND_EXECUTED','BATCH_SETTLED','BANK_DEPOSIT_RECEIVED') ORDER BY seq")
+                        .query(String.class)
+                        .list())
+                .endsWith("REFUND_EXECUTED", "BATCH_SETTLED", "BANK_DEPOSIT_RECEIVED");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"AWAITING_FUNDS", "CANCELLED"})
+    void ac_3_1_waitingOrCancelledRefundCannotBeExecutedByBatch(String status) {
+        capture();
+        String payment =
+                jdbc.sql("SELECT id FROM core.payment").query(String.class).single();
+        String id = refunds.accept(payment, "r1", 2000, "r1").refundId();
+        if (status.equals("CANCELLED")) refunds.cancel(id, "withdrawn");
+        refundBody = refundObject(id, "re_r1", 2000, "ch_p1");
+        payment("ch_p2", 5000);
+        long before = count("ledger.posting");
+        refundBatch("po_b2", "ch_p2", 2000, line("txn_r1", "refund", "re_r1", -2000, 0));
+        assertRefundBatchHeld("REFUND_STATE_CONFLICT", "REFUND_STATE_CONFLICT");
+        assertThat(count("ledger.posting")).isEqualTo(before);
+    }
+
+    @Test
+    void ac_3_1_allRowsAreValidatedBeforeAnyRefundExecution() {
+        String first = refundS3(2000, "pending");
+        String payment = jdbc.sql("SELECT payment_id FROM core.refund WHERE id=:id")
+                .param("id", first)
+                .query(String.class)
+                .single();
+        String second = refunds.accept(payment, "r2", 1000, "r2").refundId();
+        observeRefund(second, "re_r2", "failed");
+        payment("ch_p2", 5000);
+        long before = count("ledger.posting");
+        refundBatch(
+                "po_b2",
+                "ch_p2",
+                3000,
+                line("txn_r1", "refund", "re_r1", -2000, 0) + "," + line("txn_r2", "refund", "re_r2", -1000, 0));
+        assertRefundBatchHeld("REFUND_STATE_CONFLICT", "REFUND_STATE_CONFLICT");
+        assertThat(count("ledger.posting")).isEqualTo(before);
+        assertThat(jdbc.sql("SELECT status FROM core.refund WHERE id=:id")
+                        .param("id", first)
+                        .query(String.class)
+                        .single())
+                .isEqualTo("SUBMITTED");
+    }
+
+    @Test
+    void ac_2_9_unknownPaymentRecheckReusesArchivedRefundIdentityWithoutHttp() {
+        String id = refundS3(2000, "READY");
+        refundBody = refundObject(id, "re_r1", 2000, "ch_p1");
+        clock.set(NOW.plusSeconds(1));
+        refundBatch("po_b2", "ch_p2", 2000, line("txn_r1", "refund", "re_r1", -2000, 0));
+        assertThat(jdbc.sql("SELECT hold_reason FROM core.settlement_batch WHERE batch_id='po_b2'")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("UNKNOWN_PAYMENT");
+        int reads = lineRequests.get();
+        refundBody = "unavailable";
+        lines = "unavailable";
+        payment("ch_p2", 5000);
+        assertThat(jdbc.sql("SELECT status FROM core.settlement_batch WHERE batch_id='po_b2'")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("CONFIRMED");
+        assertThat(refundRequests).hasValue(1);
+        assertThat(lineRequests).hasValue(reads);
+    }
+
+    @Test
+    void ac_2_9_batchAndWebhookAtFetchBarrierExecuteRefundOnce() throws Exception {
+        String id = refundS3(2000, "pending");
+        payment("ch_p2", 5000);
+        lines = page(
+                line("txn_p2", "charge", "ch_p2", 5000, 175) + "," + line("txn_r1", "refund", "re_r1", -2000, 0),
+                false);
+        event(
+                "evt_b2",
+                "payout.reconciliation_completed",
+                payout("po_b2", "completed").put("amount", 2825));
+        event("evt_refund", "refund.updated", (ObjectNode) mapper.readTree(refundObject(id, "re_r1", 2000, "ch_p1")));
+        var barrier = new CyclicBarrier(2);
+        WorkerHooks hooks = new WorkerHooks() {
+            @Override
+            public void afterFetch(String eventId) {
+                try {
+                    barrier.await(15, TimeUnit.SECONDS);
+                } catch (Exception e) {
+                    throw new AssertionError(e);
+                }
+            }
+        };
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(() -> worker(hooks).processAvailable());
+            var second = pool.submit(() -> worker(hooks).processAvailable());
+            assertThat(first.get(20, TimeUnit.SECONDS)).isEqualTo(1);
+            assertThat(second.get(20, TimeUnit.SECONDS)).isEqualTo(1);
+        }
+        assertThat(inbox("evt_b2")).containsEntry("result", "APPLIED");
+        assertThat(jdbc.sql("SELECT count(*) FROM ledger.journal_entry WHERE entry_type='REFUND_EXECUTED'")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(1);
+        assertThat(balances()).containsExactly(0L, 2825L, 9680L, 0L, 12505L, 0L, 0L, 0L);
+    }
+
+    @Test
+    void ac_3_1_sampleAStep19EndsWithAvailable5679() {
+        refundS3(2000, "pending");
+        payment("ch_p2", 5000);
+        refundBatch("po_b2", "ch_p2", 2000, line("txn_r1", "refund", "re_r1", -2000, 0));
+        bankStatements.importBankStatement(
+                "b2.csv", bankCsv("bt_b2", 2825, "CREDIT", "CAD", "BOOKED", "po_b2", "2026-10-24", "2026-10-24", 1));
+        // Steps 9–11 are a ledger-only payout fixture; no P5 service is introduced by T10.
+        tx.executeWithoutResult(ignored -> {
+            ledger.lockFunds();
+            ledger.post(new EntryRequest(
+                    EntryType.PAYOUT_RESERVED,
+                    "payout:mpo_fixture:reserved",
+                    NOW,
+                    SubjectType.PAYOUT,
+                    "mpo_fixture",
+                    List.of(
+                            PostingLine.debit(Account.MERCHANT_AVAILABLE, 12505),
+                            PostingLine.credit(Account.PAYOUT_IN_TRANSIT, 12505))));
+            ledger.post(new EntryRequest(
+                    EntryType.PAYOUT_PAID,
+                    "bank_txn:fixture_withdrawal",
+                    NOW,
+                    SubjectType.PAYOUT,
+                    "mpo_fixture",
+                    List.of(
+                            PostingLine.debit(Account.PAYOUT_IN_TRANSIT, 12505),
+                            PostingLine.credit(Account.BANK_CASH, 12505))));
+        });
+        String p2 = jdbc.sql("SELECT id FROM core.payment WHERE processor_payment_ref='ch_p2'")
+                .query(String.class)
+                .single();
+        String r2 = refunds.accept(p2, "r2", 3000, "r2").refundId();
+        payment("ch_p3", 4000);
+        lines = page(line("txn_p3", "charge", "ch_p3", 4000, 146), false);
+        event(
+                "evt_b3",
+                "payout.reconciliation_completed",
+                payout("po_b3", "completed").put("amount", 3854));
+        runWorker();
+        bankStatements.importBankStatement(
+                "b3.csv", bankCsv("bt_b3", 3854, "CREDIT", "CAD", "BOOKED", "po_b3", "2026-10-25", "2026-10-25", 1));
+        observeRefund(r2, "re_r2", "pending");
+        payment("ch_p4", 5000);
+        refundBatch("po_b4", "ch_p4", 3000, line("txn_r2", "refund", "re_r2", -3000, 0));
+        assertThat(balances()).containsExactly(0L, 1825L, 3854L, 0L, 5679L, 0L, 0L, 0L);
+        assertThat(jdbc.sql("SELECT posting_count FROM ledger.journal_entry WHERE source_key='batch:po_b4:settled'")
+                        .query(Integer.class)
+                        .single())
+                .isEqualTo(5);
+    }
+
+    @Test
+    void ac_3_1_refundFeeContributesToBatchFeesWithoutChangingPrincipal() {
+        refundS3(2000, "pending");
+        payment("ch_p2", 5000);
+        refundBatch("po_b2", "ch_p2", 2010, line("txn_r1", "refund", "re_r1", -2000, 10));
+        assertThat(jdbc.sql("SELECT fees FROM core.settlement_batch WHERE batch_id='po_b2'")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(185);
+        assertThat(jdbc.sql("SELECT refunds FROM core.settlement_batch WHERE batch_id='po_b2'")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(2000);
+        assertThat(balances()).containsExactly(0L, 2815L, 9680L, 0L, 12495L, 0L, 0L, 0L);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"1999,ch_p1,AMOUNT_MISMATCH", "2000,ch_other,REFUND_STATE_CONFLICT"})
+    void ac_3_1_retrievedIdentityMustMatchLocalRefund(long amount, String charge, String reason) {
+        String id = refundS3(2000, "READY");
+        refundBody = refundObject(id, "re_r1", amount, charge);
+        payment("ch_p2", 5000);
+        long before = count("ledger.posting");
+        refundBatch("po_b2", "ch_p2", 2000, line("txn_r1", "refund", "re_r1", -2000, 0));
+        assertRefundBatchHeld(reason, reason);
+        assertThat(count("ledger.posting")).isEqualTo(before);
+    }
+
+    @Test
+    void ac_3_1_metadataCannotReplaceAnExistingProcessorRefundReference() {
+        String id = refundS3(2000, "pending");
+        refundBody = refundObject(id, "re_other", 2000, "ch_p1");
+        payment("ch_p2", 5000);
+        long before = count("ledger.posting");
+        refundBatch("po_b2", "ch_p2", 2000, line("txn_r1", "refund", "re_other", -2000, 0));
+        assertRefundBatchHeld("REFUND_STATE_CONFLICT", "REFUND_STATE_CONFLICT");
+        assertThat(count("ledger.posting")).isEqualTo(before);
+    }
+
+    @Test
+    void ac_3_1_legacyUnsupportedRefundBatchIsNotAutomaticallyRechecked() {
+        String id = refundS3(2000, "READY");
+        refundBody = refundObject(id, "re_r1", 2000, "ch_p1");
+        refundBatch("po_b2", "ch_p2", 2000, line("txn_r1", "refund", "re_r1", -2000, 0));
+        // Simulate an unconfirmed batch left behind by P2's unsupported-refund classification.
+        jdbc.sql("UPDATE core.settlement_batch SET hold_reason='UNSUPPORTED_LINE' WHERE batch_id='po_b2'")
+                .update();
+        payment("ch_p2", 5000);
+        long before = count("ledger.posting");
+        int reads = lineRequests.get();
+        event(
+                "evt_legacy_repeat",
+                "payout.reconciliation_completed",
+                payout("po_b2", "completed").put("amount", 2825));
+        runWorker();
+        assertThat(jdbc.sql("SELECT hold_reason FROM core.settlement_batch WHERE batch_id='po_b2'")
+                        .query(String.class)
+                        .single())
+                .isEqualTo("UNSUPPORTED_LINE");
+        assertThat(count("ledger.posting")).isEqualTo(before);
+        assertThat(lineRequests).hasValue(reads);
     }
 
     static byte[] bankCsv(
@@ -1150,13 +1761,11 @@ class SettlementWorkerTest {
     void ac_5_3_bankedFailureOpensStateConflictWithoutPosting(String type) {
         capture();
         ready();
-        JdbcClient.create(db.migrator())
-                .sql("UPDATE core.settlement_batch SET status = 'BANKED' WHERE batch_id = 'po_b1'")
-                .update();
+        bank("bt_banked", 9680);
         event("evt_failed", type, payout("po_b1", "completed"));
         runWorker();
         assertThat(state()).isEqualTo("BANKED");
-        assertThat(count("ledger.posting")).isEqualTo(7);
+        assertThat(count("ledger.posting")).isEqualTo(9);
         assertThat(jdbc.sql("SELECT category FROM recon.issue")
                         .query(String.class)
                         .single())

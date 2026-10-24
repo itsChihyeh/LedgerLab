@@ -50,8 +50,20 @@ final class RefundFixture implements AutoCloseable {
     final PaymentCapture capture = new PaymentCapture(ledger, jdbc, issues, ids, clock, mapper);
     final BankStatements banks =
             new BankStatements(jdbc, ledger, issues, clock, ids, new BusinessCalendar(), mapper, manager, 2);
-    final BatchSettlement batches =
-            new BatchSettlement(jdbc, ledger, new PaymentSettlement(jdbc), issues, clock, mapper, banks, queue);
+    final BatchSettlement batches = new BatchSettlement(
+            jdbc,
+            ledger,
+            new PaymentSettlement(jdbc),
+            issues,
+            clock,
+            mapper,
+            banks,
+            queue,
+            new dev.ledgerlab.refunds.RefundSettlement(
+                    jdbc,
+                    ledger,
+                    payments,
+                    new JdbcRefundEvidence(jdbc, ledger, payments, queue, history, issues, mapper, clock)));
     int next;
 
     JdbcRefunds service(Ledger target, RefundLimitGuard guard, Runnable inserted) {

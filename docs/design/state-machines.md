@@ -105,11 +105,17 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 - `PAYOUT_FAILED` 之后银行又出现入账：开 `BATCH_STATE_CONFLICT`，按精确匹配失败记 `UNAPPLIED_CASH_RECEIVED`（2026-10-23 改：让账上现金等于银行，钱归属留给受限纠错），批次状态不变。
 - 银行入账比批次确认先到：流水行 `WAITING`，批次 `CONFIRMED` 的同一事务里重新匹配，匹配上就同时记 `BANK_DEPOSIT_RECEIVED`、批次直接到 `BANKED`（money-model 第 3 节）。
 
-- 批次里出现本地还在 `SUBMITTED`/`UNKNOWN` 的退款：批次本身就是执行证据，同一事务里先记 `REFUND_EXECUTED`，再核对批次。
+- 批次里出现本地还在 `READY`/`SUBMITTED`/`UNKNOWN` 的退款：批次本身就是执行证据；先核对全批明细，再在同一事务里记 `REFUND_EXECUTED` 和 `BATCH_SETTLED`。
 - 同一个 `batch_id` 再次到达但内容哈希不同：不覆盖，原批次保持原状，新内容存为冲突版本，开差异 `BATCH_VERSION_CONFLICT`。只有“明细就绪且拉完”的快照才算一个版本；未就绪或没拉完的抓取只存档，不参与比较。
 - 先到 `payout.reconciliation_completed`、后到 `payout.created`（乱序）：直接按就绪处理，`created` 到达时只记状态历史。
 - 批次里有不支持的行类型（例如拒付）：`HELD`，原因 `UNSUPPORTED_LINE`，开 `UNSUPPORTED_BATCH_LINE` 差异，页面显示批次不完整。
 - 批次里出现本地根本没有的支付：先停在 `HELD`，等对应 webhook（乱序）；超过老化阈值报 `MISSING_IN_LEDGER`。
+
+### P3 T10 实现备注：退款批次核对
+
+- 退款行按 processor_refund_ref 逐笔匹配，金额不等为 HELD(AMOUNT_MISMATCH)，FAILED／CANCELLED／AWAITING_FUNDS 或处理方身份冲突为 HELD(REFUND_STATE_CONFLICT)，已属于另一批为 HELD(LINE_IN_OTHER_BATCH)。沿用批次主体的金额／状态差异和 DUPLICATE_STATEMENT_LINE 映射；没有任何退款或批次分录部分提交。
+- 取回对象仍无法关联本地退款时为 HELD(UNKNOWN_REFUND)，立即开 MISSING_IN_LEDGER，subject=(refund,re_…)。未知支付的延后老化规则不变；只有 UNKNOWN_PAYMENT 自动重核。P2 因退款行而 HELD(UNSUPPORTED_LINE) 的历史批次不自动重核，留给 P4 纠错；新版本不改写旧原因或差异。
+- 全批核对通过后先应用退款执行证据，再记 BATCH_SETTLED，关联退款 batch_id，然后放行 FIFO，最后唤醒银行 WAITING。已确认版本规范化支持 REFUND，重放相同行只记重复证据，不重复扣款。
 
 ### P2 T05 实现备注：批次确认与入站恢复
 

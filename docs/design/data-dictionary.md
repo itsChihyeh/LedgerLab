@@ -164,6 +164,11 @@ P3 T04b 实现备注：退款队列通过 `Ledger.balance(Account.MERCHANT_AVAIL
 
 批次行：`(batch_id, line_no)` PK、`line_type`（`PAYMENT`/`REFUND`/`PAYOUT_FAILURE`；其他 Stripe 类型如 `adjustment`、`dispute` 不支持 → 批次 `HELD`）、`processor_ref`、`balance_txn_id`（Stripe `txn_…`，UNIQUE）、`gross`、`fee`、`net`。
 
+### P3 T10 实现备注（V18：退款批次 hold reason）
+
+- V18 只替换 `core.settlement_batch.hold_reason` 的枚举 CHECK，新增 `UNKNOWN_REFUND`、`REFUND_STATE_CONFLICT`，保留原有原因；`core.batch_transition.hold_reason` 没有枚举 CHECK，沿用 V11 的 HELD 非空约束。无新增表、列或授权，migrator 属主、app 按列更新、readonly 仅读视图的权限不变。
+- 退款批次行保留负 `gross`，`refunds` 合计保存其相反数；退款成功证据与批次分录同事务提交，最后将 `core.refund.batch_id` 关联本批。退款金额、状态、处理方编号和批次归属逐笔核对，不能按支付号合并部分退款。
+
 ### P2 T11 实现备注（V11 迁移）
 
 - `core.batch_transition` 增加可空的 `hold_reason text` 和 `lines_fetch_id bigint REFERENCES io.processor_fetch(id)`；在唯一的批次历史写入点保存当时原因与固定明细存档。旧历史不回填；`to_status <> 'HELD' OR hold_reason IS NOT NULL` 用 `NOT VALID` 保留旧行，对新写入强制检查。
