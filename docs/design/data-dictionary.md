@@ -122,6 +122,23 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 
 `id rfd_…`、`payment_id` FK、`merchant_refund_ref`（与 payment_id 联合 UNIQUE，永久）、`amount` > 0、`status`、`queue_seq`（受理顺序，资金队列用）、`processor_refund_ref` UNIQUE NULL、`failure_reason` NULL、`initial_result`（第一次受理时返回的状态码和响应体，永久保存，用于业务编号重放）、`request_fingerprint`、`accepted_at`、`submitted_at`、`resolved_at`。
 
+### P3 T03 实现备注（V15：退款、命令与 API 幂等）
+
+- `core.refund.id` 为 `rfd_` 加 26 位 ULID；`payment_id` 非空外键指向支付，`batch_id` 可空外键指向已确认批次所属表 `core.settlement_batch`（是否确认由后续业务核对）。`amount` 为 1～99999999 分；`merchant_refund_ref` 非空白且最多 64 字符，与 payment_id 联合永久唯一；`processor_refund_ref` 可空、唯一，CHECK `LIKE 're\_%'`。`queue_seq bigint GENERATED ALWAYS AS IDENTITY UNIQUE` 记录受理顺序，序列空洞不影响 FIFO。
+- 持久化状态仅为 `AWAITING_FUNDS`、`READY`、`SUBMITTED`、`UNKNOWN`、`SUCCEEDED`、`FAILED`、`CANCELLED`，不含瞬时 `REQUESTED`。终态当且仅当 `resolved_at` 非空；`CANCELLED` 必须有非空白 `cancel_reason`。`failure_reason`、`cancel_reason`、`submitted_at`、`resolved_at` 可空；`accepted_at`、`recorded_at` 非空且由应用传入。`initial_result jsonb NOT NULL` 永久保留首次响应状态码与响应体，`request_fingerprint text NOT NULL` 永久保存请求指纹，不在表上限定 JSON 内部形状。
+- `core.refund_transition` 沿用 payment/batch 历史的 `id bigint identity`、退款外键 `subject_id`、可空 `from_status`、非空 `to_status/evidence_type/evidence_id/occurred_at/recorded_at`，两个状态列均检查上述退款状态；另外非空 `evidence_source` 限于 `API/QUEUE/COMMAND_RESPONSE/COMMAND_QUERY/WEBHOOK/BATCH_LINE/OPERATOR`，`evidence_ref text NOT NULL` 保存该来源的证据引用。UPDATE/DELETE/TRUNCATE 触发器拒绝包括属主在内的重写（`LL004`）。
+- 仅新增显式列出全部字段的 `core.v_refund`、`core.v_refund_transition` 给 readonly 读取；三个 io 新表不向 readonly 开放。T12 如需命令摘要另加脱敏视图。
+
+| 表 | `app` 可写（均可 SELECT） | `readonly` | `migrator` |
+|---|---|---|---|
+| `core.refund` | INSERT；UPDATE(`status`, `processor_refund_ref`, `failure_reason`, `cancel_reason`, `submitted_at`, `resolved_at`, `batch_id`) | 仅 SELECT `core.v_refund` | 属主 |
+| `core.refund_transition` | INSERT | 仅 SELECT `core.v_refund_transition` | 属主；重写触发器同样适用 |
+| `io.outbound_command` | INSERT；UPDATE(`status`, `attempts`, `next_attempt_at`, `lease_owner`, `lease_until`, `lease_epoch`, `first_sent_at`, `external_ref`, `last_outcome`) | 无 | 属主；首次发送时刻触发器同样适用 |
+| `io.outbound_attempt` | INSERT | 无 | 属主；重写触发器同样适用 |
+| `io.idempotency_record` | INSERT、DELETE；UPDATE(`state`, `response_status`, `response_body`, `locked_until`) | 无 | 属主 |
+
+退款身份、金额、受理顺序、首次结果、指纹及受理／记录时间均不授 UPDATE。所有新表对 app 均不授 TRUNCATE；除可过期的 API 幂等记录外均不授 DELETE。
+
 ### `core.payout`
 
 `id mpo_…`（同时是 `bank_request_id`）、`merchant_payout_ref` UNIQUE、`amount` > 0、`status`、`initial_result`、`request_fingerprint`、`bank_ack_ref` NULL、`bank_txn_id` NULL（出账流水）、`return_bank_txn_id` NULL、`failure_reason` NULL、各状态时刻。
@@ -261,6 +278,13 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 ### `io.idempotency_record`
 
 `(client_id, idem_key)` PK、`request_fingerprint`（方法＋路径＋规范化请求体的哈希）、`state`（`IN_PROGRESS`/`COMPLETED`）、`response_status`、`response_body`、`locked_until`、`created_at`、`expires_at`（24 小时）。
+
+### P3 T03 实现备注（V15：io 表）
+
+- `outbound_command.id` 为 `cmd_` 加 26 位 ULID，`kind` 在 P3 只允许 `SUBMIT_REFUND`，P5 再扩展提现；恢复查询作为同一命令的尝试，不另建 QUERY 命令。`subject_id`、唯一 `request_id` 均为非空 text；保留通用命令表的跨对象引用，不设退款专用外键。`status` 限 `PENDING/IN_FLIGHT/UNKNOWN/DONE`，`attempts integer`、`lease_epoch bigint` 非负且默认 0。`next_attempt_at`、`created_at`、`recorded_at` 非空，租约两列、`first_sent_at`、`external_ref`、`last_outcome text` 可空。索引 `(status, next_attempt_at, created_at)` 支持抢占。`first_sent_at` 允许 NULL 首次写入、原值写回；一旦非空，触发器拒绝改值或清空（`23514`）。
+- `outbound_attempt` 以 `(command_id, attempt_no)` 为联合主键，command_id 外键指向命令，attempt_no 为正 integer，lease_epoch 为非负 bigint；`sent_at/finished_at/recorded_at timestamptz`、`request_summary jsonb` 非空，`response_status integer`（若有则 100～599）、`response_body text`（保留原文）、`error text` 可空，以容纳超时或非 JSON 响应。每次调用结束后追加，包含旧租约迟到结果；UPDATE/DELETE/TRUNCATE 由触发器拒绝（`LL004`）。
+- `idempotency_record` 的 `(client_id, idem_key)` 为 text 联合主键；`request_fingerprint text`、`state`、`locked_until/created_at/expires_at/recorded_at timestamptz` 非空，state 限 `IN_PROGRESS/COMPLETED`；`response_status integer`（若有则 100～599）和 `response_body jsonb` 可空，允许处理中尚无响应。应用使用注入 Clock 写入 `expires_at = created_at + 24 小时`，数据库不使用当前时刻默认值。app 的 DELETE 是为清理过期 API 缓存而设的例外：清理条件由应用给出；永久业务去重和首次受理结果仍在不可删除的 refund 行中，不依赖此缓存。
+- V15 同时替换 `io.inbox_event.result` 与 `io.inbox_status_history.result` 的 CHECK，新增 `UNKNOWN_REFUND`。两表原有组合 CHECK 的 REJECTED 分支均允许它，PROCESSED 等分支仍拒绝；结果枚举有这两处 CHECK，以后必须一起改。
 
 ### `io.imported_file`
 
