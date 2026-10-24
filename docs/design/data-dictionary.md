@@ -127,7 +127,7 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 - `core.refund.id` 为 `rfd_` 加 26 位 ULID；`payment_id` 非空外键指向支付，`batch_id` 可空外键指向已确认批次所属表 `core.settlement_batch`（是否确认由后续业务核对）。`amount` 为 1～99999999 分；`merchant_refund_ref` 非空白且最多 64 字符，与 payment_id 联合永久唯一；`processor_refund_ref` 可空、唯一，CHECK `LIKE 're\_%'`。`queue_seq bigint GENERATED ALWAYS AS IDENTITY UNIQUE` 记录受理顺序，序列空洞不影响 FIFO。
 - 持久化状态仅为 `AWAITING_FUNDS`、`READY`、`SUBMITTED`、`UNKNOWN`、`SUCCEEDED`、`FAILED`、`CANCELLED`，不含瞬时 `REQUESTED`。终态当且仅当 `resolved_at` 非空；`CANCELLED` 必须有非空白 `cancel_reason`。`failure_reason`、`cancel_reason`、`submitted_at`、`resolved_at` 可空；`accepted_at`、`recorded_at` 非空且由应用传入。`initial_result jsonb NOT NULL` 永久保留首次响应状态码与响应体，`request_fingerprint text NOT NULL` 永久保存请求指纹，不在表上限定 JSON 内部形状。
 - `core.refund_transition` 沿用 payment/batch 历史的 `id bigint identity`、退款外键 `subject_id`、可空 `from_status`、非空 `to_status/evidence_type/evidence_id/occurred_at/recorded_at`，两个状态列均检查上述退款状态；另外非空 `evidence_source` 限于 `API/QUEUE/COMMAND_RESPONSE/COMMAND_QUERY/WEBHOOK/BATCH_LINE/OPERATOR`，`evidence_ref text NOT NULL` 保存该来源的证据引用。UPDATE/DELETE/TRUNCATE 触发器拒绝包括属主在内的重写（`LL004`）。
-- 仅新增显式列出全部字段的 `core.v_refund`、`core.v_refund_transition` 给 readonly 读取；三个 io 新表不向 readonly 开放。T12 如需命令摘要另加脱敏视图。
+- T03 仅新增显式列出全部字段的 `core.v_refund`、`core.v_refund_transition` 给 readonly 读取；三个 io 新表不向 readonly 开放。T05 的命令摘要脱敏视图见下方 V16 备注。
 
 | 表 | `app` 可写（均可 SELECT） | `readonly` | `migrator` |
 |---|---|---|---|
@@ -138,6 +138,12 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 | `io.idempotency_record` | INSERT、DELETE；UPDATE(`state`, `response_status`, `response_body`, `locked_until`) | 无 | 属主 |
 
 退款身份、金额、受理顺序、首次结果、指纹及受理／记录时间均不授 UPDATE。所有新表对 app 均不授 TRUNCATE；除可过期的 API 幂等记录外均不授 DELETE。
+
+### P3 T05 实现备注：退款 HTTP 查询与幂等
+
+- V16 新增 `core.v_refund_command_summary`，仅公开 `command_id`、`refund_id` 关联编号以及 `status`、`attempts`、`next_attempt_at`、`first_sent_at`、`created_at`、`recorded_at`、`last_outcome` 结果码；不含请求／响应原文、租约持有人或外部凭据。migrator 为视图属主；readonly 仅 SELECT 此视图，app 沿用底表授权、不另授视图权限；io schema 仍不向 readonly 开放。
+- T05 沿用 T04 的不可修改首次结果：请求 `payment_ref` 为处理方 `ch_…`，返回的 `payment_ref` 为解析后的本地 `pay_…`。API 在受理后读取已插入的 initial_result，不 UPDATE 它。过期时间在幂等记录 INSERT 时固定为 Clock 时刻 +24h，不 UPDATE expires_at。
+- GET 退款详情通过 readonly 的 `core.v_refund`、`core.v_refund_transition`、`core.v_refund_command_summary` 在一个 REPEATABLE READ 快照中读取。
 
 ### P3 T04 实现备注：退款受理写入
 

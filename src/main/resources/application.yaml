@@ -16,6 +16,12 @@ spring:
     schemas: flyway
 
 ledgerlab:
+  api:
+    client-id: demo-merchant
+    idempotency-lock-timeout: 5s
+    idempotency-cleanup-batch-size: 500
+    idempotency-cleanup-interval: 1m
+    idempotency-cleanup-enabled: ${ledgerlab.inbox.scheduling-enabled:true}
   readonly-datasource:
     url: ${spring.datasource.url}
     username: readonly

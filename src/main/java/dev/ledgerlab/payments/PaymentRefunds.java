@@ -24,6 +24,15 @@ public final class PaymentRefunds {
                 .optional();
     }
 
+    /** Resolve an API charge reference while the caller holds the funds lock. */
+    public Optional<String> findIdByProcessorRef(String ref) {
+        ledger.assertFundsLocked();
+        return jdbc.sql("SELECT id FROM core.payment WHERE processor_payment_ref = :ref")
+                .param("ref", ref)
+                .query(String.class)
+                .optional();
+    }
+
     /** The caller has locked and checked the payment; the database CHECK is a second line of defense. */
     public void reserve(Payment payment, long amount) {
         ledger.assertFundsLocked();

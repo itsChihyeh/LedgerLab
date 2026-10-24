@@ -125,6 +125,34 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 
 “返回原操作的结果”指：第一次受理退款时返回的是 `AWAITING_FUNDS`，三天后同一个 `merchant_refund_ref` 再来，返回的仍是那一次受理的结果和退款号，客户端再用退款号查当前状态。
 
+### P3 T05 实现备注：退款 HTTP 与单事务幂等
+
+- `POST /api/refunds` 接收 `payment_ref`（`ch_` 加非空 ASCII 字母／数字／下划线）、`amount`（1～99999999 的 JSON 整数）、`merchant_refund_ref`（非空白、最多 64 个 Unicode 码点）；成功 201。响应为 `refund_id/status/amount/payment_ref/merchant_refund_ref/accepted_at`。按数据字典 T04 约定，响应 `payment_ref` 是本地 `pay_…`，原样复用 INSERT 时已永久保存的 `initial_result`，不尝试 UPDATE 此列。
+- `POST /api/refunds/{rfd_id}/cancel` 接收非空白 `reason`，成功 200，响应为 `refund_id/status/amount`；必须是合法 `rfd_` 加 ULID。重复取消用同一幂等键返回首次取消结果；新键取消已取消或 READY 之后的退款返回 409。不存在的退款返回 404 `REFUND_NOT_FOUND`。
+- 两个写接口均要求 `Idempotency-Key` 为 1～255 个可见 ASCII 字符（0x21～0x7e，不含空格）。P3 无认证：`client_id` 只取配置 `ledgerlab.api.client-id`（默认 `demo-merchant`），不读客户端身份请求头；P7 部署时换为认证主体。
+- JSON 必须为单一对象，拒绝未知／重复键、缺失或类型不符字段、字符串中的 NUL、尾随 JSON。金额检查 JSON token，仅整数 token 才直接读取 long；小数、指数、字符串、null、缺失及溢出均为 INVALID_AMOUNT，不先转换成 double。指纹为 UTF-8 的 `SHA-256("POST" + 规范路由路径 + 规范 JSON)`；JSON 键排序、无空白，字段值不 trim、不改大小写，整数与字符串转义按解析值规范化。
+- **单事务**：设置事务局部 lock_timeout → `lockFunds()` → INSERT IN_PROGRESS（冲突不插入）→ 相同键比较指纹／读取原结果 → 检查永久业务编号 → T04 受理／取消 → 保存 COMPLETED 及响应 → 提交。受理的 `initial_result` 已由 T04 在 INSERT 写入；API 首次与重放均按键排序序列化保存的 body，状态码与响应文本一致。业务编号同金额直接返回原受理结果，不重跑当前状态／额度检查；不同金额 BUSINESS_REF_CONFLICT。
+- 业务 4xx 及任何异常均回滚本事务，不留下幂等记录、退款、posting 或命令；与 Stripe 缓存部分 4xx 的策略不同。失败后同键请求重新判断。IN_PROGRESS 不以已提交状态出现，列保留给 P5 长调用；防御性读取到它时返回 409，不接管／覆盖。
+- 同键并发后到者等待资金锁／唯一索引；先到者提交后返回已完成原结果，仍在处理且等待超时返回 409（AC-2.12 允许两者）。`ledgerlab.api.idempotency-lock-timeout` 默认 5s，至少 1ms、至多 PostgreSQL 支持的 2147483647ms；55P03 锁超时映射为 IDEMPOTENCY_REQUEST_IN_PROGRESS，其他数据库故障仍向外抛出并回滚。
+- `expires_at` 按数据字典在 INSERT 时设为注入 Clock +24h，不 UPDATE 未授权列。定时每分钟清一批 `expires_at ≤ Clock.instant()` 的缓存；配置 `idempotency-cleanup-interval`、`idempotency-cleanup-batch-size`（默认 500，正数）、`idempotency-cleanup-enabled`（默认跟随 inbox 调度开关），均在 `ledgerlab.api` 下。清理同样先取资金锁，避免在 API 冲突判断与读取之间删除缓存；随后按到期时间／联合主键排序，FOR UPDATE SKIP LOCKED 批量删除。未清理的到期行仍可返回缓存结果，永久业务编号不被清理。
+- `GET /api/refunds/{id}` 通过 investigation readonly 数据源在单个 REPEATABLE READ 快照返回 `{refund, history, commands, asOf}`：当前退款、按历史 id 排序的状态变化、脱敏命令摘要。GET 不改变业务或缓存；找不到退款返回 404。命令视图与字段见数据字典 V16 备注。
+- 退款业务错误使用 Spring HTTP 错误状态和 ProblemDetail JSON（`type/title/status/detail/instance`），额外包含稳定的 `code`；不返回底层 SQL／异常正文。错误码如下：
+
+| HTTP | code | 条件 |
+|---|---|---|
+| 400 | IDEMPOTENCY_KEY_REQUIRED | 缺少或非法幂等键 |
+| 400 | INVALID_AMOUNT | 金额缺失、不是 JSON 整数或不在范围 |
+| 400 | INVALID_REQUEST | 其他字段／JSON／退款编号格式错误 |
+| 404 | PAYMENT_NOT_FOUND / REFUND_NOT_FOUND | 支付／待取消退款不存在 |
+| 409 | REFUND_EXCEEDS_REMAINING | 超过支付剩余可退额 |
+| 409 | PAYMENT_NOT_REFUNDABLE | 支付已 VOIDED |
+| 409 | REFUND_NOT_CANCELLABLE | 退款不在 AWAITING_FUNDS |
+| 409 | BUSINESS_REF_CONFLICT | 永久业务编号相同、金额不同 |
+| 409 | IDEMPOTENCY_REQUEST_IN_PROGRESS | 锁等待超时或读取到预留的 IN_PROGRESS 状态 |
+| 422 | IDEMPOTENCY_KEY_REUSED | 同一客户端的幂等键对应不同方法／路径／规范请求体 |
+
+- 测试以真实 PostgreSQL 和 MockMvc 覆盖全部写接口场景，另以随机端口 Spring Boot 与 JDK HTTP 客户端验证配置绑定、受理／重放、只读查询和取消的完整装配。包内构造器钩子分别在退款插入后、幂等记录完成但提交前、提交成功且 HTTP 响应写出前抛异常；生产装配为无操作，没有运行时故障开关。最后一种用新连接确认提交可见后抛异常，再同键重试，验证 AC-4.7；不将此测试称为真实网络断线测试。
+
 ---
 
 ## 3. 金额
