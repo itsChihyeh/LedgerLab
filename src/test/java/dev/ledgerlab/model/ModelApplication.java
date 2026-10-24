@@ -33,6 +33,7 @@ final class ModelApplication implements AutoCloseable {
     final ScenarioLog log = new ScenarioLog(ID_SEED);
     private final TestDatabase.Handle db = TestDatabase.freshBlank();
     private final HttpClient http = HttpClient.newHttpClient();
+    final ProcessorReplay processor = new ProcessorReplay();
     private final ConfigurableApplicationContext context;
     final JdbcClient jdbc;
     final MutableClock clock;
@@ -48,8 +49,10 @@ final class ModelApplication implements AutoCloseable {
                         "--LEDGERLAB_MIGRATOR_PASSWORD=" + TestDatabase.MIGRATOR_PASSWORD,
                         "--LEDGERLAB_READONLY_PASSWORD=" + TestDatabase.READONLY_PASSWORD,
                         "--ledgerlab.stripe.webhook-secret=" + StripeSignatures.SECRET,
-                        "--ledgerlab.stripe.api-key=",
+                        "--ledgerlab.stripe.api-key=sk_test_" + "model_synthetic",
+                        "--ledgerlab.stripe.api-base-url=" + processor.baseUrl(),
                         "--ledgerlab.inbox.scheduling-enabled=false",
+                        "--spring.main.banner-mode=off",
                         "--logging.level.root=WARN");
         jdbc = context.getBean(JdbcClient.class);
         clock = context.getBean(MutableClock.class);
@@ -80,10 +83,31 @@ final class ModelApplication implements AutoCloseable {
     }
 
     void deliver(PaymentModel.Input input) {
-        byte[] body = payload(input);
+        deliverRaw(payload(input));
+    }
+
+    void deliverRaw(byte[] body) {
         String signature = StripeSignatures.sign(body, clock.instant().getEpochSecond());
         log.add(new ScenarioLog.Webhook(clock.instant(), body, signature));
         deliver(body, signature);
+    }
+
+    void processor(String payout, ProcessorReplay.Pages pages) {
+        log.add(new ScenarioLog.ProcessorRest(clock.instant(), payout, pages));
+        processor.install(payout, pages);
+    }
+
+    void bank(byte[] raw) {
+        log.add(new ScenarioLog.BankFile(clock.instant(), raw));
+        assertThat(context.getBean(dev.ledgerlab.settlement.BankStatements.class)
+                        .importBankStatement("model.csv", raw)
+                        .status())
+                .isEqualTo("ACCEPTED");
+    }
+
+    void expireWaiting() {
+        log.add(new ScenarioLog.BankScan(clock.instant()));
+        context.getBean(dev.ledgerlab.settlement.BankStatements.class).expireWaiting();
     }
 
     void deliver(byte[] body, String signature) {
@@ -159,6 +183,7 @@ final class ModelApplication implements AutoCloseable {
     public void close() {
         http.close();
         context.close();
+        processor.close();
         db.drop();
     }
 }

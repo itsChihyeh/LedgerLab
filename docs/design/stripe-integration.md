@@ -21,6 +21,14 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。决策见 ADR-
 
 P1b relay 提供 `POST /relay/stripe` 和 `PUT/GET /sim/relay/plan`，下游由 `sim.relay.target-url` 指定；规则顺序匹配事件号/类型，默认 PASS。HOLD_AND_REORDER 等后续 k 个事件完成转发后释放；扣留满 240 秒仍未凑够则自动原样转发，日志记 `HOLD_TIMEOUT_RELEASE`。DELAY 与扣留超时使用可控模拟时钟及内存调度队列；进程重启不保留计划和待发请求。完整计划格式见 `simulator/README.md`。
 
+P2 T03 fake Stripe 增加 charge 的 balance transaction、payout 生命周期与只读 REST；协议标记仍固定 `2026-09-30.endive`。字段对照官方 [Payout](https://docs.stripe.com/api/payouts/object)、[Balance Transaction](https://docs.stripe.com/api/balance_transactions/object)、[列表分页](https://docs.stripe.com/api/balance_transactions/list)。`sim.stripe.availability-delay` 默认 PT0S，按模拟时间决定 charge 净额何时可用；payout 默认归集全部可用且未分配的 CAD 行，另列一条负向 `type=payout`（主应用跳过）。失败不重用原支付行，而是新增 `payout_failure`、`source=原 po_`、`net=返还金额`，在 Payout 的 `failure_balance_transaction` 中引用，供下一批次使用（样例 H）。退款执行接口留在 P3。
+
+`POST /sim/payouts`、`/{id}/reconcile`、`/{id}/paid`、`/{id}/failed` 分别生成完整对象快照事件；相同转换重试返回已有事件号，不重复投递或返还资金。标准自动 payout 的明细从 in_progress 转 completed；手动或 instant 的 reconciliation_status 为 not_applicable，拒绝 reconcile。允许 paid 后再收到 failed，failed 后不允许 paid；reconcile 独立于打款状态。默认 arrival_date 为创建时刻加 24 小时，仅是模拟器预计日期，不复刻 Stripe 银行假日日历、不驱动银行入账。
+
+只读接口为 `GET /v1/payouts/{id}`、`GET /v1/payouts?created[gte]=…&created[lt]=…`、`GET /v1/balance_transactions?payout=…`，Bearer 必须精确匹配 `sim.stripe.api-key`（仅 test 前缀，未配置时只读 API 全部 401）。排序为 created DESC、id DESC，同秒 id 顺序是模拟器固定规则；limit 默认 10、范围 1～100，无效/不属于筛选结果的游标返回 400。为便于检查，fake 的行接口在 in_progress 时也可读；适配器仍必须等 completed，不能据此放宽第 2 节契约。
+
+手续费覆盖与 payout/行/分页故障在 `sim_processor.fault_plan` 追加存档；重复行故障把副本紧跟在本页原行后，故意使该页最多多一行，游标按未复制集合推进，不会因相同 id 陷入循环。未知 charge/adjustment 行只污染指定 payout 的明细，不重新计算 payout 金额。`POST /sim/clock/advance {"seconds":n}`（非负整数）推进模拟时钟并同步执行到期 relay 回调；`GET /sim/clock` 返回 ISO-8601 `now`。时钟不改变现实签名时间，快进操作仍应由单一场景驱动者执行。
+
 两点要如实写进 README：
 
 - 测试模式下结算单和 webhook 都来自 Stripe，两者的独立性比模拟器模式弱（真实对账也是如此，处理方的报表就是处理方的话）。对账准确率（误报、漏报）的评测只在模拟器模式做，那里有真值。
@@ -30,7 +38,7 @@ P1b relay 提供 `POST /relay/stripe` 和 `PUT/GET /sim/relay/plan`，下游由 
 
 webhook 端点只订阅下表的事件类型。
 
-**P1 当前实现**：仅 `charge.succeeded` 调用请款服务；`APPLIED`、`DUPLICATE_FACT` 对应 inbox `PROCESSED`，其他请款结果对应 `REJECTED`。`charge.dispute.*` 为 `REJECTED / UNSUPPORTED_TYPE` 并开 `UNSUPPORTED_EVENT`；其余类型全部暂为 `IGNORED`、`result=NULL`，包括 refund 和 payout。**P2 实现 payout、P3 实现 refund 时，必须把对应类型移出 `IGNORED`**；下表这些行描述的是相应阶段的目标行为。所有类型的 `livemode=true` 优先拒绝为 `LIVEMODE` 并开一条 `LIVEMODE_EVENT`；charge 交给请款服务判定（事件或 Charge 任一为 live 即拒绝），其他类型在分流前判定，避免重复开差异。
+**当前实现（P2 T05）**：`charge.succeeded` 调用请款服务；`payout.created`、`payout.reconciliation_completed`、`payout.paid` 经 ingestion 映射后调用 settlement。`APPLIED`、`DUPLICATE_FACT` 对应 inbox `PROCESSED`，其他请款结果对应 `REJECTED`；paid 的依赖未到时为 `PARKED`。`charge.dispute.*` 为 `REJECTED / UNSUPPORTED_TYPE` 并开 `UNSUPPORTED_EVENT`；其余类型暂为 `IGNORED`、`result=NULL`，包括 refund 和 `payout.failed/canceled`。后两类由 T06 接入，refund 由 P3 接入；下表保留相应阶段的目标行为。所有类型的 `livemode=true` 优先拒绝为 `LIVEMODE` 并开一条 `LIVEMODE_EVENT`；charge 交给请款服务判定（事件或 Charge 任一为 live 即拒绝），其他类型在分流前判定，避免重复开差异。
 
 Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 整数；小数、字符串、非数字或缺失映射为 `null`，交由请款准入判定。其余字段按 Charge 取值，`receivedAt` 使用 inbox 接收时间。worker 默认租约 30 秒、每 1 秒轮询最多 20 条、失败从 1 秒开始倍增并封顶 5 分钟，超过 5 次进入 `DEAD`（第 6 次失败）；配置与三个事务的恢复规则见 state-machines 第 5 节。
 
@@ -57,6 +65,14 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 
 拉取批次行是 HTTP 调用，在数据库事务**之外**做：worker 先拉取并把原始 JSON 存进 `io.processor_fetch`，再开事务核对和记账。拉取失败按 inbox 的重试规则退避。
 
+### P2 T05 实现备注：就绪拉取与兜底轮询
+
+- `PayoutProcessing` 复用 T04 的 Payout 解析与 `StripeReader`，传给 settlement 的证据类型不依赖 ingestion。created 已带 `completed` 时也拉取；`in_progress` 不拉；不支持的 payout 直接隔离，不拉明细。`type=payout` 的转出行跳过，charge 和已知失败打款退回行参加核对，其余行暂隔离。拉取未完成只保留 `complete=false` 存档，worker 重试，不形成批次版本。
+- `occurred_at` 和分录时间取 payout `created`；`settlement_date` 取其多伦多日期；`arrival_date` 保留处理方 epoch 对应的 UTC 日期，不用它驱动银行入账。正常批次的五条 posting 按 money-model 第 3 节生成，零金额省略；只有失败打款退回时为两条。
+- `SettlementPolling.poll()` 查询本地仍为 `ANNOUNCED`、记录时间已超过 `ledgerlab.settlement.after`（默认 30m）的批次。按原始 `source_event_id` 关联的 `purpose=PAYOUT` 拉取存档统计次数及最近 `fetched_at`，退避从 `initial-backoff=1m` 倍增到 `max-backoff=30m`；进程重启后仍可从数据库恢复退避，无新增迁移。`poll-interval` 默认 1m。`scheduling-enabled` 默认继承 `ledgerlab.inbox.scheduling-enabled`，已有关闭 inbox 调度的测试不会另起后台轮询；也可显式配置 `ledgerlab.settlement.scheduling-enabled` 独立控制，测试直接调用 `poll()`。
+- 轮询查询和明细拉取均在业务事务外；看到 `completed` 后共用同一核对／记账入口，`not_applicable` 则 `HELD(UNSUPPORTED_PAYOUT)`。查询、分页或业务处理失败后按已存档尝试继续退避；不伪造 inbox 事件。历史引用 `processor_fetch`，批次原始事件外键保留。并发轮询或 webhook 可重复读取，但资金锁、批次状态检查及 `source_key` 保证业务只应用一次。
+- T05 的 HELD 分类与恢复范围、paid 的 PARKED／唤醒、事务失败回到 ANNOUNCED 的约定见 state-machines 第 4 节实现备注。HTTP 已完成并不代表批次业务确认，T04 的存档契约不变。
+
 ## 3. 出站调用
 
 | 用途 | 接口 | 幂等与恢复 |
@@ -64,7 +80,7 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 | 提交退款 | `POST /v1/refunds`（`charge`、`amount`、`metadata.ledgerlab_refund_id`） | `Idempotency-Key` = 退款号 `rfd_…`；响应里的 `status` 当作退款事实处理（第 2 节） |
 | 查询退款 | 已知 `re_…` 时 `GET /v1/refunds/re_…`；不知道时 `GET /v1/refunds?charge=ch_…` **翻完全部分页**（直到 `has_more=false`），按 metadata 找 | 结果未知时先查再重发 |
 | 批次行 | `GET /v1/balance_transactions?payout=po_…`（分页） | 只读 |
-| 对账导入 | `GET /v1/balance_transactions?created[gte]&created[lt]`、`GET /v1/payouts?…` | 只读；按截止时点取数，原始结果存档并算哈希 |
+| 对账导入 | `GET /v1/payouts?created[gte]&created[lt]`，再对每个 payout `GET /v1/balance_transactions?payout=po_…` | 只读；按 payout 创建区间取数（contracts 第 4 节），原始结果存档并算哈希 |
 
 **Stripe 的幂等键至少保留 24 小时，之后可能被清理**（Stripe idempotent requests 文档）。所以退款命令在 `UNKNOWN` 状态下的规则是：
 
@@ -73,6 +89,26 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 3. 重发只能由持有当前租约的 worker 做；租约过期后旧 worker 的回执不能覆盖新结果（[state-machines.md](state-machines.md) 第 6 节）。
 
 否则幂等键过期后的重发可能变成第二笔退款（例如原退款在列表第二页，只查第一页就会以为不存在）。
+
+### P2 T04 实现备注：只读客户端与拉取存档
+
+T10 采用消费者定义接口的依赖方向：`reconciliation.ProcessorSnapshotReader` 只声明快照所需的两个读取；`ingestion.internal.ProcessorSnapshotAdapter` 委托 `StripeReader`，固定使用 RECON_SNAPSHOT 并作为 bean 装配。reconciliation 不依赖 ingestion，既有 Modulith 边界不变；完整快照由 reconciliation 汇总并归档，单个 fetch 不等于完整快照。
+
+- 公开入口为 `dev.ledgerlab.ingestion.StripeReader`，提供 `retrievePayout`、`listBalanceTransactionsForPayout`、`listPayoutsCreated`；其嵌套类型 `FetchPurpose` 对应 V6 的 `PAYOUT`、`BATCH_LINES`、`RECON_SNAPSHOT`。`FetchResult<T>` 带存档编号、原文哈希、`fetchedAt`、不可变的解析列表和安全失败原因；`complete()` 仅表示这一次 HTTP 查询及解析完整成功，不表示 payout 明细已就绪、金额已核对或整个对账快照已完整。
+- 使用现有 Spring `RestClient` 与 JDK HTTP 客户端，不引入 SDK 或其他依赖。`ledgerlab.stripe.api-base-url` 默认 `https://api.stripe.com`（可用 `STRIPE_API_BASE_URL` 覆盖）；`connect-timeout` 默认 `5s`、`read-timeout` 默认 `30s`，均须为正。只接受 HTTP(S) base URL，禁止 URL 内嵌凭据、查询串和 fragment；禁用重定向，3xx 作为失败存档。每个请求发送 Bearer 密钥及固定 `Stripe-Version: 2026-09-30.endive`。
+- 沿用原有密钥启动校验：空密钥不影响 webhook 入站；开始拉取时返回 `complete=false` 和 `ledgerlab.stripe.api-key is required for Stripe reads`，仍存档，且不发送 HTTP。live 或非 test 前缀继续在启动时拒绝。失败结果不携带上游响应正文或原异常，防止上游回显凭据进入日志或异常信息。
+- HTTP 与解析在 `NOT_SUPPORTED` 中执行（若调用方已有事务则暂挂）；结束后用 `REQUIRES_NEW` 短事务 INSERT 一行 `io.processor_fetch`，失败调用也如此。`fetched_at` 在 HTTP 尝试结束后取注入的 `Clock`，`recorded_at` 在存档事务内取同一时钟。调用方回滚不撤销存档。可选 `eventId` 必须引用已提交的 inbox 事件；无事件关联的主动查询传 `null`。数据库不可用或存档约束失败时抛出不带原始数据的 `Stripe fetch archive failed`，不能伪装成有存档的结果。
+- 单对象的 `response_body` 是原始响应文本（未收到响应时为空串）。列表查询统一存为 **JSON 字符串数组**，每个字符串是按接收顺序保存的一页完整原文，包括非 2xx 或非法 JSON 的原文；这样不会重排对象字段、丢掉空白或无法保留坏 JSON。没收到任何完整响应时为 `[]`。SHA-256 对最终保存文本的 UTF-8 字节计算，与 V6 CHECK 一致；这是原始证据哈希，不是后续业务版本的规范化指纹。`request` 保存 GET 路径、筛选参数、purpose、协议版本、每页尝试的参数及收到的 HTTP 状态、最终 outcome，不保存 Authorization。
+- 列表使用 `limit=100`，以每页最后一项的 `id` 作 `starting_after`，直到布尔值 `has_more=false`；空页却声称还有下一页、游标重复、非 2xx、超时、非法 JSON／字段，全部为 `complete=false`。失败时解析列表为空，只能通过存档查看半截证据。不在客户端去重、跳过 `type=payout` 或拒绝未知业务类型，保留重复行、带符号金额及可空的 balance transaction `source`，由后续核对识别差异。
+- payout 返回 id、amount、currency、automatic、method、status、reconciliationStatus、arrivalDate、created；balance transaction 返回 id、type、source、amount、fee、net、currency、created。金额必须是可表示为 `long` 的 JSON 整数，拒绝小数、字符串、空值和溢出；时间从整数 epoch seconds 转为 `Instant`。创建区间是 `[from, to)`，对应 `created[gte]` 与 `created[lt]`；边界须为整秒且递增，避免截断造成范围变化。无效区间或 payout 编号也存档为失败，不发 HTTP。
+- T04 测试以 JDK `HttpServer` 和 Testcontainers PostgreSQL 验证完整／中断分页、原文及哈希、整数解析、请求头、配置与密钥失败、事件关联、事务外 HTTP 和存档独立提交，支撑 AC-5.10、AC-5.17；不代表批次核对／快照导入已完成。只追加权限复用 T02 的 `SettlementTablesTest.ac_1_13_appendOnlyEvidenceRejectsAppUpdatesAndOwnerRewrites`，密钥启动拒绝复用 `StripePropertiesTest`（AC-8.2）。inbox worker 接线仍留给 T05。
+
+### P2 T06 实现备注：异常证据与版本
+
+- `payout.failed`／`payout.canceled` 已接入 inbox，不拉 balance transactions；按批次状态记录失败、冲突或历史，具体状态和 inbox 结果见 [state-machines 第 4 节 T06 备注](state-machines.md#p2-t06-实现备注核对失败重核版本与打款失败)。批次尚不存在时停放，建批次时原子唤醒。
+- 已确认及后续状态的 `payout.reconciliation_completed` 再次完整拉取，比较按行身份排序的规范化业务内容与 payout 金额；新 fetch 作为冲突证据保存，原批次 `lines_fetch_id` 和已确认行不覆盖。分页中断只存档并重试，不做版本判断；JSON 空白、行顺序和币种大小写不制造冲突。重复 `payout.created` 仍不再拉取。
+- `HELD(UNKNOWN_PAYMENT)` 的重核在请款事务里读取固定的 `lines_fetch_id`：校验存档为 `complete=true`、`purpose=BATCH_LINES` 且 query 的 payout 匹配，按 T04 的 JSON 字符串数组格式逐页解析。即使后来 HTTP 响应变化也只用这次完整证据；该事务不发外部请求。其他 HELD 原因不自动重核。
+- 实际手续费与合同手续费不同时，批次仍按实际 `fee` 记账；手续费大于行毛额才 HELD 并开 `AMOUNT_MISMATCH`。P2 的 refund、adjustment、dispute 等行以 `UNSUPPORTED_LINE` 隔离，其原文留在 fetch，不能写入已核对批次行。
 
 ## 4. 编号与时间
 
@@ -118,7 +154,7 @@ P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at`
 7. 测试模式的接口速率上限，决定流量生成器和演示页的限流值。
 8. 测试模式的自动 payout 会走到 `reconciliation_status=completed` 并发出 `payout.reconciliation_completed`。这一条决定 P2 的批次触发方式：P2 先按官方文档在 fake Stripe 里实现；如果那时测试账号已经注册，就在 P2 开工前先验证这一条，否则 P6 接账号后第一个验证。
 9. 用 Stripe 的 default test-mode sandbox 还是新建的独立 sandbox：接账号时选定一种并写在这里，文档里统一称“测试模式”。
-   **已定（2026-10-23）**：用户注册了加拿大账号，使用 Stripe 自带的默认测试沙盒（Dashboard 显示“测试企业 沙盒”），不另建 sandbox。开发用受限密钥 `ledgerlab-dev`（`rk_test_…`，只放在本地 `.env` 的 `STRIPE_API_KEY`），权限：Balance、Balance Transaction Sources、Events、Payouts 读取；Charges and Refunds、Payment Intents 写入，其余全部无。第 1～8 条尚未实测，P2 开工前先测第 8 条。
+   **已定（2026-10-23）**：用户注册了加拿大账号，使用 Stripe 自带的默认测试沙盒（Dashboard 显示“测试企业 沙盒”），不另建 sandbox。开发用受限密钥 `ledgerlab-dev`（`rk_test_…`，只放在本地 `.env` 的 `STRIPE_API_KEY`），权限：Balance、Balance Transaction Sources、Events、Payouts 读取；Charges and Refunds、Payment Intents 写入，其余全部无。第 1～8 条尚未实测。第 8 条原定 P2 开工前实测；2026-10-23 改为 P2 期间做（新账号的首次自动 payout 要等 Stripe 的初始等待期，开工前等不到），P2 先按官方文档在 fake Stripe 里实现 `reconciliation_completed` 触发，并保留“查询 payout 对象看到 `completed`”的后备路径，所以实测结果即使相反也只改触发方式、不改批次核对。
 
 ## 8. 协议版本（P1 开工前固定）
 

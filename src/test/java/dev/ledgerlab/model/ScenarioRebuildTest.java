@@ -59,7 +59,10 @@ class ScenarioRebuildTest {
                 Map.of(
                         "payment:ch_test:captured",
                         List.of(new RebuildSnapshot.Entry("PAYMENT_CAPTURED", Map.of(posting, 2L)))),
-                Set.of(new RebuildSnapshot.Issue("EVENT_CONTENT_CONFLICT", "event", "evt_test")));
+                Set.of(new RebuildSnapshot.Issue("EVENT_CONTENT_CONFLICT", "event", "evt_test")),
+                Map.of("po_test", Map.of("status", "BANKED", "net", 50L)),
+                Map.of("txn_test", Map.of("batch_id", "po_test", "fee", 0L)),
+                Map.of("bank_test:1", Map.of("match_status", "MATCHED", "amount", 50L)));
         var replay = new RebuildSnapshot(
                 Map.of(1101, 51L),
                 Map.of("ch_test", new RebuildSnapshot.Payment("VOIDED", 51)),
@@ -76,6 +79,20 @@ class ScenarioRebuildTest {
                 .hasMessageContaining("entries[payment:ch_test:captured]")
                 .hasMessageContaining("amount=50]=2")
                 .hasMessageContaining("amount=50]=1")
+                .hasMessageContaining("batches[po_test]")
+                .hasMessageContaining("batchLines[txn_test]")
+                .hasMessageContaining("bankLines[bank_test:1]")
                 .hasMessageContaining("issues: original-only=[Issue[category=EVENT_CONTENT_CONFLICT");
+    }
+
+    @Test
+    void ac_4_13_bankInputLogOwnsTheOriginalBytes() {
+        byte[] original = "synthetic bank input".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var file = new ScenarioLog.BankFile(java.time.Instant.parse("2026-11-10T14:00:00Z"), original);
+        original[0] = 0;
+        byte[] read = file.raw();
+        read[0] = 0;
+        assertThat(file.raw()).isEqualTo("synthetic bank input".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThat(file.toString()).contains("rawBase64=");
     }
 }

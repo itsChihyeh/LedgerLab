@@ -25,8 +25,12 @@ class IssueTableTest {
     private TestDatabase.Handle db;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws SQLException {
         db = TestDatabase.freshMigrated();
+        Sql.execute(
+                db.app(),
+                ReconTablesTest.RUN_SQL,
+                ReconTablesTest.RUN_SQL.replace(ReconTablesTest.RUN, "rr_00000000000000000000000002"));
     }
 
     @AfterEach
@@ -43,12 +47,12 @@ class IssueTableTest {
                     AND last_run_id IS NULL AND explanation IS NULL AND resolution_correction_id IS NULL
                 """)).isEqualTo(1);
         Sql.execute(db.app(), """
-                UPDATE recon.issue SET status = 'RESOLVED', last_run_id = 'rr_later',
+                UPDATE recon.issue SET status = 'RESOLVED', last_run_id = 'rr_00000000000000000000000002',
                     explanation = 'corrected', resolution_correction_id = 'cor_test',
                     updated_at = '2030-01-01Z'
                 """);
         assertThat(Sql.queryLong(db.app(), """
-                SELECT count(*) FROM recon.issue WHERE status = 'RESOLVED' AND last_run_id = 'rr_later'
+                SELECT count(*) FROM recon.issue WHERE status = 'RESOLVED' AND last_run_id = 'rr_00000000000000000000000002'
                     AND explanation = 'corrected' AND resolution_correction_id = 'cor_test'
                     AND updated_at = '2030-01-01Z'
                 """)).isEqualTo(1);
@@ -58,21 +62,30 @@ class IssueTableTest {
     @ValueSource(
             strings = {
                 "UPDATE recon.issue SET category = 'LIVEMODE_EVENT'",
-                "UPDATE recon.issue SET expected = '{}'::jsonb",
-                "UPDATE recon.issue SET actual = '{}'::jsonb",
                 "UPDATE recon.issue SET subject_id = 'evt_other'",
                 "UPDATE recon.issue SET subject_type = 'payment'",
                 "UPDATE recon.issue SET detected_by = 'AGING'",
                 "UPDATE recon.issue SET first_run_id = 'rr_test'",
-                "UPDATE recon.issue SET evidence_refs = '[]'::jsonb",
                 "UPDATE recon.issue SET recorded_at = now()",
                 "UPDATE recon.issue SET id = 'iss_00000000000000000000000002'",
                 "DELETE FROM recon.issue",
                 "TRUNCATE recon.issue"
             })
-    void ac_1_13_appCannotRewriteEvidence(String sql) throws SQLException {
+    void ac_1_13_appCannotRewriteIssueIdentity(String sql) throws SQLException {
         Sql.execute(db.app(), ISSUE);
         Sql.assertRejected("42501", db.app(), sql);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"expected", "actual", "evidence_refs"})
+    void ac_5_21_appCanRefreshCurrentContentButCannotRewriteHistory(String column) throws SQLException {
+        Sql.execute(db.app(), ISSUE.replace("'INGESTION'", "'AGING'"));
+        Sql.execute(db.app(), "UPDATE recon.issue SET " + column + " = '[206]'::jsonb");
+        assertThat(Sql.queryLong(
+                        db.readonly(), "SELECT count(*) FROM recon.v_issue WHERE " + column + " = '[206]'::jsonb"))
+                .isEqualTo(1);
+        Sql.assertRejected("42501", db.readonly(), "UPDATE recon.v_issue SET " + column + " = '[]'::jsonb");
+        Sql.assertRejected("42501", db.app(), "UPDATE recon.finding SET " + column + " = '[]'::jsonb");
     }
 
     @Test
@@ -82,7 +95,7 @@ class IssueTableTest {
                 var statement = connection.createStatement();
                 var rows = statement.executeQuery("SELECT * FROM recon.v_issue")) {
             assertThat(rows.next()).isTrue();
-            assertThat(rows.getMetaData().getColumnCount()).isEqualTo(15);
+            assertThat(rows.getMetaData().getColumnCount()).isEqualTo(17);
             assertThat(rows.getString("id")).isEqualTo("iss_00000000000000000000000001");
             assertThat(rows.getString("category")).isEqualTo("EVENT_CONTENT_CONFLICT");
             assertThat(rows.getString("evidence_refs")).isEqualTo("[]");
@@ -168,8 +181,8 @@ class IssueTableTest {
         String sql = ISSUE.replace("status, recorded_at", "first_run_id, last_run_id, status, recorded_at")
                 .replace(
                         "'INGESTION', 'OPEN'",
-                        "'" + source + "', " + (first ? "'rr_first'" : "NULL") + ", " + (last ? "'rr_last'" : "NULL")
-                                + ", 'OPEN'");
+                        "'" + source + "', " + (first ? "'rr_00000000000000000000000001'" : "NULL") + ", "
+                                + (last ? "'rr_00000000000000000000000002'" : "NULL") + ", 'OPEN'");
         boolean valid = switch (source) {
             case "RUN" -> first;
             case "INGESTION" -> !first && !last;

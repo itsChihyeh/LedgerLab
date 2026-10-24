@@ -50,7 +50,7 @@ import tools.jackson.databind.ObjectMapper;
 class PaymentQueryTest {
     private static final TestDatabase.Handle DB = TestDatabase.freshBlank();
     private static final HttpClient HTTP = HttpClient.newHttpClient();
-    private static final Probe PROBE = new Probe();
+    static final Probe PROBE = new Probe();
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
@@ -112,7 +112,8 @@ class PaymentQueryTest {
                 observations.add(new Observation(
                         rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getString(5)));
             }
-            if (sql.contains("FROM core.v_payment") && pause.compareAndSet(true, false)) {
+            if ((sql.contains("FROM core.v_payment") || sql.contains("FROM core.v_event"))
+                    && pause.compareAndSet(true, false)) {
                 reached.countDown();
                 assertThat(release.await(15, TimeUnit.SECONDS))
                         .as("writer released snapshot reader")
@@ -165,6 +166,8 @@ class PaymentQueryTest {
         assertThat(detail.path("currency").asString()).isEqualTo("CAD");
         assertThat(detail.path("status").asString()).isEqualTo("CAPTURED");
         assertThat(detail.path("expectedFee").asLong()).isEqualTo(320);
+        for (String field : List.of("actualFee", "net", "batch", "bankDeposit"))
+            assertThat(detail.path(field).isNull()).as(field).isTrue();
         JsonNode postings = detail.path("postings");
         assertThat(postings.size()).isEqualTo(2);
         assertThat(postings.get(0).path("accountCode").asInt()).isEqualTo(1101);
@@ -197,6 +200,116 @@ class PaymentQueryTest {
                         .query(Long.class)
                         .single())
                 .isEqualTo(2);
+    }
+
+    @Test
+    void ac_5_15_eventSummaryIncludesAllDeliveriesWithoutSensitiveFields() throws Exception {
+        byte[] original = event("evt_summary", "ch_summary");
+        deliver(original);
+        JsonNode pending = ok("/api/events/evt_summary");
+        assertThat(pending.path("status").asString()).isEqualTo("RECEIVED");
+        assertThat(pending.path("result").isNull()).isTrue();
+        deliver(original);
+        deliver(event("evt_summary", "ch_conflicting_secret"));
+        worker.processAvailable();
+        PROBE.observations.clear();
+        JsonNode detail = ok("/api/events/evt_summary");
+        assertQueryCredentials(3);
+        assertThat(detail.propertyNames())
+                .containsExactlyInAnyOrder(
+                        "eventId",
+                        "eventType",
+                        "apiVersion",
+                        "livemode",
+                        "occurredAt",
+                        "receivedAt",
+                        "status",
+                        "result",
+                        "subject",
+                        "subjectId",
+                        "deliveries",
+                        "asOf");
+        assertThat(detail.path("eventId").asString()).isEqualTo("evt_summary");
+        assertThat(detail.path("eventType").asString()).isEqualTo("charge.succeeded");
+        assertThat(detail.path("apiVersion").asString()).isEqualTo("2026-09-30.endive");
+        assertThat(detail.path("livemode").asBoolean()).isFalse();
+        assertThat(Instant.parse(detail.path("occurredAt").asString())).isEqualTo(Instant.ofEpochSecond(1792591200));
+        assertThat(detail.path("receivedAt")).isEqualTo(pending.path("receivedAt"));
+        assertThat(detail.path("status").asString()).isEqualTo("PROCESSED");
+        assertThat(detail.path("result").asString()).isEqualTo("APPLIED");
+        assertThat(detail.path("subject").asString()).isEqualTo("payment");
+        assertThat(detail.path("subjectId").asString()).isEqualTo("ch_summary");
+        JsonNode deliveries = detail.path("deliveries");
+        assertThat(deliveries.size()).isEqualTo(3);
+        assertThat(deliveries.get(0).path("outcome").asString()).isEqualTo("NEW");
+        assertThat(deliveries.get(1).path("outcome").asString()).isEqualTo("DUPLICATE");
+        assertThat(deliveries.get(2).path("outcome").asString()).isEqualTo("CONFLICT");
+        long previous = 0;
+        for (JsonNode delivery : deliveries) {
+            assertThat(delivery.propertyNames())
+                    .containsExactlyInAnyOrder(
+                            "id", "eventId", "eventType", "outcome", "receivedAt", "status", "result", "subject");
+            assertThat(delivery.path("id").asLong()).isGreaterThan(previous);
+            previous = delivery.path("id").asLong();
+            assertThat(delivery.path("subject").asString()).isEqualTo("payment");
+            assertThat(delivery.path("result").asString()).isEqualTo("APPLIED");
+        }
+        assertThat(detail.toString())
+                .doesNotContain(
+                        "payload",
+                        "signature",
+                        "sha256",
+                        "signedAt",
+                        "signed_at",
+                        "conflictPayload",
+                        "ch_conflicting_secret");
+        assertThat(get("/api/events/evt_missing").statusCode()).isEqualTo(404);
+        assertThat(get("/api/events/evt_%27%20OR%201=1--").statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    void ac_5_15_eventStatusAndDeliveriesShareSnapshotAcrossConcurrentCommit() throws Exception {
+        byte[] body = event("evt_summary_snapshot", "ch_summary_snapshot");
+        deliver(body);
+        PROBE.pause.set(true);
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            var pending = executor.submit(() -> ok("/api/events/evt_summary_snapshot"));
+            try {
+                assertThat(PROBE.reached.await(15, TimeUnit.SECONDS)).isTrue();
+                deliver(body);
+                worker.processAvailable();
+            } finally {
+                PROBE.release.countDown();
+            }
+            JsonNode before = pending.get(15, TimeUnit.SECONDS);
+            assertThat(before.path("status").asString()).isEqualTo("RECEIVED");
+            assertThat(before.path("result").isNull()).isTrue();
+            assertThat(before.path("deliveries").size()).isEqualTo(1);
+            assertThat(before.path("deliveries").get(0).path("status").asString())
+                    .isEqualTo("RECEIVED");
+            assertQueryCredentials(3);
+        }
+        JsonNode after = ok("/api/events/evt_summary_snapshot");
+        assertThat(after.path("status").asString()).isEqualTo("PROCESSED");
+        assertThat(after.path("result").asString()).isEqualTo("APPLIED");
+        assertThat(after.path("deliveries").size()).isEqualTo(2);
+        for (JsonNode delivery : after.path("deliveries"))
+            assertThat(delivery.path("result").asString()).isEqualTo("APPLIED");
+    }
+
+    @Test
+    void ac_5_15_unsupportedEventStillHasSummaryWithoutInventingAnAssociation() throws Exception {
+        byte[] body = new String(event("evt_summary_other", "obj_other"), StandardCharsets.UTF_8)
+                .replace("charge.succeeded", "customer.created")
+                .getBytes(StandardCharsets.UTF_8);
+        deliver(body);
+        worker.processAvailable();
+        JsonNode detail = ok("/api/events/evt_summary_other");
+        assertThat(detail.path("status").asString()).isEqualTo("IGNORED");
+        assertThat(detail.path("result").isNull()).isTrue();
+        assertThat(detail.path("subject").isNull()).isTrue();
+        assertThat(detail.path("subjectId").isNull()).isTrue();
+        assertThat(detail.path("deliveries").get(0).path("subject").isNull()).isTrue();
     }
 
     @Test
@@ -277,7 +390,7 @@ class PaymentQueryTest {
         assertThat(after.path("asOf").path("seq").asLong()).isGreaterThan(seq);
     }
 
-    private static void assertQueryCredentials(int statements) {
+    static void assertQueryCredentials(int statements) {
         assertThat(PROBE.observations).hasSize(statements);
         assertThat(PROBE.observations.stream().map(Observation::user)).containsOnly("readonly");
         assertThat(PROBE.observations.stream().map(Observation::isolation)).containsOnly("repeatable read");
@@ -292,7 +405,9 @@ class PaymentQueryTest {
     void ac_1_14_emptyLedgerHasZeroSnapshotSequence() {
         TestDatabase.Handle empty = TestDatabase.freshMigrated();
         try {
-            PaymentQueries.PaymentList result = new PaymentQueries(empty.readonly()).recent(20);
+            var snapshot = new QuerySnapshot(empty.readonly(), java.time.Clock.systemUTC());
+            PaymentQueries.PaymentList result =
+                    new PaymentQueries(snapshot, new WorkbenchQueries(snapshot, mapper)).recent(20);
             assertThat(result.payments()).isEmpty();
             assertThat(result.asOf().seq()).isZero();
             assertThat(result.asOf().at()).isBeforeOrEqualTo(Instant.now());

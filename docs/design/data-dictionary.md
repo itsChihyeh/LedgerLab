@@ -32,7 +32,7 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 | `io.inbox_event` | INSERT；UPDATE(`status`, `result`, `attempts`, `next_attempt_at`, `lease_owner`, `lease_until`, `lease_epoch`, `parked_on`, `last_error`, `processed_at`) | `payload`、`payload_sha256`、`event_id` 不在授权里 | 改 `payload` 42501 |
 | `io.inbox_conflict` | 只 INSERT/SELECT | — | UPDATE、DELETE 42501 |
 | `io.webhook_delivery` | 只 INSERT/SELECT | 投递结果、哈希格式、事件外键；UPDATE/DELETE/TRUNCATE 触发器（LL004） | 改、删、清空 42501；属主操作 LL004；readonly 只读 core 摘要视图 |
-| `recon.issue` | INSERT；UPDATE(`status`, `last_run_id`, `explanation`, `resolution_correction_id`, `updated_at`) | — | 改 `category`、`expected`、`actual` 42501 |
+| `recon.issue` | INSERT；UPDATE(`status`, `last_run_id`, `explanation`, `resolution_correction_id`, `updated_at`, `fingerprint`, `reopen_count`, `expected`, `actual`, `evidence_refs`)；内容三列只能由对账运行按最新发现刷新 | — | 改 `category`、`subject_type`、`subject_id` 42501 |
 | 只读视图 | — | `readonly` 只能 SELECT 视图，底表、`io`、`sim_*` 不可见 | 以 `readonly` 读底表、`io`、`sim_*` 被拒；读视图成功；任何写入被拒 |
 
 纠错（P4）会改到支付金额等目前不在授权里的列：怎么改由 P4 开工前补的纠错类型定义决定（ADR-0011 补充），到时新增迁移扩授权，并同步本表。
@@ -132,6 +132,23 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 
 批次行：`(batch_id, line_no)` PK、`line_type`（`PAYMENT`/`REFUND`/`PAYOUT_FAILURE`；其他 Stripe 类型如 `adjustment`、`dispute` 不支持 → 批次 `HELD`）、`processor_ref`、`balance_txn_id`（Stripe `txn_…`，UNIQUE）、`gross`、`fee`、`net`。
 
+### P2 T11 实现备注（V11 迁移）
+
+- `core.batch_transition` 增加可空的 `hold_reason text` 和 `lines_fetch_id bigint REFERENCES io.processor_fetch(id)`；在唯一的批次历史写入点保存当时原因与固定明细存档。旧历史不回填；`to_status <> 'HELD' OR hold_reason IS NOT NULL` 用 `NOT VALID` 保留旧行，对新写入强制检查。
+- `core.v_batch_transition` 追加这两列；migrator 仍为属主，app 沿用 SELECT/INSERT、无 UPDATE/DELETE/TRUNCATE，readonly 只读视图。没有新增表或扩大写权限。
+- T11 按证据时点前最后一条历史恢复状态和原因；旧 HELD 历史缺原因或存档时不猜当前值，报告列出该覆盖边界。
+
+### P2 T02 实现备注（V6 迁移）
+
+- `settlement_batch` 补充不可改的 `currency text`、`automatic boolean`、`method text`、`occurred_at timestamptz`（payout created）、`recorded_at timestamptz`，以及可改的 `updated_at timestamptz`，均非空。`batch_id` 必须以 `po_` 开头且有后缀；`source_event_id` 外键指向 inbox。`settlement_date`、`arrival_date`、`lines_fetch_id` 和五项合计可空，保留尚未就绪的批次；`lines_fetch_id` 外键指向 `io.processor_fetch.id`。
+- `payout_amount` 和 `net` 的范围为 −9007199254740991～9007199254740991 分，其余四项合计为 0～9007199254740991 分。原始 payout 金额允许为负或零，币种、automatic、method 不在表上强制支持范围，以便存下 `HELD(UNSUPPORTED_PAYOUT)` 的证据。合计齐全时必须满足净额公式；`CONFIRMED`、`BANKED`、`PAYOUT_FAILED` 必须五项合计齐全、`net > 0` 且等于 `payout_amount`。这些表约束不替代后续业务准入及逐行核对。
+- `HELD` 当且仅当 `hold_reason` 非空；原因枚举为 `UNKNOWN_PAYMENT`、`AMOUNT_MISMATCH`、`UNSUPPORTED_LINE`、`UNSUPPORTED_PAYOUT`、`FEE_EXCEEDS_GROSS`、`LINE_IN_OTHER_BATCH`、`TOTAL_MISMATCH`、`LINES_NOT_READY`。
+- 批次行另有非空 `occurred_at`（balance transaction created）和 `recorded_at`；`line_no integer` 从 1 起，`batch_id` 是外键。金额保留处理方方向：`PAYMENT`、`PAYOUT_FAILURE` 的 `gross` 为 1～99999999，`REFUND` 的 `gross` 为 −99999999～−1；`fee` 为 0～99999999，`net` 为 −99999999～99999999，并满足 `net = gross - fee`。`balance_txn_id` 必须以 `txn_` 开头且有后缀、跨批次唯一。插入触发器锁住批次行并检查其状态为 `CONFIRMED`（否则 `23514`），保证未核对通过的明细仅留在 fetch 原文中；行插入后可随批次进入 `BANKED` 或 `PAYOUT_FAILED`。
+- `batch_transition` 与 `payment_transition` 同形：`id bigint GENERATED ALWAYS AS IDENTITY` 主键，`subject_id` 外键指向批次；`from_status` 可空，其他字段非空，两状态列均检查批次状态枚举。
+- `io.processor_fetch.id` 采用 `bigint GENERATED ALWAYS AS IDENTITY`，`event_id` 可空且外键指向 inbox；其余字段非空：`purpose`（`BATCH_LINES` / `PAYOUT` / `RECON_SNAPSHOT`）、`request jsonb`、`response_body text`、`response_sha256 text`、`complete boolean`、`fetched_at timestamptz`、`recorded_at timestamptz`。多页原文存为数组文本，SHA-256 对保存文本的 UTF-8 字节计算，并用 CHECK 验证；不把原文转为 jsonb 后再算哈希。未拉完的响应也可存档，`complete=false`。
+- 批次行、状态历史、fetch 的 UPDATE、DELETE、TRUNCATE 均由触发器拒绝（`LL004`），包括属主误操作。补齐 V2 留下的 `payment.batch_id` 外键。
+- 四张表均由 `migrator` 持有；`app` 只有 INSERT/SELECT，批次额外仅可 UPDATE `status`、`hold_reason`、`settlement_date`、`arrival_date`、五项合计、`lines_fetch_id`、`updated_at`。`readonly` 仅可 SELECT 显式列出全部字段的 `core.v_settlement_batch`、`core.v_settlement_batch_line`、`core.v_batch_transition`，不能访问底表或 `io`。
+
 ### `core.*_transition`
 
 每类对象一张：`subject_id`、`from_status`、`to_status`、`evidence_type`、`evidence_id`、`occurred_at`、`recorded_at`。只追加。
@@ -191,6 +208,37 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - `GET /api/payments?limit=n` 返回 `{payments: [...], asOf: {...}}`；摘要为上述支付基本字段，无 postings/deliveries。按 recorded_at 降序、id 降序；limit 默认 20，仅接受 1～100，非整数或越界返回 400。
 - 每次接口的全部查询都在独立 `REPEATABLE READ` 只读事务中，且只访问视图。`asOf.seq` 是该快照可见的最大账本序号（空账本为 0），`asOf.at` 是取得快照的数据库语句时刻；它不是业务截止时间，也不意味着序号连续或不存在尚未提交的较小序号。
 
+### P2 T13 实现备注：只读查询与运营处置
+
+沿用 P1c-3 的数据源与事务契约：每个新增 GET 及支付详情使用 `investigationDataSource` / `readonly`，全部查询处于一个独立 `REPEATABLE READ` 只读事务。先查询可见最大账本序号建立快照，再从注入 Clock 取 `asOf.at`（T13 起替代上述数据库语句时刻，统一时钟来源）。该时刻是观察标签，不是过滤条件；历史重放仍用 run 的 cutoff/evidence 时点。现有 V1–V11 视图已覆盖所需字段，无新增迁移或授权；不直接读取 io，不返回原始 webhook／处理方响应。
+
+- `GET /api/overview` 返回 `accounts[{code,name,balance}]`（八个账户，代码升序）、`inTransit`（1102）、`bankCash`（1103）、`merchantAvailable`（2102 原始有符号余额）、`merchantOwes`（余额负时精确取反，否则 0）、`unappliedCash`（2105）、`openIssuesByCategory`、`batchesByStatus`、`asOf`。计数对象仅含非零类别／状态，缺项视为 0。
+- 支付详情新增可空 `actualFee`、`net`（有实际手续费时 amount − actualFee，未结算为 null）、`batch{batchId,status,settlementDate,arrivalDate}`、`bankDeposit{bankTxnId,amount,bookingDate}`。入账只取 matched_batch_id 的实际匹配行，候选不算入账。posting 范围为**支付自己的分录 + 当前所属整个批次的分录 + 该批次匹配银行流水的分录**，按分录 seq／行号排序，每条只出现一次；批次金额不分摊到单笔支付。S3 为 2 + 5 + 2 = 9 条；多支付批次仍返回整批 posting。
+- `GET /api/batches?limit=` 返回 `{batches,asOf}`；`GET /api/batches/{id}` 返回 `{batch,lines,history,entries,postings,bankLines,asOf}`。批次包含既有视图业务字段，未就绪合计／日期保持 null；行含 `balanceTxnId`。history 按自增 id 升序；entries/postings 含本批次及实际匹配银行流水分录，bankLines 只含实际匹配行。
+- `GET /api/recon/issues?status=&category=&limit=` 返回 `{issues,asOf}`，保留当前 expected/actual/evidenceRefs JSON；按 updated_at、id 降序。status 只接受 OPEN/EXPLAINED/ACCEPTED/RESOLVED，否则 400；category 精确匹配，未知类别返回空集。省略筛选即全部。
+- `GET /api/recon/issues/{id}` 返回 `{issue,amounts,history,findings,references,asOf}`。amounts 逐项提供 `{metric,statementLineId,expectedAmount,actualAmount,difference}`，difference = expected − actual，精确运算且检查 JSON 安全整数范围。只比较两边存在的金额字段（amount/gross/fee/net/unapplied；银行 closing_balance 对 cash；候选批次 net 对流水 amount），展开实际金额数组及 fees/lines、入口差异的嵌套 line；批次 payout_amount 分别对实际 payout_amount／line_net，max_fee 对实际 fee；存在性、数量或缺失值不伪装为零金额。保留原始 JSON；findings 按运行 started_at、run_id、finding id 排序，全部返回；history 按 recorded_at、id 排序。旧发现不随当前处置改写。
+- references 返回 `batchIds`、`statementLines[{fileId,lineSeq,statementLineId}]`、`eventIds`、`entryIds`、`bankTxnIds`、`paymentIds`。合并当前差异、全部历史发现／处置证据中的明确引用，并补关联支付、批次、结算单版本及银行行；编号排序去重并去掉空白引用，结算单保留各文件行身份。银行候选引用可用于导航，但不等于匹配；仅 payment.bankDeposit 和 batch.bankLines 表示匹配。事件仅返回编号；相关 posting 可由支付、批次或银行详情查询。
+- `GET /api/recon/runs?limit=` 返回 `{runs,asOf}`，含固定输入、哈希、规则版本、两个时点及 summary JSON，按 started_at、id 降序。原有 T09 的运行详情／发起运行接口保持原契约。
+- `GET /api/bank-lines/{bankTxnId}` 返回 `{bankLine,versions,entries,postings,asOf}`，bankLine 为最高证据版本，versions 按 version 降序；分录按 bank_txn 身份查。`GET /api/statement-lines/{fileId}/{seq}` 返回 `{statementLine,asOf}`，精确定位文件内行，不混淆版本或重复行；seq 必须为正整数。
+- 所有列表 limit 默认 20，范围 1–100；非整数或越界 400。批次列表按 recorded_at、batch_id 降序。详情未知编号 404。前端类型正本为 `frontend/src/api.ts`。
+- `POST /api/recon/issues/{id}/accept` 接受 `{reason}`，`/resolve` 接受 `{note}`，在 reconciliation 委托既有 IssueDisposition，走 app 数据源。成功 204；缺失/null/空白说明 400，未知差异 404，非 OPEN 或并发状态冲突 409。状态与 OPERATOR 历史同事务写入，不改账或历史发现。
+
+### P2 T13b 实现备注（V12：批次投递与事件摘要）
+
+- 新增 migrator 拥有的 `core.v_batch_delivery`，以属主权限读取 io，列为 `id,event_id,event_type,outcome,received_at,status,result,batch_id`；仅匹配 `payout.*`，批次号从原事件 `data.object.id` 提取。CONFLICT 仍归于原事件对象，不读取冲突原文。
+- 新增 `core.v_event`（`event_id,event_type,api_version,livemode,occurred_at,received_at,status,result,subject,subject_id`）及 `core.v_event_delivery`（投递七字段加 `subject`）。`subject` 为 charge.* 的 `payment` 或 payout.* 的 `batch`；其他类型为 null。`subject_id` 从原事件对象提取，是处理方支付号或批次号，不要求本地业务对象已创建；不支持的类型或缺失对象编号为 null。P2 不推断退款等其他关联。
+- 三个视图均仅向 readonly 授 SELECT，app 无新增权限，readonly 仍无 io schema／底表访问权。显式列出安全字段，不暴露 payload、签名、哈希、冲突原文或 worker 错误文本。
+- 支付详情 deliveries 合并本支付 charge 投递和当前 batch_id 的 payout 投递；批次详情新增自己的 deliveries。每条统一为 `{id,eventId,eventType,outcome,receivedAt,status,result,subject}`，按 received_at、id 升序，subject 分别为 payment/batch。新 event_id 的相同事实投递 outcome 为 NEW，处理后 result 为 DUPLICATE_FACT；同 event_id 重投的 outcome 为 DUPLICATE。
+- `GET /api/events/{eventId}` 返回 `{eventId,eventType,apiVersion,livemode,occurredAt,receivedAt,status,result,subject,subjectId,deliveries,asOf}`，不存在 404。deliveries 含该事件全部 NEW/DUPLICATE/CONFLICT 投递，按 received_at、id 升序；status/result 均为快照中的当前值。沿用 QuerySnapshot 的 readonly 连接、独立 REPEATABLE READ 事务和注入 Clock 的 asOf，不提供原文接口。
+
+### P2 T14 实现备注：页面与证据导航
+
+- 前端使用 hash 路由：`#/` 总览、`#/payments/{ref}` 交易、`#/batches/{id}` 批次、`#/recon` 工作台、`#/recon/{id}` 差异。P1 的 `/payments/{ref}` 直达链接继续可用。列表按接口现有上限展示最近支付／批次 20 条、筛选后的差异 100 条，页面明确标注；状态／类别筛选保存在 hash 查询参数，刷新及后退可恢复。
+- 金额沿用 `formatCad`；未就绪净额／批次合计显示“待确认”，不当成零。商户欠款取 overview 的 `merchantOwes`，为正时替换“商户可用”显示，不显示负可提现。P2 的真实入口无法产生负可用，AC-1.11 这一半的 E2E 留 P3，测试有明确注记。
+- 差异金额直接用后端 `amounts`，同时显示 CAD 和整数分；展示处置历史、每次 finding 的原预期／实际／证据，不由当前处置反推历史。接受必须输入非空白原因，成功后重新查询，409 提示刷新核对。
+- 证据页精确使用 T13/T13b 的批次行文件号／行序号、事件脱敏摘要、银行流水编号。相关 posting 按差异明确引用的 entryId，在其关联支付／批次／银行详情中定位，保留该来源响应的 asOf，不新增后端接口、不拼成跨请求的统一快照。总览各数据区也分别保留自己的 asOf。
+- E2E 两轮分别以空 Testcontainers 数据库重放 T12 的 `sample-a-1-3` 和 `ac-5-3`（截至 first 检查点，恰好七条差异）。复用场景真值断言和真实签名 webhook、处理方 HTTP 回放、银行 CSV 导入及对账；不直接 SQL 造账。仅测试启动器在 loopback 8090 提供就绪、注入 Clock 读数、受控 worker 排空和 B1 回放准备；生产应用没有这些入口。演示辅助函数 `frontend/e2e/helpers.ts#replayB1Confirmation` 只替换 event_id 后重签并投递原 B1 确认内容。
+
 ### `io.outbound_command`
 
 `id cmd_…`、`kind`（`SUBMIT_REFUND`/`SUBMIT_PAYOUT`/`QUERY_REFUND`/`QUERY_PAYOUT`）、`subject_id`、`request_id`（对外幂等键，所有重试相同）、`status`（`PENDING`/`IN_FLIGHT`/`UNKNOWN`/`DONE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`lease_epoch`、`first_sent_at`（第一次真正发出的时刻，写入后不改）、`external_ref`、`last_outcome`、`created_at`。
@@ -211,6 +259,15 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 `id`、`kind`（`PROCESSOR_STATEMENT`/`BANK_STATEMENT`）、`source_name`、`sha256` UNIQUE、`statement_date`、`version`、`received_at`。同一文件内容重复导入直接返回原导入结果。
 
+### P2 T08 实现备注（V7 银行流水）
+
+- `io.imported_file.id` 用 `file_` 加 ULID；补 `status`（ACCEPTED/REJECTED）、`reject_reason`（FILE_INCOMPLETE/BALANCE_MISMATCH）、`raw bytea`、`recorded_at`。SHA-256 由 CHECK 校验原始字节；拒绝文件的日期、版本可空，接受文件必填。导入结果仅返回不可变的 `fileId/status/rejectReason`，重导不会返回变化后的匹配状态。
+- `recon.bank_statement` 以 `file_id` 为主键和外键，保存 `account_ref/currency/opening_balance/closing_balance/period_start/period_end/version/recorded_at`。只允许关联 ACCEPTED 文件；T07 的单账户、CAD、单日日报约束落在数据库。文件版本不设唯一约束：同日报表不同字节仍各自存档，流水按身份合并。
+- `recon.bank_line` 以 `(bank_txn_id, version)` 为主键；version 正整数，从 1 开始，仅 PENDING→BOOKED 时递增。`file_id` 引用 bank_statement；补 `recorded_at`。日期、金额、币种、方向、状态、reference、memo 均非空，return_of/reason_code 保留可空。wait_until 在插入时确定，之后不可改；MATCHED 必须带 matched_batch_id，其余状态不得带候选批次外键（候选放 issue.evidence_refs）。部分唯一索引保证同一批次最多一行 MATCHED。
+- `bank_line.import_order bigint identity UNIQUE` 记录实际插入顺序，等待行按此升序处理；不以时钟相同的随机 ULID 或银行流水号排序。导入与资金写入在资金锁内串行化，序列空洞不影响顺序。只读视图也提供此列。
+- migrator 为三表属主；app 仅 INSERT/SELECT，bank_line 额外只可 UPDATE(match_status, matched_batch_id)。触发器保护原文和原始流水字段，禁止删除、清空，包括属主误操作。readonly 仅 SELECT `recon.v_bank_statement`、`recon.v_bank_line`，无 io 或底表权限。
+- 整文件解析、校验完成后在一个资金事务内归档并依文件顺序合并、匹配，先 lockFunds；格式失败只归档拒绝结果。同一 SHA 重导原样返回，无新行。POST `/api/bank-statements` 接受 text/csv 原始字节，可用 `X-Source-Name` 指定来源（默认 bank-statement.csv）；接受和拒绝均返回 200 及上述结果 JSON。
+
 ---
 
 ## 4. recon
@@ -219,17 +276,42 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 结算单行：`file_id`、`statement_line_id`、`line_type`、`processor_ref`、`batch_id`、`gross`、`fee`、`net`、`occurred_at`、`settlement_date`、`memo`（自由文本，P7 用于提示注入测试）。
 
+### P2 T10 实现备注（V9：处理方快照）
+
+- `recon.statement_line` 的主键为 `(file_id, line_seq)`，line_seq 为正整数；保留同一快照内重复的 txn 身份。补 `recorded_at`，金额为有界 BIGINT，净额等于毛额减手续费；PAYMENT/PAYOUT_FAILURE 为正毛额，REFUND 为负毛额。只追加，migrator 为属主，app 仅 SELECT/INSERT，readonly 仅读 `v_statement_line`；触发器限制只能引用已接受的处理方文件，并拒绝属主改删清空。
+- `io.imported_file` 增加 `processor_fetch_ids` JSON 数组（默认空），关联 T04 原始分页存档；JSON 夹具不需要 fetch 编号。`processor_source` JSON 对象（默认空）保存传入 payout/lines JSON 的原始字符串，完整或拒绝的夹具都保留；HTTP 原始分页继续在 T04 存档。两列沿用文件的不可变性和最小授权，不向 readonly 暴露。处理方 raw 是规范化 JSON 内容（对象键和 payout/行排序，保留重复次数），sha256 仍由原有数据库 CHECK 校验；来源名、拉取时间和 fetch 编号不参与内容哈希。
+- 文件 version 按业务日顺序递增；received_at 为全部拉取完成时刻。导入用独立的 PostgreSQL 事务 advisory lock 串行化 SHA 去重、版本比较与插入，不取得资金锁，不写账本。任一次读取不完整或响应契约非法，整份 REJECTED(FILE_INCOMPLETE)，零 statement_line；与银行文件一致，以文件拒绝原因呈现，不新增 issue 类别。行版本冲突仍开 INGESTION 差异。
+- `v_input_evidence` 的 PROCESSOR 输入改为整个 PROCESSOR_STATEMENT 文件，不再把单个 RECON_SNAPSHOT fetch 当成完整快照；`v_processor_snapshot` 仅公开接受文件的 payout 元数据、编号与时点，含零行 payout，不暴露原始分页。两视图 app/readonly 仅读。相同行身份的新内容只追加并开 STATEMENT_VERSION_CONFLICT；对账按 fetched_at、recorded_at、file_id 确定最新快照中的该身份，重复次数只在这个快照内计数。
+
 银行流水文件另记 `account_ref`、`currency`、`opening_balance`、`closing_balance`、`period_start`、`period_end`（INV-11）。
 
-银行流水行：`bank_txn_id` UNIQUE、`file_id`、`direction`（`CREDIT`/`DEBIT`）、`amount`、`reference`（批次号或银行请求号）、`return_of` NULL（原流水或请求号）、`reason_code` NULL、`booking_date`、`value_date`、`memo`。
+银行流水行：身份为 `(bank_txn_id, version)`（联合唯一，`bank_txn_id` 不再单独 UNIQUE）、`file_id`、`direction`（`CREDIT`/`DEBIT`）、`currency`、`status`（`BOOKED`/`PENDING`）、`amount`、`reference`（批次号或银行请求号）、`return_of` NULL（原流水或请求号）、`reason_code` NULL、`booking_date`、`value_date`、`memo`、`match_status`（`WAITING`/`MATCHED`/`UNAPPLIED`/`UNMATCHED_NO_POSTING`/`IGNORED_PENDING`）、`matched_batch_id` NULL、`wait_until` NULL。`app` 只可 UPDATE `match_status`、`matched_batch_id`。这里的 version 是同一流水的证据版本，当前有效版本为最高版本，不是按报表日期重置的文件版本。只有 PENDING→BOOKED 且其余内容（包括方向、金额、币种、reference、value_date）不变，才接受为状态前进；两份证据均保留，只有 BOOKED 参与匹配和记账。其他内容变化或 BOOKED→PENDING 均为 `STATEMENT_VERSION_CONFLICT`，旧行不动。
 
 ### `recon.run`
 
-`id rr_…`、`kind`（`PROCESSOR`/`BANK`/`AGING`）、`input_file_ids`、`rule_version`、`cutoff_at`、`started_at`、`finished_at`、`summary`（各类差异数）。
+`id rr_…`、`kind`（`PROCESSOR`/`BANK`/`AGING`）、`input_file_ids`（含处理方快照编号）、`input_hashes`、`rule_version`、`cutoff_at`（业务截止，多伦多 00:00）、`evidence_as_of`（证据快照时点，contracts 1.2 第 3 条）、`started_at`、`finished_at`、`summary`（各类差异数）。CHECK `cutoff_at ≤ evidence_as_of`。
+
+### P2 T09 实现备注（V8：运行与发现）
+
+- `recon.run` 增加 `status`（RUNNING/FINISHED/FAILED）和 `recorded_at`；输入编号为 JSON 数组，哈希为按编号索引的 JSON 对象，summary 为 JSON 对象。`app` 可 INSERT/SELECT，仅可 UPDATE status、finished_at、summary；readonly 仅读 `v_run`。运行和全部发现、处置变化在一个 REPEATABLE READ 事务提交，异常全部回滚，不另开事务保存 FAILED；RUNNING 仅为事务内状态，FAILED 为预留值。
+- finding 与 issue_transition 的 id 分别使用 `fnd_`、`itr_` 加 ULID。finding 的识别键在单次运行内唯一，expected/actual 允许 JSON null；evidence_refs 必须是数组，fingerprint 为 64 位小写十六进制。只有 TIMING_DIFFERENCE 必须有 due_at，其他类别必须为空。两表都由 migrator 拥有，app 仅 INSERT/SELECT，UPDATE/DELETE/TRUNCATE 另由 LL004 触发器保护属主误操作；readonly 仅读对应 `v_finding`、`v_issue_transition`。
+- issue 新增可空 fingerprint、非负 reopen_count（默认 0），app 可 UPDATE 这两列；每次发现都把差异的当前内容（expected/actual/evidence_refs/fingerprint/last_run_id）刷新为本次发现，历史 finding 只追加不变，旧报告照样可重现。first_run_id、last_run_id 补 run 外键，v_issue 追加新列。
+- T09b 的 V10 仅给 app 补 expected/actual/evidence_refs 三列的 UPDATE 授权，由对账运行按最新发现刷新；category、subject_type、subject_id 等身份字段仍不可改，INGESTION、其他运行类别和范围外差异不刷新。migrator 属主权限、readonly 仅读 v_issue 的授权不变；finding/issue_transition 的只追加保护不变。
+- `recon.v_input_evidence` 仅投影 io 存档的编号、种类、哈希、接收/拉取时刻、recorded_at 和就绪标记，不暴露原文。银行文件编号沿用 file_…；T09 暂用 `fetch:<id>` 的处理方输入在 T10/V9 替换为完整快照的 file_…，原始 fetch 不再单独参与运行。app、readonly 仅 SELECT 此视图；UNION 视图写入在 PostgreSQL 重写阶段被拒（55000），测试另查 ACL 证明没有 INSERT/UPDATE/DELETE 授权。框架不直接查询 io。空 inputIds 表示在同一快照内选择该运行种类的全部就绪输入；显式编号要求种类匹配、就绪且两个存档时刻均早于 evidence_as_of。AGING 可使用两类输入。输入排序后固定到 run，GET 返回固定的输入和发现。
+
+### `recon.finding`（P2，只追加）
+
+`id`、`run_id` FK、`category`、`subject_type`、`subject_id`、`expected`、`actual`（jsonb）、`evidence_refs`、`fingerprint`、`due_at` NULL（只有 `TIMING_DIFFERENCE`）、`issue_id` FK、`recorded_at`。UNIQUE (`run_id`, `category`, `subject_type`, `subject_id`)。`app` 只 INSERT/SELECT，改删清空由触发器拒绝（LL004）。
+
+### `recon.issue_transition`（P2，只追加）
+
+`id`、`issue_id` FK、`from_status` NULL、`to_status`、`run_id` NULL、`reason`（`DETECTED`/`REOPENED`/`EXPLAINED`/`OPERATOR`）、`explanation`、`evidence_refs`、`recorded_at`。
 
 ### `recon.issue`
 
 `id iss_…`、`category`、`subject_type`、`subject_id`（联合唯一键见状态机第 7 节）、`detected_by`（`RUN`/`INGESTION`/`AGING`；P1 的入站冲突用 `INGESTION`，不需要对账运行）、`first_run_id` NULL、`last_run_id` NULL、`status`、`expected`、`actual`（JSON，金额和引用）、`evidence_refs`、`explanation` NULL、`resolution_correction_id` NULL、`updated_at`。
+
+`expected`、`actual`、`evidence_refs` 是当前发现内容，只能由对账运行按最新发现刷新；运营处置不改这三列。每次运行的原始内容保存在只追加的 `recon.finding` 中，旧报告不随 issue 刷新而改变。
 
 差异类别（首版）：`MISSING_IN_LEDGER`、`MISSING_IN_STATEMENT`、`AMOUNT_MISMATCH`、`FEE_MISMATCH`、`DUPLICATE_STATEMENT_LINE`、`BATCH_TOTAL_MISMATCH`、`REFUND_NOT_IN_STATEMENT`、`DEPOSIT_MISSING`、`DEPOSIT_AMOUNT_MISMATCH`、`UNMATCHED_BANK_LINE`、`UNAPPLIED_CASH_OPEN`、`BANK_BALANCE_MISMATCH`、`BATCH_VERSION_CONFLICT`、`STATEMENT_VERSION_CONFLICT`、`TIMING_DIFFERENCE`、`PAYOUT_STATE_CONFLICT`、`BATCH_STATE_CONFLICT`、`REFUND_STATE_CONFLICT`、`UNSUPPORTED_PAYOUT`，入站类 `EVENT_CONTENT_CONFLICT`、`EVENT_BUSINESS_CONFLICT`、`UNSUPPORTED_EVENT`、`LIVEMODE_EVENT`，以及 contracts 1.3 节的老化类别。
 
@@ -239,7 +321,7 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - `first_run_id`、`last_run_id` 为可空 text；`RUN` 必须有 `first_run_id`，`INGESTION` 的两个运行号必须都为空，`AGING` 不额外限制运行号。到 `recon.run` 的外键在 P2 建表时补上。
 - `status` 限于 `OPEN`、`EXPLAINED`、`RESOLVED`、`ACCEPTED`。`EXPLAINED`、`ACCEPTED` 要求 `explanation IS NOT NULL`；`RESOLVED` 要求 `explanation` 或 `resolution_correction_id` 至少一个非 NULL；`OPEN` 不限制两者。两列为可空 text，纠错外键在 P4 建 `ledger.correction` 时补上。
 - `expected`、`actual` 为可空 jsonb；`evidence_refs` 为 jsonb NOT NULL，默认 `[]`，CHECK 为 JSON 数组。`recorded_at`、`updated_at` 为 timestamptz NOT NULL。
-- 显式命名所有 CHECK 和 UNIQUE；识别键为 UNIQUE (`category`, `subject_type`, `subject_id`)。关闭后再次出现的处理按 P2 开工前置第 ③ 条重新设计。
+- 显式命名所有 CHECK 和 UNIQUE；识别键为 UNIQUE (`category`, `subject_type`, `subject_id`)。关闭后再次出现的处理见 state-machines 7.1 节（P2 新增 `recon.finding`、`recon.issue_transition`，`recon.issue` 加 `fingerprint`、`reopen_count` 两列）。
 - `app` 有 SELECT、INSERT，仅可 UPDATE (`status`, `last_run_id`, `explanation`, `resolution_correction_id`, `updated_at`)，无 DELETE/TRUNCATE；`migrator` 为属主；`readonly` 仅可 SELECT 显式列出全部字段的 `recon.v_issue`。
 - V4 将 V3 的 `inbox_event_check1`、`inbox_event_check2` 分别重命名为 `inbox_event_status_result`、`inbox_event_status_parked_on`，约束逻辑不变。
 
@@ -253,6 +335,32 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - `sim_truth`：场景编号、种子、注入的故障清单和预期差异（ground truth），对账测试和 Agent 评测共用。
 
 处理方和银行的状态分开存、分开推进，避免两边共享同一个错误（I6）。
+
+### P2 T12 实现备注（场景证据导出，无新迁移）
+
+- 场景正本、动作与人工预期发现存于 `simulator/src/main/resources/scenarios/*.json`；导出格式和命令见 [场景夹具](../testing/scenario-fixtures.md)。`truth.json` 仅替换外部别名，不从主应用数据推导。
+- 场景运行复用现有 `sim_processor`/`sim_bank` 表及服务，在空模拟器库上执行后回滚，导出事件原文、按请求的处理方 REST 响应及银行实际执行流水。运行接口返回证据包，不创建新的持久化会话或表；已有人工作业数据时返回 409。
+- `sim_processor.fault_plan.request` 增加 `omit_transaction` 与 `amount` 故障字段：前者在明细读取时隐藏指定已存在的 txn，后者改变后续 payout 对象的金额。原已交付事件及银行已接收转账仍保留原数值。charge 请求可用 `available_on` 指定整数 epoch 秒，写入既有 balance_transaction.available_on，控制后续批次分配。
+- 主应用回放仅消费已提交的资源文件；比较支付 subject 时按处理方编号定位本地编号，不读取模拟器数据库。金额和预期发现仍来自 JSON 场景。数据库角色权限不变。
+
+### P2 T07 实现备注（模拟器 V4）
+
+- 全部新表及 identity 序列由 `simulator` 迁移、拥有；显式撤销 PUBLIC、migrator、app、readonly 权限；每表有 `recorded_at timestamptz`，取注入的模拟 Clock。银行无处理方表外键，也不读取处理方 schema。
+- `sim_bank.account`：`account_ref text PK`、`currency text`（CAD）、`balance bigint`（非负且小于 2^53）。单账户 `SIM-CAD-001` 由银行首次操作创建，初始零余额；账户行锁串行化银行推进、收通知、计划替换和文件版本分配。
+- `sim_bank.fault_plan`：`target_ref text PK`（`*` 是默认规则，payout 号规则优先）、`scenario text`、`fault text`、`parameter bigint`、`memo text`。单笔转账选择一种故障，NONE 清除效果；计划仅影响后来收到的转账。
+- `sim_bank.incoming_transfer`：`payout_ref text PK`、`account_ref FK`、`claimed_amount bigint`（正且小于 2^53）、`plan jsonb`（对象，接收时冻结）、`due_date date`、`executed boolean`。重复通知同金额幂等，不同金额拒绝；仅标准自动 CAD 正 payout 通知银行。超出单行上限的总额按 99999999 分分行，不能生成越界银行行。
+- `sim_bank.txn`：`bank_txn_id text PK`（外部身份由 payout 号及分行序号确定）、`account_ref FK`、`payout_ref FK incoming_transfer`、`direction text`、`amount bigint`（1～99999999）、`currency text`（CAD/USD）、`status text`（BOOKED/PENDING）、`reference text`、`booking_date/value_date date`、`visible_date date`、`memo text`。visible_date 是首次出现在文件的日期；PENDING_FIRST 的 booking_date/value_date 从开始就定为次日，次日只前进 status，余额只增加一次。历史文件按这两个日期重建当日状态。
+- `sim_bank.statement`：`(account_ref FK, statement_date, version)` 主键，version 正整数；`content text` 保存完整未损坏 CSV，`body text` 保存不含版本号的规范内容，用于同日报表比较；所有版本保留，corrupt 仅改响应。
+- `sim_truth.injected_fault`：`id bigint identity PK`、`scenario text`、`object_ref text`、`fault text`、`expected_category text`。每次实际应用故障（非设置计划）追加一行，与转账接收或坏文件导出同事务。SHORT/SPLIT → DEPOSIT_AMOUNT_MISMATCH，DUPLICATE/FOREIGN_CURRENCY/UNKNOWN_CREDIT → UNMATCHED_BANK_LINE，DELAY_DAYS/PENDING_FIRST → TIMING_DIFFERENCE（延迟超期后可升级 DEPOSIT_NOT_RECEIVED）；trailer_count/trailer_sum → FILE_INCOMPLETE，balance → BANK_BALANCE_MISMATCH（导入阶段文件拒绝）。
+
+### P2 T03 实现备注（模拟器 V3）
+
+- 新表仍由 `simulator` 迁移并拥有，PUBLIC、migrator、app、readonly 均无访问权。`payout`、`balance_transaction`、`fault_plan` 均有非空 `recorded_at timestamptz`，取注入的现实 UTC Clock；业务时间来自 SimulationClock。新表业务时刻存 `timestamptz`，REST 转成 Stripe Unix 秒，V1 的 bigint 时间列不变。
+- `payout`：`id text PK`、`amount bigint`（允许故障注入负值）、`currency text`、`automatic boolean`、`method text`（standard/instant）、`status text`（pending/in_transit/paid/failed/canceled）、`reconciliation_status text`（in_progress/completed/not_applicable）、`arrival_date/created timestamptz`、`failure_code text NULL`；另有 `duplicate_transaction text NULL`、`fail_page integer NOT NULL DEFAULT 0`（0 关闭，正数为失败页）。
+- `balance_transaction`：`id text PK`、`type text`（charge/refund/payout/payout_failure/adjustment）、`source text`、`amount/fee/net bigint`、`currency text`、`created/available_on timestamptz`、`payout text NULL FK payout`、`reporting_category text`。CHECK `net = amount - fee`，金额各列和 payout 金额严格位于 ±2^53 以内。source 不设 charge 外键，以支持未知支付故障及 payout/refund 来源。
+- `fault_plan`：`id text PK`、`target_id text`、`request text`（原始控制 JSON）、`recorded_at timestamptz`。charge 的 fee 覆盖、payout 参数覆盖和每次故障计划修改均追加记录。列表复制行仅在响应中生成；extra_line 是带全新 txn 编号的持久行，直接属于指定 payout，不改变 payout 金额；fail_page 按当前游标偏移/limit 推导，重复请求同一页稳定失败。
+- `event.charge_id` 在 V3 改成可空，原外键保留；payout 事件使用新增 `payout_id text NULL FK payout`，旧 charge 事件不变。两种事件均保存完整对象快照，redeliver 原样重签，reissue 保留类型及对象快照。
+- 资金写入事务首先以 SHARE ROW EXCLUSIVE 锁定 balance_transaction 表，防止多个请求或进程重复分配。默认 payout 归集已可用、未分配的 CAD 行（不含 payout 自身），负/零净额不创建；失败不解绑定旧行，只新增一条 payout_failure 返还行。amount 覆盖是故意制造不一致的故障：仍归集原集合，payout 借记采用覆盖金额，后续故障场景需独立重置数据，不承诺自动修复不一致。
 
 ### P1b-8 chaos relay（模拟器 V2）
 

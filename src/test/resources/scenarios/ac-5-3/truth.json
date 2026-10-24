@@ -1,0 +1,209 @@
+{
+  "format_version" : 1,
+  "aliases" : {
+    "P5" : "ch_93da62af23917093f1b5190c00184bc4",
+    "L5" : "txn_cdf0ce95b14a5471c29d01f55427d976",
+    "P1" : "ch_516c97b31a9aa09c3a22c7ce6764ef76",
+    "L1" : "txn_d008bbfd52691563f0e85da9519e8702",
+    "P2" : "ch_89536778011ef86e1ddffacdf5014ee1",
+    "L2" : "txn_614c583e39ce4117ba225a342226d8b3",
+    "P3" : "ch_897261804bc743ba74d87a40e4605274",
+    "L3" : "txn_8b1aee16f4952b1f7379c044fc31716e",
+    "P6" : "ch_e1b5b697eb94a97734fd22644153df0b",
+    "L6" : "txn_061f1dbacb153fe6e857c8fa4ffe33d8",
+    "B1" : "po_66acb59a4dce424e93e1162981934ccb",
+    "P9" : "ch_5a063fbee5df616573a466a696fdba48",
+    "P4" : "ch_078b97eb3475e9a603c4f9a06b0d8a7d",
+    "L4" : "txn_1d5dd34417fa1d43114553f6fa0321f0",
+    "T1" : "bt_po_66acb59a4dce424e93e1162981934ccb_1",
+    "B2" : "po_78c52e142c745951bb9bc8c4138db8b8"
+  },
+  "checkpoints" : [ {
+    "name" : "first",
+    "cutoff_at" : "2026-11-11T05:00:00Z",
+    "evidence_as_of" : "2026-11-12T13:00:00Z",
+    "expected_findings" : [ {
+      "kind" : "PROCESSOR",
+      "category" : "FEE_MISMATCH",
+      "subject_type" : "payment",
+      "subject_id" : "ch_89536778011ef86e1ddffacdf5014ee1",
+      "expected" : {
+        "fee" : 175
+      },
+      "actual" : {
+        "fees" : [ {
+          "fee" : 205
+        } ]
+      }
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "DUPLICATE_STATEMENT_LINE",
+      "subject_type" : "statement_line",
+      "subject_id" : "txn_8b1aee16f4952b1f7379c044fc31716e",
+      "expected" : {
+        "count" : 1
+      },
+      "actual" : {
+        "count" : 2
+      }
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "MISSING_IN_LEDGER",
+      "subject_type" : "processor_payment",
+      "subject_id" : "ch_5a063fbee5df616573a466a696fdba48"
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "MISSING_IN_STATEMENT",
+      "subject_type" : "payment",
+      "subject_id" : "ch_e1b5b697eb94a97734fd22644153df0b"
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "BATCH_TOTAL_MISMATCH",
+      "subject_type" : "batch",
+      "subject_id" : "po_66acb59a4dce424e93e1162981934ccb",
+      "expected" : {
+        "net" : 25096
+      },
+      "actual" : {
+        "net" : 23639,
+        "difference" : 1457
+      }
+    }, {
+      "kind" : "AGING",
+      "category" : "PAYMENT_NOT_SETTLED",
+      "subject_type" : "payment",
+      "subject_id" : "ch_93da62af23917093f1b5190c00184bc4"
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "TIMING_DIFFERENCE",
+      "subject_type" : "payment",
+      "subject_id" : "ch_078b97eb3475e9a603c4f9a06b0d8a7d",
+      "due_at" : "2026-11-14T05:00:00Z"
+    } ]
+  }, {
+    "name" : "second",
+    "cutoff_at" : "2026-11-13T05:00:00Z",
+    "evidence_as_of" : "2026-11-13T13:00:00Z",
+    "expected_findings" : [ {
+      "kind" : "PROCESSOR",
+      "category" : "FEE_MISMATCH",
+      "subject_type" : "payment",
+      "subject_id" : "ch_89536778011ef86e1ddffacdf5014ee1",
+      "expected" : {
+        "fee" : 175
+      },
+      "actual" : {
+        "fees" : [ {
+          "fee" : 205
+        } ]
+      }
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "DUPLICATE_STATEMENT_LINE",
+      "subject_type" : "statement_line",
+      "subject_id" : "txn_8b1aee16f4952b1f7379c044fc31716e",
+      "expected" : {
+        "count" : 1
+      },
+      "actual" : {
+        "count" : 2
+      }
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "MISSING_IN_LEDGER",
+      "subject_type" : "processor_payment",
+      "subject_id" : "ch_5a063fbee5df616573a466a696fdba48"
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "MISSING_IN_STATEMENT",
+      "subject_type" : "payment",
+      "subject_id" : "ch_e1b5b697eb94a97734fd22644153df0b"
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "BATCH_TOTAL_MISMATCH",
+      "subject_type" : "batch",
+      "subject_id" : "po_66acb59a4dce424e93e1162981934ccb",
+      "expected" : {
+        "net" : 25096
+      },
+      "actual" : {
+        "net" : 23639,
+        "difference" : 1457
+      }
+    }, {
+      "kind" : "AGING",
+      "category" : "PAYMENT_NOT_SETTLED",
+      "subject_type" : "payment",
+      "subject_id" : "ch_93da62af23917093f1b5190c00184bc4"
+    } ],
+    "explained" : [ {
+      "category" : "TIMING_DIFFERENCE",
+      "subject_type" : "payment",
+      "subject_id" : "ch_078b97eb3475e9a603c4f9a06b0d8a7d",
+      "evidence_contains" : "po_78c52e142c745951bb9bc8c4138db8b8"
+    } ]
+  }, {
+    "name" : "replay-first",
+    "replay_of" : "first",
+    "cutoff_at" : "2026-11-11T05:00:00Z",
+    "evidence_as_of" : "2026-11-12T13:00:00Z",
+    "expected_findings" : [ {
+      "kind" : "PROCESSOR",
+      "category" : "FEE_MISMATCH",
+      "subject_type" : "payment",
+      "subject_id" : "ch_89536778011ef86e1ddffacdf5014ee1",
+      "expected" : {
+        "fee" : 175
+      },
+      "actual" : {
+        "fees" : [ {
+          "fee" : 205
+        } ]
+      }
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "DUPLICATE_STATEMENT_LINE",
+      "subject_type" : "statement_line",
+      "subject_id" : "txn_8b1aee16f4952b1f7379c044fc31716e",
+      "expected" : {
+        "count" : 1
+      },
+      "actual" : {
+        "count" : 2
+      }
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "MISSING_IN_LEDGER",
+      "subject_type" : "processor_payment",
+      "subject_id" : "ch_5a063fbee5df616573a466a696fdba48"
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "MISSING_IN_STATEMENT",
+      "subject_type" : "payment",
+      "subject_id" : "ch_e1b5b697eb94a97734fd22644153df0b"
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "BATCH_TOTAL_MISMATCH",
+      "subject_type" : "batch",
+      "subject_id" : "po_66acb59a4dce424e93e1162981934ccb",
+      "expected" : {
+        "net" : 25096
+      },
+      "actual" : {
+        "net" : 23639,
+        "difference" : 1457
+      }
+    }, {
+      "kind" : "AGING",
+      "category" : "PAYMENT_NOT_SETTLED",
+      "subject_type" : "payment",
+      "subject_id" : "ch_93da62af23917093f1b5190c00184bc4"
+    }, {
+      "kind" : "PROCESSOR",
+      "category" : "TIMING_DIFFERENCE",
+      "subject_type" : "payment",
+      "subject_id" : "ch_078b97eb3475e9a603c4f9a06b0d8a7d",
+      "due_at" : "2026-11-14T05:00:00Z"
+    } ]
+  } ]
+}

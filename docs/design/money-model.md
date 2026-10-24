@@ -62,11 +62,26 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 - `BATCH_SETTLED` 是**一个分录**，按上表最多 5 条 posting，**金额为 0 的 posting 不写**，`posting_count` 按实际条数封存（ADR-0015 补充）。普通支付批次是 5 条；只有失败打款退回的批次（G = F = 0）只有“借 1102 N / 贷 1101 N”两条（样例 H）。手续费那条“借 2101 F”的意思是：商户待结算款里有 F 被处理方扣走了。
 - 任何一行的实际手续费大于该行毛额（G − F 会为负）：批次 `HELD(FEE_EXCEEDS_GROSS)`，不记账。
 - 批次分录贷记 1101 的金额是 N+F，而不是本批支付毛额 G，因为本批退款和退回的失败打款早已分别记进 1101。记账前要先核对：本批每一行支付毛额、手续费、每一行退款、每一行失败打款退回，都必须和本地记录**逐项相等**；每笔支付和退款只能出现在一个批次里（零容差）；任何一项对不上，批次进入 `HELD`，不记账，开对账差异（ADR-0010）。
+- **银行入账行的匹配条件**（2026-10-23 定，P2 开工前置 ②）：一行银行流水能记 `BANK_DEPOSIT_RECEIVED`，当且仅当**全部**成立：`status = BOOKED`；`direction = CREDIT`；`currency = CAD`；`reference` 等于某个批次的 `batch_id`；该批次状态是 `CONFIRMED`；金额等于批次 `net`；该批次还没有别的入账行匹配过。任何一项不等都不算匹配，按下面的规则处理，绝不“差不多就配上”。
+  - `status = PENDING`（银行还没记账）的行只存档，不记账、不参与匹配。流水证据身份为 `(bank_txn_id, version)`，当前有效版本为最高版本（行版本独立于按报表日期计数的文件版本）；同一 `bank_txn_id` 只有 PENDING→BOOKED 且其余内容（包括方向、金额、币种、reference、value_date）不变，才接受为状态前进，两份证据均保留，只有 BOOKED 参与匹配和记账。其他内容变化或 BOOKED→PENDING 均为 `STATEMENT_VERSION_CONFLICT`，旧行不动。
+  - **银行证据早到**：`reference` 形如 `po_…`，但对应批次还不存在、或还在 `ANNOUNCED`/`RECEIVED`/`HELD`：行进入 `WAITING`，不记账。批次进入 `CONFIRMED` 的同一事务里重新匹配所有引用它的 `WAITING` 行（就像 inbox 的 `PARKED` 被唤醒）；后台也按导入顺序定期重扫。等待从 `booking_date` 起最多 2 个工作日（`ledgerlab.bank.wait-business-days`），到期仍匹配不上就按“精确匹配失败”记待查收款。等待期间账上现金比银行少，银行余额核对把恰好等于全部 `WAITING` 行合计的差额报为 `TIMING_DIFFERENCE`，不是 `BANK_BALANCE_MISMATCH`。
+  - CAD 入账行精确匹配失败（引用不认识且不是 `po_…`、批次已 `CONFIRMED` 但金额不等、批次已 `BANKED` 又来一笔、批次已 `PAYOUT_FAILED`、等待到期）：记 `UNAPPLIED_CASH_RECEIVED`，让账上现金继续等于银行；开差异：金额不等是 `DEPOSIT_AMOUNT_MISMATCH`，批次已 `PAYOUT_FAILED` 是 `BATCH_STATE_CONFLICT`，其余是 `UNMATCHED_BANK_LINE`；能看出相关批次的都把它列为候选。
+  - P2 没有提现：BOOKED 出账行（`DEBIT`）和非 CAD 行一律不记账，`match_status = UNMATCHED_NO_POSTING`，开 `UNMATCHED_BANK_LINE`；非 CAD 金额不能作为 CAD 分记入账户，差额由 T11 银行余额核对暴露。`PAYOUT_PAID`、`PAYOUT_RETURNED`、`UNAPPLIED_CASH_RETURNED` 在 P5 实现。
 - 待查收款只能通过受限纠错（ADR-0011）清出：例如确认是处理方重复打款并已退回，或确认是某批次的拆分到账。首版不自动应用，任何未结的 2105 余额都是一条对账差异。
 - 银行流水出账行匹配不到提现时**不记账**，只开差异 `UNMATCHED_BANK_LINE`；这时账上现金和银行余额不等，会被 INV-11 抓到。
 - 提现失败和退款失败都是**业务事件**，用各自的 entry_type，不用 `REVERSAL`。`REVERSAL` 只用于纠正记错的账。
 - 处理方说打款失败（Stripe `payout.failed`）时，钱回到处理方余额：记 `BATCH_PAYOUT_FAILED`（借 1101 N / 贷 1102 N）。退回的钱会作为一行 `PAYOUT_FAILURE` 出现在之后的某个批次里。
 - 处理方从我们银行账户扣款（Stripe 的负 payout）首版不支持：payout 在入口隔离；如果扣款流水已经出现在银行流水里，按 `UNMATCHED_BANK_LINE` 处理。
+
+### P2 T08 实现备注：银行导入与现金应用
+
+- `settlement.BankStatements.importBankStatement` 先按 contracts 4.1 完整解析并校验 UTF-8 CSV（含双引号转义和字段内换行），再用一个事务处理整文件：先 `Ledger.lockFunds()`，随后检查 SHA、归档、按 CSV 顺序合并和匹配；文件、差异、分录、余额、批次历史一起提交或回滚。选择整文件事务便于重试时保持原导入结果一致；大文件会延长单商户资金锁的持有时间。
+- 行版本从 1 递增，比较全部银行事实字段，包括 booking_date、value_date 和 memo；只有 status 的 PENDING→BOOKED 可前进。不同文件版本重复同一行不再插入；冲突文件仍 ACCEPTED，原行不覆盖，冲突证据和新文件原文由 INGESTION 差异关联。
+- 匹配先排除 PENDING、DEBIT、非 CAD；PENDING 只存档，BOOKED 的 DEBIT 或非 CAD 行存为 UNMATCHED_NO_POSTING、开 UNMATCHED_BANK_LINE，不写分录或改变现金，不做外汇转换（T09b 修复）。CSV 尾合计仍按外部原数值校验，账本与银行的差额留给 T11 银行余额核对。CAD 入账行在批次已确认且未匹配时才检查金额；失败批次开 BATCH_STATE_CONFLICT，已 BANKED 的第二笔开 UNMATCHED_BANK_LINE。已知候选保存在 evidence_refs。
+- `wait_until` 按 booking_date 的多伦多 00:00 调 T01 `dueAt` 计算，在插入 WAITING 时固定；配置变更只影响新等待行。`BatchSettlement` 在 BATCH_SETTLED 之后同步唤醒引用该批次的等待行，覆盖 webhook、轮询确认和 HELD 重核；按 import_order 处理，同事务内第一笔精确匹配后批次 BANKED，后续真实入账转待查收款。到期扫描也先取资金锁，按 import_order 处理；`ledgerlab.bank.poll-interval` 默认 1m，`scheduling-enabled` 默认继承 inbox 调度开关，测试关闭调度并直接调用 `expireWaiting()`。
+- 银行分录 occurred_at 使用 booking_date 的多伦多 00:00；received_at 是调用导入时注入 Clock 的时刻，recorded_at 是资金锁内处理时刻。日期型证据不伪造更细粒度的银行业务时间。
+- AC-1.4b 的样例 A 第 2′ 步在测试里按 4.2 公式只读计算 free_cash=0，不引入 P5 提现 API。定向测试覆盖 AC-5.4/5.5/5.6/5.10/5.12 文件部分及 AC-5.20 入账部分；银行余额对账的 TIMING_DIFFERENCE 留给后续对账任务。
+- jqwik 独立参考模型增加正常入账、第二笔、PENDING、短款、外币、出账和等待到期动作，与已有确认、失败、重打动作混排；种子 `2026102308`，最多 24 步，本地 100 条序列、CI 1000 条。每步核对全部余额、银行行版本与匹配状态、分录数量、差异身份及账本不变量；不替代栅栏并发与受控回滚测试。
 
 ## 4. 两个门槛
 
@@ -106,6 +121,10 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 | INV-9 | 业务状态与过渡账户一致：2103 余额 = Σ 处于 `AWAITING_FUNDS`/`READY`/`SUBMITTED`/`UNKNOWN` 的退款金额；2104 余额 = Σ 处于 `RESERVED`/`SUBMITTED`/`UNKNOWN`/`ACCEPTED` 的提现金额；2101 余额 = Σ 状态为 `CAPTURED` 的支付毛额（已撤销的 `VOIDED` 不算）；1102 余额 = Σ `CONFIRMED` 批次净额 | 模型测试每一步检查；对账老化检查逐笔核对 |
 | INV-10 | 资金效果唯一：每个退款、提现最多被预留一次，并且最多被结清或释放一次（执行/失败/取消三选一；出账/失败二选一）；结果未知时不释放 | 状态机＋`source_key`；模型测试 |
 | INV-11 | 银行侧核对：每份银行流水 期初 + Σ入账 − Σ出账 = 期末；截至流水期末，账上 1103 = 银行期末余额，否则差额必须作为差异显示 | 对账运行 |
+
+### P2 T15 实现备注：应用级独立模型
+
+`PaymentModelProperties` 已在原 P1 动作链中加入批次、分页中断、失败重打、银行文件及 WAITING 到期。`PaymentModel`／`SettlementModel` 只用 JDK 独立计算，逐步比较全部账户增量、批次 posting 多重集合（省略 0 元）、状态和流水匹配，并检查全库 INV-9 的 2101／1102 与 INV-11 的“唯一 BOOKED 入账合计减 WAITING”。生成银行证据限定为 CAD CREDIT，包含待查收款；外币、出账及完整期间对账仍由专项测试负责。批次生成净额不超过单行银行／退回行的 99999999 上限，这是测试生成域，不改变汇总金额契约。每条场景独立设置起始 Clock，场景内只向前推进，避免共享测试库的 1000 条序列累计超出日历年份。日志重放原始处理方 HTTP 分页和银行文件，空库比较扩展到批次、明细、流水版本和差异状态。动作、边界、收缩演示与实测见 [model-tests.md](../testing/model-tests.md)。
 
 ## 6. 手算样例
 
@@ -202,6 +221,12 @@ MA 1000，CASH 1000。同时到达：退款 R4 800、提现 PO3 1000。两个事
 MA 不再增加：这笔钱在 B1 确认时已经转过可用。
 
 ## 7. 与立项稿 2.1a 的差异
+
+### P2 T11 实现备注：INV-11 的期间与证据
+
+- 银行余额核对选已纳入输入且 `period_end < cutoff_at` 多伦多日期的每个账户／期间最新文件版本（同版本按 recorded_at、file_id 确定顺序）。1103 从 evidence_as_of 前的 `BANK_DEPOSIT_RECEIVED` / `UNAPPLIED_CASH_RECEIVED` posting 汇总，按关联银行行 `booking_date ≤ period_end` 截止，不取当前账户余额或分录写入日期；跨日迟到入账归回其记账日。
+- expected 为银行 closing_balance，actual 为账上 cash、`difference = closing_balance - cash` 和该期间 WAITING 合计；均 long 精确运算，汇总检查 JSON 安全整数范围。差额非零且恰等于期间 WAITING 合计时报 TIMING_DIFFERENCE，due_at 取其中最早 wait_until；否则报 BANK_BALANCE_MISMATCH。
+- 银行报表差异 subject 为 `bank_statement`、`账户:period_start:period_end`，具体文件版本留在证据引用中；因此新版本能解释同一期间的旧差异。流水身份选择证据时点前、选定输入中的最高行版本；重复文件中的原样行沿用原行身份，不重复累计现金。未选入输入的银行文件不能解释批次，但本地账本现金仍按可见全部分录核对。
 
 | 立项稿 | 现在 | 原因 |
 |---|---|---|

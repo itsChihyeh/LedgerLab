@@ -29,6 +29,19 @@ ledgerlab:
     max-attempts: 5
     poll-interval: 1s
     scheduling-enabled: true
+  settlement:
+    after: 30m
+    initial-backoff: 1m
+    max-backoff: 30m
+    poll-interval: 1m
+    scheduling-enabled: ${ledgerlab.inbox.scheduling-enabled:true}
   stripe:
     webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
     api-key: ${STRIPE_API_KEY:}
+    api-base-url: ${STRIPE_API_BASE_URL:https://api.stripe.com}
+    connect-timeout: 5s
+    read-timeout: 30s
+  bank:
+    wait-business-days: 2
+    poll-interval: 1m
+    scheduling-enabled: ${ledgerlab.inbox.scheduling-enabled:true}

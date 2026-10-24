@@ -63,6 +63,14 @@ class PaymentTablesTest {
                 SELECT count(*) FROM core.payment
                 WHERE processor_intent_ref IS NULL AND actual_fee IS NULL AND batch_id IS NULL
                 """)).isEqualTo(1);
+        Sql.execute(db.migrator(), """
+                INSERT INTO core.settlement_batch
+                    (batch_id, payout_amount, currency, automatic, method, status,
+                     source_event_id, occurred_at, recorded_at, updated_at)
+                VALUES ('po_test', 9680, 'cad', true, 'standard', 'ANNOUNCED',
+                    'evt_test', '2026-10-23T00:00:00Z', '2026-10-23T00:00:00Z', '2026-10-23T00:00:00Z')
+                """);
+        Sql.assertRejected("23503", db.app(), "UPDATE core.payment SET batch_id = 'po_missing'");
         Sql.execute(db.app(), """
                 UPDATE core.payment
                 SET status = 'SETTLED', actual_fee = 320, batch_id = 'po_test', refunded_amount = 10000

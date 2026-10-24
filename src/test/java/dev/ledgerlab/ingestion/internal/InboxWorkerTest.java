@@ -35,6 +35,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
@@ -111,6 +112,18 @@ class InboxWorkerTest {
     @Autowired
     InboxWorker configuredWorker;
 
+    @Autowired
+    PayoutProcessing payouts;
+
+    @Autowired
+    ApplicationContext context;
+
+    @Test
+    void ac_5_17_disablingInboxSchedulingAlsoDisablesFallbackByDefault() {
+        assertThat(context.getBeanNamesForType(SettlementPolling.Config.ScheduledPolling.class))
+                .isEmpty();
+    }
+
     private long paymentsBefore;
     private long postingsBefore;
     private long issuesBefore;
@@ -142,7 +155,8 @@ class InboxWorkerTest {
                 parser,
                 clock,
                 new WorkerProperties(owner, 1, Duration.ofSeconds(30), Duration.ofSeconds(1), Duration.ofSeconds(4), 2),
-                hooks);
+                hooks,
+                payouts);
     }
 
     private InboxWorker worker() {
@@ -319,7 +333,8 @@ class InboxWorkerTest {
     @CsvSource({
         "customer.created,false,IGNORED,",
         "refund.updated,false,IGNORED,",
-        "payout.created,false,IGNORED,",
+        "payout.failed,true,REJECTED,LIVEMODE",
+        "payout.canceled,true,REJECTED,LIVEMODE",
         "charge.dispute.created,false,REJECTED,UNSUPPORTED_TYPE",
         "customer.created,true,REJECTED,LIVEMODE",
         "charge.dispute.created,true,REJECTED,LIVEMODE"
@@ -578,7 +593,8 @@ class InboxWorkerTest {
                 clock,
                 new WorkerProperties(
                         "faulty", 1, Duration.ofSeconds(30), Duration.ofSeconds(1), Duration.ofSeconds(3), 5),
-                fail);
+                fail,
+                payouts);
         for (int attempts = 1; attempts <= 6; attempts++) {
             Instant failedAt = clock.instant();
             assertThat(faulty.processAvailable()).isEqualTo(1);

@@ -99,3 +99,99 @@ footer {
     flex-wrap: wrap;
   }
 }
+nav,
+.filters {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+nav {
+  align-items: center;
+}
+header nav a {
+  font-size: 1rem;
+}
+h2 {
+  font-size: 1.2rem;
+  margin-top: 32px;
+}
+.balances dd {
+  font-size: 1.6rem;
+  font-weight: 700;
+}
+small {
+  display: block;
+  font-size: 0.8rem;
+  color: #526770;
+  overflow-wrap: anywhere;
+}
+td {
+  overflow-wrap: anywhere;
+}
+label {
+  display: grid;
+  gap: 6px;
+}
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  padding: 9px 12px;
+  border: 1px solid #9aafb9;
+  border-radius: 4px;
+}
+input {
+  min-width: min(320px, 70vw);
+}
+textarea {
+  width: min(550px, 75vw);
+  min-height: 90px;
+}
+button {
+  background: #126477;
+  color: white;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+:focus-visible {
+  outline: 3px solid #be6414;
+  outline-offset: 3px;
+}
+.accept {
+  background: #eaf0f2;
+  padding: 20px;
+  margin-block: 24px;
+}
+.accept h2 {
+  margin-top: 0;
+}
+.accept button {
+  margin-top: 12px;
+}
+.issue-counts,
+.evidence-links {
+  padding-left: 24px;
+}
+.evidence-links li {
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+details {
+  border: 1px solid #ccd6db;
+  background: white;
+  padding: 14px;
+  margin-block: 12px;
+}
+summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

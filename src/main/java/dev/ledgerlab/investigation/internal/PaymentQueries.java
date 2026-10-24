@@ -1,24 +1,19 @@
 package dev.ledgerlab.investigation.internal;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
-import java.util.Objects;
-import javax.sql.DataSource;
 import org.jspecify.annotations.Nullable;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.TransactionDefinition;
-import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 @Service
 final class PaymentQueries {
     private static final String SUMMARY = """
-            SELECT id, processor_payment_ref, amount, status, expected_fee FROM core.v_payment
+            SELECT id, processor_payment_ref, amount, status, expected_fee, actual_fee, batch_id FROM core.v_payment
             """;
     private static final RowMapper<Payment> PAYMENT = (rs, row) -> new Payment(
             rs.getString("id"),
@@ -28,32 +23,51 @@ final class PaymentQueries {
             rs.getString("status"),
             rs.getLong("expected_fee"));
     private final JdbcClient jdbc;
-    private final TransactionTemplate snapshot;
+    private final QuerySnapshot snapshot;
+    private final WorkbenchQueries workbench;
 
-    PaymentQueries(@Qualifier("investigationDataSource") DataSource dataSource) {
-        jdbc = JdbcClient.create(dataSource);
-        snapshot = new TransactionTemplate(new JdbcTransactionManager(dataSource));
-        snapshot.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
-        snapshot.setReadOnly(true);
-        snapshot.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    PaymentQueries(QuerySnapshot snapshot, WorkbenchQueries workbench) {
+        this.jdbc = snapshot.jdbc;
+        this.snapshot = snapshot;
+        this.workbench = workbench;
     }
 
+    private record PaymentState(
+            Payment payment,
+            @Nullable Long actualFee,
+            @Nullable String batchId) {}
+
     PaymentDetail detail(String ref) {
-        return Objects.requireNonNull(snapshot.execute(tx -> {
-            AsOf asOf = asOf();
-            Payment payment = jdbc.sql(SUMMARY + " WHERE id = :ref OR processor_payment_ref = :ref")
+        return snapshot.read(asOf -> {
+            PaymentState state = jdbc.sql(SUMMARY + " WHERE id = :ref OR processor_payment_ref = :ref")
                     .param("ref", ref)
-                    .query(PAYMENT)
+                    .query((rs, row) -> new PaymentState(
+                            PAYMENT.mapRow(rs, row), rs.getObject("actual_fee", Long.class), rs.getString("batch_id")))
                     .optional()
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Payment not found"));
+            Payment payment = state.payment();
+            QueryModels.Batch batch = state.batchId() == null ? null : workbench.batchById(state.batchId());
+            var banks = state.batchId() == null
+                    ? List.<QueryModels.BankLine>of()
+                    : workbench.matchedBankLines(state.batchId());
+            BankDeposit deposit = banks.isEmpty()
+                    ? null
+                    : new BankDeposit(
+                            banks.getFirst().bankTxnId(),
+                            banks.getFirst().amount(),
+                            banks.getFirst().bookingDate());
             List<Posting> postings = jdbc.sql("""
                     SELECT e.id AS entry_id, e.entry_type, p.line_no, p.account_code, a.name, p.side, p.amount
                     FROM ledger.v_journal_entry e JOIN ledger.v_posting p ON p.entry_id = e.id
                     JOIN ledger.v_account a ON a.code = p.account_code
-                    WHERE e.subject_type = 'payment' AND e.subject_id = :id
+                    WHERE (e.subject_type = 'payment' AND e.subject_id = :id)
+                       OR (e.subject_type = 'batch' AND e.subject_id = :batch)
+                       OR (e.subject_type = 'bank_txn' AND e.subject_id IN
+                           (SELECT bank_txn_id FROM recon.v_bank_line WHERE matched_batch_id = :batch))
                     ORDER BY e.seq, p.line_no
                     """)
                     .param("id", payment.id())
+                    .param("batch", state.batchId())
                     .query((rs, row) -> new Posting(
                             rs.getString("entry_id"),
                             rs.getString("entry_type"),
@@ -63,19 +77,17 @@ final class PaymentQueries {
                             rs.getString("side"),
                             rs.getLong("amount")))
                     .list();
-            List<Delivery> deliveries = jdbc.sql("""
-                    SELECT event_id, event_type, outcome, status, result, received_at
+            List<EventQueries.Delivery> deliveries = jdbc.sql("""
+                    SELECT id, event_id, event_type, outcome, status, result, received_at, 'payment' AS subject
                     FROM core.v_payment_delivery WHERE processor_payment_ref = :ref
+                    UNION ALL
+                    SELECT id, event_id, event_type, outcome, status, result, received_at, 'batch' AS subject
+                    FROM core.v_batch_delivery WHERE batch_id = :batch
                     ORDER BY received_at, id
                     """)
                     .param("ref", payment.processorPaymentRef())
-                    .query((rs, row) -> new Delivery(
-                            rs.getString("event_id"),
-                            rs.getString("event_type"),
-                            rs.getString("outcome"),
-                            rs.getString("status"),
-                            rs.getString("result"),
-                            rs.getTimestamp("received_at").toInstant()))
+                    .param("batch", state.batchId())
+                    .query(EventQueries.DELIVERY)
                     .list();
             return new PaymentDetail(
                     payment.id(),
@@ -84,32 +96,39 @@ final class PaymentQueries {
                     payment.currency(),
                     payment.status(),
                     payment.expectedFee(),
+                    state.actualFee(),
+                    state.actualFee() == null ? null : Math.subtractExact(payment.amount(), state.actualFee()),
+                    batch == null
+                            ? null
+                            : new PaymentBatch(
+                                    batch.batchId(), batch.status(), batch.settlementDate(), batch.arrivalDate()),
+                    deposit,
                     postings,
                     deliveries,
                     asOf);
-        }));
+        });
     }
 
     PaymentList recent(int limit) {
         if (limit < 1 || limit > 100) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "limit must be between 1 and 100");
         }
-        return Objects.requireNonNull(snapshot.execute(tx -> {
-            AsOf asOf = asOf();
+        return snapshot.read(asOf -> {
             List<Payment> payments = jdbc.sql(SUMMARY + " ORDER BY recorded_at DESC, id DESC LIMIT :limit")
                     .param("limit", limit)
                     .query(PAYMENT)
                     .list();
             return new PaymentList(payments, asOf);
-        }));
+        });
     }
 
-    private AsOf asOf() {
-        return jdbc.sql("SELECT coalesce(max(seq), 0) AS seq, statement_timestamp() AS at FROM ledger.v_journal_entry")
-                .query((rs, row) ->
-                        new AsOf(rs.getLong("seq"), rs.getTimestamp("at").toInstant()))
-                .single();
-    }
+    record PaymentBatch(
+            String batchId,
+            String status,
+            @Nullable LocalDate settlementDate,
+            @Nullable LocalDate arrivalDate) {}
+
+    record BankDeposit(String bankTxnId, long amount, LocalDate bookingDate) {}
 
     record Payment(
             String id, String processorPaymentRef, long amount, String currency, String status, long expectedFee) {}
@@ -121,8 +140,12 @@ final class PaymentQueries {
             String currency,
             String status,
             long expectedFee,
+            @Nullable Long actualFee,
+            @Nullable Long net,
+            @Nullable PaymentBatch batch,
+            @Nullable BankDeposit bankDeposit,
             List<Posting> postings,
-            List<Delivery> deliveries,
+            List<EventQueries.Delivery> deliveries,
             AsOf asOf) {}
 
     record PaymentList(List<Payment> payments, AsOf asOf) {}
@@ -135,14 +158,6 @@ final class PaymentQueries {
             String accountName,
             String side,
             long amount) {}
-
-    record Delivery(
-            String eventId,
-            String eventType,
-            String outcome,
-            String status,
-            @Nullable String result,
-            Instant receivedAt) {}
 
     record AsOf(long seq, Instant at) {}
 }

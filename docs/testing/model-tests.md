@@ -1,103 +1,144 @@
-# P1 应用级模型测试（AC-4.11）
+# P1/P2 应用级模型测试（AC-4.11、AC-4.13）
 
-`PaymentModelProperties` 用 jqwik 1.10.2 `ActionChain` 驱动完整 Spring 应用：签名 HTTP webhook → 真实 PostgreSQL inbox → 手动调用 worker。普通序列共用一个应用上下文和一个 Testcontainers 数据库；每第 10 条序列使用独立空库，进行 AC-4.13 重建比较。每次执行（包括收缩）使用独立编号前缀，并在开始时快照全部账户余额。全库审计没有按前缀过滤。P1a 的 `LedgerStatefulProperties` 保留不动。
+`PaymentModelProperties` 使用 jqwik 1.10.2 `ActionChain` 驱动完整 Spring 应用：签名 HTTP webhook → 真实 PostgreSQL inbox → 手动 worker；P2 再接本地 HTTP 处理方分页及银行 CSV 导入。普通序列共用一个应用上下文和一个 Testcontainers PostgreSQL 18；每第 10 条序列用独立空库执行原场景，再在另一个空库重建。没有数据库 mock，没有真实 Stripe 调用。P1a 的 `LedgerStatefulProperties` 和 P2 已有专项模型保持不变。
 
 ## 动作和前置条件
 
 | 动作 | 前置条件 | 行为 |
 |---|---|---|
-| 新 charge | 无 | 随机合法金额 50..99999999，含上下边界；非法金额含 49、100000000、小数、字符串、0、负数；随机改变 currency、captured、amount_captured、事件或 Charge 的 livemode |
-| 同 ID 同内容 | 本序列至少已有一个事件 | 时钟前进 1 秒，以新签名重投原文 |
-| 同 ID 改金额 | 本序列至少已有一个事件 | 新签名投递不同内容；原事件不变，保存冲突副本，差异按事件去重 |
-| 新 ID 同事实 | 本序列至少有一个通过准入的 charge 事件（可尚未处理） | 复制 charge 与金额，换事件 ID |
-| 新 ID 不同金额 | 同上 | 金额换成另一个合法值，同时改变 amount_captured |
-| 未订阅类型 | 无 | customer.created |
-| 拒付类型 | 无 | charge.dispute.created |
-| 排空 worker | 无 | 逐批处理到没有可抢占事件，再核对模型；最多 100 批，避免挂死 |
-| 抢占后崩溃 | 存在 RECEIVED 事件 | afterClaim 抛模拟进程死亡的 Error，不走普通失败退避 |
-| 业务写入后崩溃 | 存在 RECEIVED 事件 | afterBusiness、epoch 写回前抛 Error，验证业务事务完整回滚 |
-| 时钟前进 | 无 | 1..240 秒；后续投递按当前时钟重新签名 |
+| 新 charge | 无 | 合法金额 50..99999999（含边界）；非法金额、币种、部分请款、未请款、livemode 变体 |
+| 同 ID 同内容／改金额 | 已有 charge 输入 | 前进 1 秒重新签名，分别检查去重／冲突存档 |
+| 新 ID 同事实／改金额 | 至少一个通过准入的 charge 输入，可尚未处理 | 更换 event_id；检查事实去重或业务冲突 |
+| 未订阅／拒付事件 | 无 | customer.created／charge.dispute.created |
+| 排空 worker | 无 | 最多 100 批，避免回归挂死 |
+| 抢占后／业务写入后崩溃 | 有 RECEIVED charge | Error 注入 afterClaim／afterBusiness；立即检查，再前进 31 秒换 owner 接管 |
+| 秒级时钟前进 | 无 | 1..240 秒，后续 webhook 用新签名 |
+| CREATE_BATCH | 有已请款且尚未分配到模型批次的支付 | 打包 1..3 笔支付；实际手续费取合同值、合同值+1 或 0；随机发送 created，或暂不发送以制造乱序 |
+| READY | 存在尚未就绪的外部批次（本地 ABSENT／ANNOUNCED） | 全量分页后确认；若就绪先到，单独检查后再投迟到 created |
+| REPLAY_PAYOUT | 已投过 payout 事件 | 原文、同 event_id，新签名再投，不重新应用业务 |
+| NEW_ID_READY | 已确认、已入账或已失败批次 | 新 event_id、同批次内容，再拉完整明细，DUPLICATE_FACT |
+| INTERRUPT_FETCH | 本地 ABSENT／ANNOUNCED 批次 | 第一页 200、第二页 503；检查 complete=false、没有部分版本或资金效果；恢复原文分页并推进重试 |
+| FAIL | CONFIRMED／BANKED／PAYOUT_FAILED | 首次失败记 BATCH_PAYOUT_FAILED；已失败去重；BANKED 只开状态冲突 |
+| REISSUE | 失败批次尚未被其他批次引用退回 | 新批次仅含一条 PAYOUT_FAILURE，G=F=0，检查恰好 2 条 posting、可用款不再增加（样例 H） |
+| BANK_EXACT／BANK_SHORT | 有外部批次，允许尚未 created | 新 bank_txn_id，金额等于 net／少 1 分；同批次再次真实打款用另一个编号，转待查收款 |
+| BANK_PENDING／BOOK_PENDING | 有批次／已有 PENDING 行 | PENDING 只存档；同 bank_txn_id 的 BOOKED 版本保留全部其他字段 |
+| BANK_DUPLICATE_FILE | 已导入文件 | 原始文件字节重导，不新增流水版本或 posting |
+| BANK_UNKNOWN | 无 | 引用未知 po_ 的 BOOKED 入账，进入 WAITING |
+| ADVANCE_DAYS | 无 | 前进 1 或 7 个 24 小时并调用 WAITING 扫描；独立模型按多伦多工作日到期 |
 
-两个崩溃动作均在崩溃后立即核对模型及审计，检查 RECEIVED、attempts=0 和租约 epoch；推进 31 秒超过 30 秒租约，再创建不同 owner 的 worker 接管、排空，并检查 epoch 再增加一次。没有 sleep。
+每条最多 24 个生成动作，结束时额外排空并推进 7 天清理 WAITING，再核对、重建。P2 动作开始前排空已有 charge；payout 投递在动作内同步排空，分页中断后先检查未完成状态，再恢复重试。这保证 P1 的两个崩溃动作仍针对 charge，P2 拉取故障由独立动作覆盖，不声称覆盖所有 P2 崩溃交错。定向用例也在每个操作后检查。
 
-序列设置最多 24 步，结束时额外排空并检查。当前 jqwik 版本的正常生成样例实际都是 24 步，收缩会缩短动作链；报告同时记录实际平均和最大长度。事件可能积压多个动作才处理；同一接收时刻的事件使用逆序编号，因此新 ID 的同事实事件可以先于原事件处理。参考模型独立按 received_at、event_id 排序，不读取 worker 的实际选择来决定预期。
+同一接收时刻的 charge 使用逆序事件编号，模型独立按 received_at、event_id 决定处理顺序。每次执行（含收缩）有新编号前缀和全部账户余额基线；全库不变量审计不按前缀过滤，不删除或修改封存分录。共享应用上一序列的 WAITING 在清理中结清，下一条重新设置场景起始 Clock 为 2026-10-30 或 2026-11-10，避免 1000 条序列累计推进越过日历覆盖年份；单条场景内部始终只向前推进，完整时钟值保存在日志中。两个起点覆盖跨周末、夏令时结束与 11-11 非工作日。
 
-## 参考模型与检查
+## 独立参考模型与每步检查
 
-`PaymentModel` 只依赖 JDK，不导入生产类型，也不调用生产准入或金额方法。规则来自 money-model 第 1/3/5 节、state-machines 第 1/5 节和 stripe-integration 第 2 节：准入优先级、事件去重、事实去重、业务冲突、差异按类别和事件去重、已记 charge 金额与余额增量。
+`PaymentModel` 与其 `SettlementModel` 均只依赖 JDK 和彼此，不导入生产类型，不读取数据库、不调用生产手续费、日历或记账方法。规则来自 money-model 第 1/3/5/6 节、contracts 第 1/3/4 节和状态机。HTTP/CSV 构造、实际应用调用、数据库断言位于 `P2Scenario`，不进入 oracle。
 
-每步检查：
+- 保留全库 `LedgerAudit.check()` 的 INV-1～5、INV-8 审计；全部账户余额必须等于序列基线加模型精确增量。
+- 检查每个 inbox 状态／结果（含未处理与中断重试）、支付金额、CAPTURED／SETTLED、batch_id、actual_fee；检查事件冲突副本和差异。
+- 独立计算批次 G、F、失败退回、N；比较批次状态、五项合计、全部已确认明细。按 source_key 比较所有 P2 分录类型及 posting 多重集合，保留重复次数，省略 0 元。全库分录数增量等于模型事实数。
+- 比较每个银行流水版本、匹配结果、matched_batch_id 和不可变 wait_until；差异比较 category/subject_type/subject_id 集合。
+- INV-5：显式检查 1102、1103、2105 非负。
+- INV-9：全库 2101 = 全部 CAPTURED 支付毛额，1102 = 全部 CONFIRMED 批次净额。
+- INV-11：全库 1103 = 按 bank_txn_id 取最高版本后 BOOKED 入账合计 − WAITING 合计，包含待查收款，重复文件／PENDING 旧版本不重复计入。所有生成银行行均为 CAD CREDIT。
+- INV-10 保留请款 source_key 恰好一次的检查。退款、提现的 INV-6/7 和相应状态动作留给 P3/P5。
 
-- `LedgerAudit.check()` 全库 INV-1～5、INV-8 无违反。
-- 全部账户余额等于序列开始快照加模型变化；只有 1101/2101 增加。
-- 每个事件的状态与结果，包括尚未处理的 RECEIVED，与模型完全一致。
-- 支付金额与 CAPTURED 状态一致；2101 增量等于本序列 CAPTURED 金额合计（INV-9 的 P1 部分）。
-- 每个 charge 的 PAYMENT_CAPTURED 分录恰好 0 或 1 条；全库分录增量等于模型新事实数（INV-10 的 P1 对应部分）。
-- 差异类别计数与冲突副本数量一致。
+所有金额计算使用 long 与精确加减乘。随机批次净额限制为不超过 99999999，以便同一批次能生成合法的一行银行入账和失败退回行；这仅是生成域限制，不改变生产汇总金额上限。日历 oracle 独立列出场景可能跨越的合同假日（2026-10 至 2027-04），不调用生产 BusinessCalendar 或读取它的 CSV。
 
-失败执行也会清空待办，后续收缩使用新的前缀和余额快照；不修改、删除或截断已封存账本。报告的执行次数及动作次数包括失败后的收缩和重试，正常通过时执行次数等于属性条数。报告同时给出通过次数、长度、检查失败次数、清理失败次数、崩溃点、固定种子和耗时。
+`P2ScenarioTest` 定向覆盖：三笔支付、两笔早到真实入账在确认时分别 MATCHED／UNAPPLIED；样例 H 的 9680 失败与重打、分页中断；就绪先于 created、PENDING→BOOKED、未知引用到期。另验证先收到 A 的 PENDING、再收到 B 的 BOOKED、最后收到 A 的 BOOKED 时，必须按 BOOKED 版本的导入顺序先匹配 B；oracle 保存全部版本的输入顺序，不按 bank_txn_id 首次出现顺序匹配。每个场景同时在空库重放，防止随机生成尚未选到某组合。
 
-## 不覆盖什么
+模型不是并发证明；并发和事务中断仍由已有栅栏／受控交错测试负责。不覆盖退款、提现、纠错、未知 JSON 组合、真实网络故障或外币兑换；P2 对账运行／发现处置由 T10/T11 专项测试覆盖，本动作集检查入口差异，不执行新的对账运行。银行文件为合成的单行平衡 CSV，用于逐笔导入测试，不用于宣称完整期间报表对账已通过。
 
-它只覆盖生成器能表达、参考模型能判断的情况，不等于并发测试；并发仍由已有栅栏和受控交错测试验证。没有覆盖未生成的 JSON 字段组合、签名攻击、进程/网络真实故障，也不替代 P1b 的专项测试。
+## 场景输入日志与空库重建（AC-4.13）
 
-INV-6、7、11：**不适用，P2/P3/P5 扩展时加入**。退款、结算、银行流水、提现及纠错尚不在动作集合中。
+`ScenarioLog` 在操作前追加输入，独立于模型与数据库；不从 inbox 或账本反推出输入。失败报告保留完整日志，二进制输入以 Base64 表示。每条序列开始清空日志，头部保存 IdGenerator 种子 `2026102202`。
 
-## 空库重建（AC-4.13）
-
-每条序列执行时，`ScenarioLog` 在操作发生前按顺序追加带类型的记录，保存在内存中；开始下一条序列时清空。失败时报告保留该次执行的完整日志（请求体以 Base64 表示），控制台保留 jqwik 收缩结果。日志与参考模型、inbox 查询独立，不从数据库反推出输入，因此同 ID 的重复投递和冲突原文也都会保留。
-
-| 记录类型 | 内容 |
+| 类型 | 保存与重放 |
 |---|---|
-| `Webhook` | 原始请求体字节的防御性副本、原始 `Stripe-Signature`、投递时的时钟值；重放不重新签名、不重新构造 JSON |
-| `ClockAdvance` | 推进前、推进后的时刻；包括重复投递前进 1 秒和崩溃恢复前进 31 秒 |
-| `WorkerRun` | 时钟值、worker owner、`NONE` / `AFTER_CLAIM` / `AFTER_BUSINESS`；包括最终排空 |
+| Webhook | 原始请求字节、防御性副本、原 Stripe-Signature、时钟；不重新签名或构造 JSON |
+| ProcessorRest | payout 外部编号、原始第一页／末页响应文本、第二页中断开关、时钟；在仅监听本地的 HTTP 服务安装原文，通过真实生产 REST 客户端重新拉取、存档 |
+| BankFile | 原始 CSV 字节的防御性副本、时钟；重新调用实际 BankStatements 导入入口 |
+| BankScan | WAITING 扫描及其时钟 |
+| ClockAdvance | 推进前后时刻，包括签名、租约恢复、拉取退避和等待到期 |
+| WorkerRun | 时钟、owner、NONE／AFTER_CLAIM／AFTER_BUSINESS；含最后排空 |
 
-日志头保存 `IdGenerator` 种子 `2026102202`，与 jqwik 生成动作的种子分开。记录列表使用 sealed 接口，后续阶段在这里增加出站回执、API 命令、导入文件和拉取快照等类型，并在穷尽式重放分支中实现它们；P1 不生成这些尚未存在的输入。
+每第 10 条做一次重建：默认 100 条中 10 次，`-Pmodel` 的 1000 条中 100 次。原始和重建各自用未迁移空模板创建数据库、运行全部 Flyway 迁移、独立 Spring 上下文／HTTP 端口／数据源／处理方服务；只复用 PostgreSQL 容器进程。不复制业务表、不清空账本。两边 IdGenerator 从同种子开始。重放单线程恢复每个输入的时钟，依次投递或执行，最后排空并断言无 RECEIVED／PARKED，关闭上下文后删除测试数据库。
 
-正常运行每第 10 条序列做一次重建：默认 100 条中做 10 次，`-Pmodel` 的 1000 条中做 100 次。被抽中的原始序列与重放各使用一个独立 Spring 应用上下文、HTTP 端口、数据源和新数据库；复用的是 Testcontainers PostgreSQL 进程。数据库从未迁移的空模板创建，再由应用运行全部 Flyway 迁移；不复制业务数据，不清空或改写已封存账本。两边注入从相同种子开始、使用各自可控时钟的 `IdGenerator`。原始序列结束先排空 worker；重放单线程依次恢复日志中的时钟、投递原始 HTTP 请求、执行 worker 和同一崩溃点，最后再排空。两边都额外检查没有 `RECEIVED` 或 `PARKED`，避免把“此刻抢不到”误当成“没有待办”。数据库在关闭上下文后删除。
+`RebuildSnapshot` 全库比较：全部账户余额；按 processor_payment_ref 的支付金额、状态、batch_id、actual_fee；按 event_id 的 inbox 结果；按 source_key 的分录／posting 多重集合；按 batch_id 的状态、金额、日期、hold_reason；按 balance_txn_id 的批次明细；按 bank_txn_id/version 的银行原始业务字段、匹配状态和等待截止；差异身份及处置状态。全部差异一次报告，集合报告两边独有项。
 
-`RebuildSnapshot` 直接读两边全库，不按序列前缀过滤，不调用参考模型。比较全部账户余额；按 `processor_payment_ref` 比较支付状态和金额；按 `event_id` 比较 inbox 状态和结果；按 `source_key` 比较分录类型及 posting 的（账户、方向、金额）多重集合；按（category、subject_type、subject_id）比较差异集合。分录及 posting 顺序不重要，重复次数不能丢。发现不同会一次报告所有类别的具体键与 original/replay 值，差异集合报告两边独有成员。
+不比较本地编号、事务号、序列号、recorded_at、账户版本、租约或尝试次数。P2 所生成 issue 的 subject 都是外部 event/batch/bank_txn 身份，不依赖本地 ID。分页存档的自增 ID 不参与业务比较。首次重建失败后，后续重试／收缩全部重建，避免抽样漏掉失败样例。
 
-不比较本地编号、数据库事务号、序列号、`recorded_at` 等审计时间、账户版本、租约和尝试次数：它们是本次运行的内部标识或执行元数据，不是重建的业务结果。仍然按原时钟重放，以保留签名有效性和 worker 租约行为。P1 差异的 subject_id 是外部事件号；后续若引入本地对象编号，需先映射为外部身份再比较。
-
-报告给出重建次数、一致次数、失败次数和编号种子。一旦重建失败，后续重试与收缩全部重建，避免按每 10 次抽样跳过失败样例；因此失败运行的次数可能超过正常配额。`ScenarioRebuildTest` 单独验证末步投递的排空、日志保留原文/签名及冲突输入、多重集合和全部差异诊断；这些定向用例不计入随机序列报告。
-
-有效性验证（2026-10-22）：临时在重放分支跳过 `evt_rebuild_tail` 这一条投递，运行 `.\mvnw.cmd -B test '-Dtest=ScenarioRebuildTest#ac_4_13_lastDeliveryIsDrainedOnBothDatabases'`，得到 `Tests run: 1, Failures: 1, Errors: 0`、`BUILD FAILURE`，耗时 24.542 秒。比较器报错如下；随后恢复完整重放，未提交故障代码。
-
-```text
-AC-4.13 rebuild differences:
-balances[1101]: original=2011, replay=1234
-balances[2101]: original=2011, replay=1234
-payments[ch_rebuild_tail]: original=Payment[status=CAPTURED, amount=777], replay=null
-inbox[evt_rebuild_tail]: original=Outcome[status=PROCESSED, result=APPLIED], replay=null
-entries[payment:ch_rebuild_tail:captured]: original={Entry[type=PAYMENT_CAPTURED, postings={Posting[account=2101, side=C, amount=777]=1, Posting[account=1101, side=D, amount=777]=1}]=1}, replay=null
-```
+`ScenarioRebuildTest` 另检查日志原文所有权、尾部事件排空，以及包括批次／明细／银行行在内的完整诊断和 posting 重复次数。定向用例不计入随机运行报告。
 
 ## 运行与复现
 
-需要 Java 25 和 Docker。PowerShell 用 `.\mvnw.cmd` 替换 `./mvnw`。
+需要 Java 25 和 Docker；Windows PowerShell：
 
-```sh
-./mvnw verify
-./mvnw -B -Pmodel test -Dtest=PaymentModelProperties
+```powershell
+.\mvnw.cmd -B spotless:apply
+.\mvnw.cmd -B verify
+.\mvnw.cmd -B -Pmodel test '-Dtest=PaymentModelProperties'
 ```
 
-默认运行 100 条；`model` profile 运行 1000 条。CI 独立 job 每次运行 1000 条并始终上传 `target/model-report.md` 和 Surefire 报告。固定种子为 `2026102201`，使用 RANDOMIZED 生成和最多 30 秒的 BOUNDED 收缩（输出界限内找到的最短序列，不声称数学上的全局最短）。
+Git Bash 对应 `./mvnw`。默认 100 条，model profile 1000 条，CI 配置和条数均不变。固定动作种子 `2026102201`，RANDOMIZED，BOUNDED 收缩最多 30 秒。正常生成都是 24 步，收缩可以更短；不声称找到数学意义的全局最短反例。失败复现保留命令、代码版本、种子、Shrunk Sample 和 `target/model-report.md`；jqwik 也会优先尝试 `.jqwik-database` 中的已保存失败样例。
 
-失败后保留控制台的 `Shrunk Sample`（动作及参数）、种子、运行命令和代码版本。在同一版本上重跑原命令即可从固定种子生成相同输入；jqwik 也会用本地 `.jqwik-database` 优先重放已保存的失败样例。共享库编号前缀可能不同，不影响模型结果。收缩输出中的事件索引是相对于当前序列的已有事件，前置条件由 jqwik 随收缩重新检查。
+报告记录序列数、动作数、平均／最大长度、检查点、违反数、清理失败、重建一致数、种子、耗时，各动作执行数，以及多支付批次、实际手续费差异、零费用、ready 先到和银行匹配类别。失败运行的计数含收缩／重试，不能当作独立随机样本数。
 
-有效性验证（2026-10-22）：临时将模型的 `DUPLICATE_FACT` 改为 `APPLIED`，运行单独属性，得到 `Tests run: 1, Failures: 1`、`BUILD FAILURE`。jqwik 在 30 秒界限内将失败链从 10 个实际动作收缩到以下 5 个动作（控制台 `Shrunk Sample (6 steps)` 中的 steps 指收缩步数）：
+## T15 有效性演示（2026-10-23）
+
+临时把 `SettlementModel.post` 中省略 0 元的 `.filter(p -> p.amount() != 0)` 改成 `.filter(p -> true)`，只改 oracle，生产代码不变。运行 `.\mvnw.cmd -B test '-Dtest=PaymentModelProperties'`：`Tests run: 1, Failures: 1, Errors: 0, Skipped: 0`、`BUILD FAILURE`，Maven 01:18 min，jqwik `tries=4/checks=4`，在第 4 条随机序列发现错误。
+
+30 秒有界收缩报告 `Shrunk Sample (14 steps)`，24 个最大动作收缩为下列 8 个动作；原场景也是执行到第 8 步失败，收缩另外把非法 charge 金额 22077 降到 50、重复事件索引降到 0、拉取索引 6 降到 0。这里的 14 steps 是收缩步骤数，不是最终动作数，不能声称 8 步是全局最短。
 
 ```text
-charge amount=50 NORMAL
-CRASH_AFTER_CLAIM
-charge amount=1341 PARTIAL
-NEW_ID_SAME_FACT event-index=0
 DRAIN
+charge amount=50 CHARGE_LIVE
+charge amount=33026 CHARGE_LIVE
+charge amount=66 NORMAL
+DRAIN
+SAME_ID_SAME_BODY event-index=0
+CREATE_BATCH index=28 variant=false
+INTERRUPT_FETCH index=0 variant=false
 ```
 
-失败指出重复事实事件实际结果为 `DUPLICATE_FACT`，错误模型预期为 `APPLIED`。模型规则随后恢复。该序列保留为验证记录；正式运行数据见交付说明。没有提交改错版本。
+失败定位到 `posting multiset batch:po_…:settled`：数据库实际 4 条非零 posting，错误模型要求额外的 `Posting[account=2101, side=D, amount=0]`。本次含收缩共 67 次执行、687 个检查点、15 次模型违反；这些不是正式通过率数字。已恢复正确过滤条件；故障代码未提交。正常版本的最终全量与 1000 条实测列在下方交付记录。
+
+## T15 实测（2026-10-23）
+
+Windows PowerShell，Java 25，Docker Desktop / PostgreSQL 18.6；最终模型已修正 BOOKED 版本的导入顺序。以下均为恢复正确模型后的实际结果，故意改错的失败另见上节。
+
+| 命令 | 结果 | Maven 总耗时 |
+|---|---|---|
+| `.\mvnw.cmd -B verify` | 1009 个测试，0 失败、0 错误、0 跳过；覆盖率、模块边界、Spotless、打包通过；`BUILD SUCCESS` | 28:09 min |
+| `.\mvnw.cmd -B test '-Dtest=P2ScenarioTest,ScenarioRebuildTest'` | 6 个定向用例，0 失败、0 错误、0 跳过；`BUILD SUCCESS` | 58.607 s |
+| `.\mvnw.cmd -B -Pmodel test '-Dtest=PaymentModelProperties'` | jqwik `tries=1000/checks=1000`；Surefire 计为 1 个属性测试，0 失败、0 错误、0 跳过；`BUILD SUCCESS` | 17:54 min |
+
+最终 verify 内的应用模型运行 100 条、2,400 个动作、2,781 个检查点，模型违反与清理失败均为 0；10 次重建全部一致，属性含启动耗时 87.872 秒。
+
+1000 条共 **24,000 个生成动作、27,835 个检查点、0 次违反、0 次清理失败**，平均／最大动作长度 24／24；**100 次重建，100 次一致，0 次失败**。属性含启动耗时 1067.493 秒；afterClaim 683 次、afterBusiness 705 次。动作种子 `2026102201`，编号种子 `2026102202`。1000 条报告另存本机 `target/t15-model-1000.md`，避免最后默认 verify 覆盖；CI 上传规则和条数未改。
+
+| 新动作 | 1000 条中的执行次数 |
+|---|---:|
+| CREATE_BATCH | 742 |
+| READY | 342 |
+| REPLAY_PAYOUT | 236 |
+| NEW_ID_READY | 165 |
+| INTERRUPT_FETCH | 198 |
+| FAIL | 339 |
+| REISSUE | 59 |
+| BANK_EXACT | 575 |
+| BANK_SHORT | 294 |
+| BANK_PENDING | 307 |
+| BOOK_PENDING | 58 |
+| BANK_DUPLICATE_FILE | 779 |
+| BANK_UNKNOWN | 1011 |
+| ADVANCE_DAYS | 1972 |
+
+特征计数（可重叠）：多支付批次 109、实际手续费与合同不同 514、零费用批次 267、就绪先于 created 249。导入后为 WAITING／MATCHED／UNAPPLIED／IGNORED_PENDING 的次数分别为 1369／151／418／307；这些是导入检查时的状态次数，不含确认时唤醒产生的额外状态变化。
+
+开发期先修正了测试 CSV 的 CRLF 分隔，再通过独立 JDK 复现检查修正模型的 BOOKED 导入顺序。一次使用修正前已编译测试类的 verify 被主动结束，未计作验收通过；以上 1000 条及最终全量验收均使用修正后的代码。没有发现需修改生产代码的缺陷。
+
+实现文件：新增 `P2Scenario.java`、`P2ScenarioTest.java`、`ProcessorReplay.java`、`SettlementModel.java`；修改 `ModelApplication.java`、`ModelReport.java`、`PaymentModel.java`、`PaymentModelProperties.java`、`RebuildSnapshot.java`、`ScenarioLog.java`、`ScenarioRebuildTest.java`，均位于 `src/test/java/dev/ledgerlab/model/`。文档更新本文件与 `docs/design/money-model.md` 的 T15 实现备注。没有新增依赖、迁移或修改生产代码／CI。
 
 ## P1c-1 实测（2026-10-22，加入重建前）
 

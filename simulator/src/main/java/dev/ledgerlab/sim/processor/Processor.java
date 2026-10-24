@@ -21,7 +21,8 @@ public final class Processor {
     private final SimulationClock simulation;
     private final Clock clock;
     private final SeededIds ids;
-    private final WebhookSender sender;
+    private final EventDelivery sender;
+    private final BalanceTransactions balances;
     private final JsonMapper json = JsonMapper.builder().build();
 
     public Processor(
@@ -30,13 +31,15 @@ public final class Processor {
             SimulationClock simulation,
             Clock clock,
             SeededIds ids,
-            WebhookSender sender) {
+            EventDelivery sender,
+            BalanceTransactions balances) {
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(manager);
         this.simulation = simulation;
         this.clock = clock;
         this.ids = ids;
         this.sender = sender;
+        this.balances = balances;
     }
 
     public Map<String, Object> create(JsonNode request) {
@@ -52,8 +55,9 @@ public final class Processor {
                 .put("status", text(request, "status", "succeeded"))
                 .put("livemode", bool(request, "livemode", false))
                 .put("created", simulation.instant().getEpochSecond());
-        ObjectNode event = event(charge);
+        ObjectNode event = event(charge, "charge.succeeded");
         transaction.executeWithoutResult(status -> {
+            balances.lock();
             jdbc.sql("""
                     insert into sim_processor.charge
                     (id, payment_intent, amount, amount_captured, currency, captured, status, livemode, created, recorded_at)
@@ -70,6 +74,7 @@ public final class Processor {
                     .param(charge.path("created").asLong())
                     .param(Timestamp.from(clock.instant()))
                     .update();
+            balances.charge(charge, request);
             store(event);
         });
         sender.deliver(event.path("id").asText(), json.writeValueAsString(event));
@@ -82,11 +87,16 @@ public final class Processor {
     }
 
     public Map<String, Object> reissue(String id) {
-        JsonNode charge = json.readTree(payload(id)).path("data").path("object");
-        ObjectNode event = event(charge);
+        JsonNode original = json.readTree(payload(id));
+        JsonNode charge = original.path("data").path("object");
+        ObjectNode event = event(charge, original.path("type").asText());
         store(event);
         sender.deliver(event.path("id").asText(), json.writeValueAsString(event));
-        return Map.of("charge", charge, "event_id", event.path("id").asText());
+        return Map.of(
+                charge.path("object").asText(),
+                charge,
+                "event_id",
+                event.path("id").asText());
     }
 
     public Map<String, Object> inspect(String id) {
@@ -108,55 +118,67 @@ public final class Processor {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
     }
 
-    private ObjectNode event(JsonNode charge) {
+    ObjectNode event(JsonNode charge, String type) {
         ObjectNode event = json.createObjectNode();
         event.put("id", ids.next("evt"))
                 .put("object", "event")
                 .put("api_version", API_VERSION)
                 .put("created", simulation.instant().getEpochSecond())
                 .put("livemode", charge.path("livemode").asBoolean())
-                .put("type", "charge.succeeded");
+                .put("type", type);
         event.putObject("data").set("object", charge);
         return event;
     }
 
-    private void store(ObjectNode event) {
+    void store(ObjectNode event) {
+        JsonNode object = event.path("data").path("object");
+        boolean payout = object.path("object").asText().equals("payout");
         jdbc.sql("""
-                insert into sim_processor.event (id, charge_id, type, api_version, created, payload, recorded_at)
-                values (?, ?, ?, ?, ?, ?, ?)
+                insert into sim_processor.event (id, charge_id, type, api_version, created, payload, recorded_at, payout_id)
+                values (?, ?, ?, ?, ?, ?, ?, ?)
                 """)
                 .param(event.path("id").asText())
-                .param(event.path("data").path("object").path("id").asText())
-                .param("charge.succeeded")
+                .param(payout ? null : object.path("id").asText())
+                .param(event.path("type").asText())
                 .param(API_VERSION)
                 .param(event.path("created").asLong())
                 .param(json.writeValueAsString(event))
                 .param(Timestamp.from(clock.instant()))
+                .param(payout ? object.path("id").asText() : null)
                 .update();
     }
 
-    private static long integer(JsonNode request, String field, @org.jspecify.annotations.Nullable Long fallback) {
+    Map<String, Object> deliver(ObjectNode event) {
+        sender.deliver(event.path("id").asText(), json.writeValueAsString(event));
+        return Map.of(
+                "payout",
+                event.path("data").path("object"),
+                "event_id",
+                event.path("id").asText());
+    }
+
+    static long integer(JsonNode request, String field, @org.jspecify.annotations.Nullable Long fallback) {
         JsonNode value = request.path(field);
         if (value.isMissingNode() && fallback != null) return fallback;
         if (!value.isIntegralNumber() || !value.canConvertToLong()) throw badRequest(field);
         return value.asLong();
     }
 
-    private static String text(JsonNode request, String field, String fallback) {
+    static String text(JsonNode request, String field, String fallback) {
         JsonNode value = request.path(field);
         if (value.isMissingNode()) return fallback;
         if (!value.isString()) throw badRequest(field);
         return value.asText();
     }
 
-    private static boolean bool(JsonNode request, String field, boolean fallback) {
+    static boolean bool(JsonNode request, String field, boolean fallback) {
         JsonNode value = request.path(field);
         if (value.isMissingNode()) return fallback;
         if (!value.isBoolean()) throw badRequest(field);
         return value.asBoolean();
     }
 
-    private static ResponseStatusException badRequest(String field) {
+    static ResponseStatusException badRequest(String field) {
         return new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid " + field);
     }
 }

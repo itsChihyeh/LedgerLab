@@ -1,0 +1,98 @@
+{
+  "format_version" : 1,
+  "steps" : [ {
+    "type" : "event",
+    "at" : "2026-11-10T16:00:00Z",
+    "body" : "events/001.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T16:00:00Z",
+    "body" : "events/002.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T16:00:00Z",
+    "body" : "events/003.json",
+    "responses" : [ {
+      "method" : "GET",
+      "path" : "/v1/balance_transactions",
+      "status" : 200,
+      "body" : "rest/001.json",
+      "query" : {
+        "limit" : "100",
+        "payout" : "po_00e7c49031e209d6cd50e9d0d381a5d7"
+      }
+    } ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T17:00:00Z",
+    "body" : "events/004.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T17:00:00Z",
+    "body" : "events/005.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T17:00:00Z",
+    "body" : "events/006.json",
+    "responses" : [ {
+      "method" : "GET",
+      "path" : "/v1/balance_transactions",
+      "status" : 200,
+      "body" : "rest/002.json",
+      "query" : {
+        "limit" : "100",
+        "payout" : "po_82694425a9d9cd4c037826aa4e058cd3"
+      }
+    } ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T17:00:00Z",
+    "body" : "events/007.json",
+    "responses" : [ ]
+  }, {
+    "type" : "snapshot",
+    "at" : "2026-11-11T08:00:00Z",
+    "business_date" : "2026-11-10",
+    "responses" : [ {
+      "method" : "GET",
+      "path" : "/v1/payouts",
+      "status" : 200,
+      "body" : "rest/003.json",
+      "query" : {
+        "created[gte]" : "1794286800",
+        "created[lt]" : "1794373200",
+        "limit" : "100"
+      }
+    }, {
+      "method" : "GET",
+      "path" : "/v1/balance_transactions",
+      "status" : 200,
+      "body" : "rest/004.json",
+      "query" : {
+        "limit" : "100",
+        "payout" : "po_82694425a9d9cd4c037826aa4e058cd3"
+      }
+    }, {
+      "method" : "GET",
+      "path" : "/v1/balance_transactions",
+      "status" : 200,
+      "body" : "rest/005.json",
+      "query" : {
+        "limit" : "100",
+        "payout" : "po_00e7c49031e209d6cd50e9d0d381a5d7"
+      }
+    } ]
+  }, {
+    "type" : "bank",
+    "at" : "2026-11-12T12:00:00Z",
+    "body" : "bank/001.csv"
+  }, {
+    "type" : "checkpoint",
+    "at" : "2026-11-13T13:02:00Z",
+    "name" : "final"
+  } ]
+}

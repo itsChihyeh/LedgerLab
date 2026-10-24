@@ -2,7 +2,7 @@
 @NullMarked
 @ApplicationModule(
         displayName = "Ingestion",
-        allowedDependencies = {"payments", "reconciliation", "shared"})
+        allowedDependencies = {"payments", "settlement", "reconciliation", "shared"})
 package dev.ledgerlab.ingestion;
 
 import org.jspecify.annotations.NullMarked;

@@ -18,7 +18,7 @@ final class ScenarioLog {
         this.idSeed = idSeed;
     }
 
-    sealed interface Input permits Webhook, ClockAdvance, WorkerRun {
+    sealed interface Input permits Webhook, ClockAdvance, WorkerRun, ProcessorRest, BankFile, BankScan {
         Instant at();
     }
 
@@ -40,6 +40,26 @@ final class ScenarioLog {
     }
 
     record ClockAdvance(Instant at, Instant to) implements Input {}
+
+    record ProcessorRest(Instant at, String payout, ProcessorReplay.Pages pages) implements Input {}
+
+    record BankFile(Instant at, byte[] raw) implements Input {
+        BankFile {
+            raw = raw.clone();
+        }
+
+        @Override
+        public byte[] raw() {
+            return raw.clone();
+        }
+
+        @Override
+        public String toString() {
+            return "BankFile[at=" + at + ", rawBase64=" + Base64.getEncoder().encodeToString(raw) + "]";
+        }
+    }
+
+    record BankScan(Instant at) implements Input {}
 
     enum CrashPoint {
         NONE,
@@ -68,6 +88,9 @@ final class ScenarioLog {
             switch (input) {
                 case Webhook webhook -> target.deliver(webhook.body(), webhook.signature());
                 case ClockAdvance advance -> target.clock.set(advance.to());
+                case ProcessorRest rest -> target.processor.install(rest.payout(), rest.pages());
+                case BankFile file -> target.bank(file.raw());
+                case BankScan ignored -> target.expireWaiting();
                 case WorkerRun run -> {
                     if (run.crash() == CrashPoint.NONE) {
                         target.drain(run.owner());
