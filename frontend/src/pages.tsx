@@ -24,6 +24,7 @@ import {
   Snapshot,
   Table,
 } from "./components";
+import { issueCategoryLabel, issueCategoryLabels } from "./issue-categories";
 
 export function OverviewPage() {
   return (
@@ -62,7 +63,7 @@ export function OverviewPage() {
                         <a
                           href={`#/recon?status=OPEN&category=${enc(category)}`}
                         >
-                          {category} · {count}
+                          {issueCategoryLabel(category)} · {count}
                         </a>
                       </li>
                     ),
@@ -356,9 +357,15 @@ export function ReconPage({ search }: { search: string }) {
           类别
           <input
             value={category}
+            list="issue-categories"
             placeholder="例如 BATCH_TOTAL_MISMATCH"
             onChange={(e) => setCategory(e.target.value)}
           />
+          <datalist id="issue-categories">
+            {Object.entries(issueCategoryLabels).map(([value, label]) => (
+              <option key={value} value={value} label={label} />
+            ))}
+          </datalist>
         </label>
         <button type="submit">筛选</button>
       </form>
@@ -373,7 +380,9 @@ export function ReconPage({ search }: { search: string }) {
               {data.issues.map((i) => (
                 <tr key={i.id}>
                   <td>
-                    <a href={href("recon", i.id)}>{i.category}</a>
+                    <a href={href("recon", i.id)}>
+                      {issueCategoryLabel(i.category)}
+                    </a>
                   </td>
                   <td>{i.subjectId}</td>
                   <td>{i.status}</td>
@@ -397,7 +406,7 @@ export function IssuePage({ id }: { id: string }) {
         <>
           <h1>差异详情</h1>
           <dl className="summary">
-            <Field name="类别">{d.issue.category}</Field>
+            <Field name="类别">{issueCategoryLabel(d.issue.category)}</Field>
             <Field name="对象">{d.issue.subjectId}</Field>
             <Field name="状态">{d.issue.status}</Field>
             <Field name="处置说明">{d.issue.explanation}</Field>

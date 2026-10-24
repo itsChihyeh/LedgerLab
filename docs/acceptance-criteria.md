@@ -207,6 +207,8 @@ webhook 入口：`POST /webhooks/stripe`，签名用 Stripe 的方案（`Stripe-
 | `FEE_MISMATCH` | 实际手续费 ≠ 合同预期手续费 |
 | `DUPLICATE_STATEMENT_LINE` | 同一 `statement_line_id` 出现不止一次 |
 | `BATCH_TOTAL_MISMATCH` | 本地批次净额 ≠ 结算单批次净额（按行身份去重之后比较） |
+| `UNSUPPORTED_BATCH_LINE` | 批次含不支持的行（如 adjustment、dispute），`HELD(UNSUPPORTED_LINE)`；actual 列出各行 balance transaction 编号、type 和金额，不记账 |
+| `UNSUPPORTED_EVENT` | 不支持的入站事件或事件准入失败；P3 T02 前已开的批次主体旧差异保留原类别 |
 | `TIMING_DIFFERENCE` | 跨截止时点、尚未到期的未完成项；有到期时间，到期未解释则升级 |
 | `REFUND_NOT_IN_STATEMENT` | 已执行退款超过阈值仍没出现在结算单 |
 | `DEPOSIT_MISSING` / `DEPOSIT_AMOUNT_MISMATCH` | 已确认批次没有银行入账 / 金额不等 |

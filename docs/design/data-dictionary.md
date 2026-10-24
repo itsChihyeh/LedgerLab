@@ -320,11 +320,18 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 `expected`、`actual`、`evidence_refs` 是当前发现内容，只能由对账运行按最新发现刷新；运营处置不改这三列。每次运行的原始内容保存在只追加的 `recon.finding` 中，旧报告不随 issue 刷新而改变。
 
-差异类别（首版）：`MISSING_IN_LEDGER`、`MISSING_IN_STATEMENT`、`AMOUNT_MISMATCH`、`FEE_MISMATCH`、`DUPLICATE_STATEMENT_LINE`、`BATCH_TOTAL_MISMATCH`、`REFUND_NOT_IN_STATEMENT`、`DEPOSIT_MISSING`、`DEPOSIT_AMOUNT_MISMATCH`、`UNMATCHED_BANK_LINE`、`UNAPPLIED_CASH_OPEN`、`BANK_BALANCE_MISMATCH`、`BATCH_VERSION_CONFLICT`、`STATEMENT_VERSION_CONFLICT`、`TIMING_DIFFERENCE`、`PAYOUT_STATE_CONFLICT`、`BATCH_STATE_CONFLICT`、`REFUND_STATE_CONFLICT`、`UNSUPPORTED_PAYOUT`，入站类 `EVENT_CONTENT_CONFLICT`、`EVENT_BUSINESS_CONFLICT`、`UNSUPPORTED_EVENT`、`LIVEMODE_EVENT`，以及 contracts 1.3 节的老化类别。
+差异类别（首版）：`MISSING_IN_LEDGER`、`MISSING_IN_STATEMENT`、`AMOUNT_MISMATCH`、`FEE_MISMATCH`、`DUPLICATE_STATEMENT_LINE`、`BATCH_TOTAL_MISMATCH`、`REFUND_NOT_IN_STATEMENT`、`DEPOSIT_MISSING`、`DEPOSIT_AMOUNT_MISMATCH`、`UNMATCHED_BANK_LINE`、`UNAPPLIED_CASH_OPEN`、`BANK_BALANCE_MISMATCH`、`BATCH_VERSION_CONFLICT`、`STATEMENT_VERSION_CONFLICT`、`TIMING_DIFFERENCE`、`PAYOUT_STATE_CONFLICT`、`BATCH_STATE_CONFLICT`、`REFUND_STATE_CONFLICT`、`UNSUPPORTED_PAYOUT`、`UNSUPPORTED_BATCH_LINE`，入站类 `EVENT_CONTENT_CONFLICT`、`EVENT_BUSINESS_CONFLICT`、`UNSUPPORTED_EVENT`、`LIVEMODE_EVENT`，以及 contracts 1.3 节的老化类别。
+
+### P3 T02 实现备注（V14：不支持的批次行类别）
+
+- V14 仅扩展 `recon.issue.issue_category`，新增 `UNSUPPORTED_BATCH_LINE`；`recon.finding.category` 只有非空白 CHECK，无类别枚举，无需修改。无新表或授权变动：migrator 属主、app 最小列权限、readonly 仅读视图的契约不变。
+- P3 T02 起新开的 `HELD(UNSUPPORTED_LINE)` 差异用新类别，旧行保留原类别（包括 P2 以 batch 为主体的 `UNSUPPORTED_EVENT`），不迁移历史数据。识别键仍为 `(category, subject_type, subject_id)`，subject 为 batch；入站事件继续用 `UNSUPPORTED_EVENT`。
+- `actual.reason` 和首次触发隔离的 `actual.line` 保留；新增 `actual.lines`，按抓取顺序列出全部不支持类型行及触发隔离的行，每项保留 `id`（balance transaction 编号）、`type`、`gross`（处理方带符号金额，整数分）、`fee`、`net`、引用、币种及业务时间。`payout` 转出行不列入。原核对顺序不变，退款行的支持仍留给 P3 T10。
+- 前端类别映射新增“批次含不支持的行”，用于总览、列表和详情；筛选输入提供该类别的可选提示，仍允许输入其他原始类别代码。
 
 ### P1b-3 实现备注（V4 迁移）
 
-- `id` 为 text 主键，`iss_` 加 26 位 ULID；`category`、`subject_type`、`subject_id`、`detected_by`、`status` 均为 text NOT NULL，两个 subject 字段不得为空白。类别 CHECK 包含上述 23 项及老化类别 `PAYMENT_NOT_SETTLED`、`DEPOSIT_NOT_RECEIVED`、`REFUND_AWAITING_FUNDS_AGED`、`REFUND_NOT_EXECUTED`、`PAYOUT_UNRESOLVED`、`EVENT_PARKED_AGED`。
+- `id` 为 text 主键，`iss_` 加 26 位 ULID；`category`、`subject_type`、`subject_id`、`detected_by`、`status` 均为 text NOT NULL，两个 subject 字段不得为空白。V4 类别 CHECK 包含当时的 23 项及老化类别 `PAYMENT_NOT_SETTLED`、`DEPOSIT_NOT_RECEIVED`、`REFUND_AWAITING_FUNDS_AGED`、`REFUND_NOT_EXECUTED`、`PAYOUT_UNRESOLVED`、`EVENT_PARKED_AGED`；P3 T02 的新增类别见上方 V14 备注。
 - `first_run_id`、`last_run_id` 为可空 text；`RUN` 必须有 `first_run_id`，`INGESTION` 的两个运行号必须都为空，`AGING` 不额外限制运行号。到 `recon.run` 的外键在 P2 建表时补上。
 - `status` 限于 `OPEN`、`EXPLAINED`、`RESOLVED`、`ACCEPTED`。`EXPLAINED`、`ACCEPTED` 要求 `explanation IS NOT NULL`；`RESOLVED` 要求 `explanation` 或 `resolution_correction_id` 至少一个非 NULL；`OPEN` 不限制两者。两列为可空 text，纠错外键在 P4 建 `ledger.correction` 时补上。
 - `expected`、`actual` 为可空 jsonb；`evidence_refs` 为 jsonb NOT NULL，默认 `[]`，CHECK 为 JSON 数组。`recorded_at`、`updated_at` 为 timestamptz NOT NULL。

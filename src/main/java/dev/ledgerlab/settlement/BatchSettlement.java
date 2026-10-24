@@ -195,7 +195,7 @@ public final class BatchSettlement {
         var identities = new HashSet<String>();
         var subjects = new HashSet<String>();
         for (Line line : lines) {
-            if ((!line.type().equals("charge") && !line.type().equals("payout_failure"))
+            if (!supportedLineType(line)
                     || line.source() == null
                     || !line.currency().equalsIgnoreCase("cad")
                     || line.gross() < 1
@@ -410,6 +410,10 @@ public final class BatchSettlement {
                 .optional();
     }
 
+    private static boolean supportedLineType(Line line) {
+        return line.type().equals("charge") || line.type().equals("payout_failure");
+    }
+
     private void hold(PayoutEvidence evidence, String previous, String reason, Instant now) {
         hold(
                 evidence,
@@ -442,12 +446,23 @@ public final class BatchSettlement {
         if (reason.equals("UNKNOWN_PAYMENT")) return;
         String category = switch (reason) {
             case "FEE_EXCEEDS_GROSS", "AMOUNT_MISMATCH" -> "AMOUNT_MISMATCH";
-            case "UNSUPPORTED_LINE" -> "UNSUPPORTED_EVENT";
+            case "UNSUPPORTED_LINE" -> "UNSUPPORTED_BATCH_LINE";
             case "LINE_IN_OTHER_BATCH" -> "DUPLICATE_STATEMENT_LINE";
             case "TOTAL_MISMATCH" -> "BATCH_TOTAL_MISMATCH";
             default -> reason;
         };
-        openIssue(evidence, category, expected, Map.of("reason", reason, "line", actual));
+        Map<String, Object> details = new HashMap<>();
+        details.put("reason", reason);
+        details.put("line", actual);
+        if (reason.equals("UNSUPPORTED_LINE")) {
+            details.put(
+                    "lines",
+                    Objects.requireNonNull(evidence.lines()).items().stream()
+                            .filter(line -> line.equals(actual)
+                                    || (!supportedLineType(line) && !line.type().equals("payout")))
+                            .toList());
+        }
+        openIssue(evidence, category, expected, details);
     }
 
     private void openIssue(PayoutEvidence evidence, String category, Object expected, Object actual) {

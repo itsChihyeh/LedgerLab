@@ -790,8 +790,50 @@ class SettlementWorkerTest {
     void ac_5_2_unsupportedLinesAreHeldWithEvidence(String type) {
         lines = page(line("txn_other", type, "ch_p1", 10000, 320), false);
         ready();
-        assertHold("UNSUPPORTED_LINE", "UNSUPPORTED_EVENT");
+        assertHold("UNSUPPORTED_LINE", "UNSUPPORTED_BATCH_LINE");
+        var actual = mapper.readTree(jdbc.sql("SELECT actual::text FROM recon.issue")
+                .query(String.class)
+                .single());
+        assertThat(actual.path("reason").asText()).isEqualTo("UNSUPPORTED_LINE");
+        assertThat(actual.path("lines").size()).isEqualTo(1);
+        assertThat(actual.path("lines").get(0).path("id").asText()).isEqualTo("txn_other");
+        assertThat(actual.path("lines").get(0).path("type").asText()).isEqualTo(type);
+        assertThat(actual.path("lines").get(0).path("gross").asLong()).isEqualTo(10000);
         assertThat(count("ledger.posting")).isZero();
+    }
+
+    @Test
+    void ac_5_2_allUnsupportedLinesAreListedAndRepeatedReadinessDoesNotDuplicateIssue() {
+        lines = page(
+                line("txn_payment", "charge", "ch_p1", 10000, 320) + ","
+                        + line("txn_adjustment", "adjustment", "ch_adjustment", -100, 0) + ","
+                        + line("txn_dispute", "dispute", "ch_dispute", -200, 0) + ","
+                        + line("txn_payout", "payout", "po_b1", -9380, 0),
+                false);
+        ready();
+        assertHold("UNSUPPORTED_LINE", "UNSUPPORTED_BATCH_LINE");
+        var original =
+                jdbc.sql("SELECT id, actual::text FROM recon.issue").query().singleRow();
+        var actual = mapper.readTree((String) original.get("actual"));
+        assertThat(actual.path("lines").size()).isEqualTo(2);
+        assertThat(actual.path("lines").get(0).path("id").asText()).isEqualTo("txn_adjustment");
+        assertThat(actual.path("lines").get(0).path("type").asText()).isEqualTo("adjustment");
+        assertThat(actual.path("lines").get(0).path("gross").asLong()).isEqualTo(-100);
+        assertThat(actual.path("lines").get(1).path("id").asText()).isEqualTo("txn_dispute");
+        assertThat(actual.path("lines").get(1).path("type").asText()).isEqualTo("dispute");
+        assertThat(actual.path("lines").get(1).path("gross").asLong()).isEqualTo(-200);
+        event("evt_ready_again", "payout.reconciliation_completed", payout("po_b1", "completed"));
+        runWorker();
+        assertThat(inbox("evt_ready_again"))
+                .containsEntry("status", "PROCESSED")
+                .containsEntry("result", "DUPLICATE_FACT");
+        assertThat(jdbc.sql("SELECT id, actual::text FROM recon.issue").query().singleRow())
+                .isEqualTo(original);
+        assertThat(count("recon.issue")).isEqualTo(1);
+        assertThat(count("ledger.journal_entry")).isZero();
+        assertThat(count("ledger.posting")).isZero();
+        assertThat(count("core.settlement_batch_line")).isZero();
+        assertThat(state()).isEqualTo("HELD");
     }
 
     private void assertHold(String reason, String category) {

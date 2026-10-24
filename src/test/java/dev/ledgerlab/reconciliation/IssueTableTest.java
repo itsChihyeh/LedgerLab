@@ -237,7 +237,7 @@ class IssueTableTest {
                 "BATCH_STATE_CONFLICT", "REFUND_STATE_CONFLICT", "UNSUPPORTED_PAYOUT", "EVENT_CONTENT_CONFLICT",
                 "EVENT_BUSINESS_CONFLICT", "UNSUPPORTED_EVENT", "LIVEMODE_EVENT", "PAYMENT_NOT_SETTLED",
                 "DEPOSIT_NOT_RECEIVED", "REFUND_AWAITING_FUNDS_AGED", "REFUND_NOT_EXECUTED", "PAYOUT_UNRESOLVED",
-                "EVENT_PARKED_AGED"
+                "EVENT_PARKED_AGED", "UNSUPPORTED_BATCH_LINE"
             })
     void ac_1_13_documentedCategoriesCanBeInsertedWithoutRunForIngestion(String category) throws SQLException {
         Sql.execute(db.app(), ISSUE.replace("EVENT_CONTENT_CONFLICT", category));
@@ -245,6 +245,35 @@ class IssueTableTest {
                 SELECT count(*) FROM recon.issue WHERE detected_by = 'INGESTION'
                     AND first_run_id IS NULL AND last_run_id IS NULL
                 """)).isEqualTo(1);
+    }
+
+    @Test
+    void ac_5_2_batchLineCategorySupportsFindingsAndKeepsLegacyBatchIssues() throws SQLException {
+        String batchIssue = ISSUE.replace("'event'", "'batch'").replace("evt_test", "po_legacy");
+        Sql.execute(db.app(), batchIssue.replace("EVENT_CONTENT_CONFLICT", "UNSUPPORTED_EVENT"));
+        Sql.execute(
+                db.app(),
+                batchIssue.replace("00000001", "00000002").replace("EVENT_CONTENT_CONFLICT", "UNSUPPORTED_BATCH_LINE"));
+        Sql.execute(db.app(), """
+                INSERT INTO recon.finding (id, run_id, issue_id, category, subject_type, subject_id,
+                    evidence_refs, fingerprint, recorded_at)
+                VALUES ('fnd_00000000000000000000000001', 'rr_00000000000000000000000001',
+                    'iss_00000000000000000000000002', 'UNSUPPORTED_BATCH_LINE', 'batch', 'po_legacy',
+                    '[]', repeat('a', 64), '2026-10-24T00:00Z')
+                """);
+        assertThat(Sql.queryLong(db.readonly(), """
+                SELECT count(*) FROM recon.v_issue WHERE subject_type = 'batch' AND subject_id = 'po_legacy'
+                    AND category IN ('UNSUPPORTED_EVENT', 'UNSUPPORTED_BATCH_LINE')
+                """)).isEqualTo(2);
+        assertThat(Sql.queryLong(db.readonly(), """
+                SELECT count(*) FROM recon.v_finding WHERE category = 'UNSUPPORTED_BATCH_LINE'
+                """)).isEqualTo(1);
+        Sql.assertRejected(
+                "23514",
+                db.app(),
+                batchIssue.replace("00000001", "00000003").replace("EVENT_CONTENT_CONFLICT", "UNKNOWN_BATCH_LINE"));
+        Sql.assertRejected("42501", db.app(), "UPDATE recon.issue SET category = 'UNSUPPORTED_BATCH_LINE'");
+        Sql.assertRejected("42501", db.readonly(), "INSERT INTO recon.issue (id) VALUES ('iss_forbidden')");
     }
 
     @Test
