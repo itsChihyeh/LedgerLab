@@ -1,7 +1,7 @@
 package dev.ledgerlab.ledger;
 
 /**
- * The posting interface. Both methods join the caller's transaction and fail if there is none, so an entry and
+ * The ledger interface. All methods join the caller's transaction and fail if there is none, so an entry and
  * the business state change it belongs to commit or roll back together.
  */
 public interface Ledger {
@@ -15,6 +15,14 @@ public interface Ledger {
 
     /** Checks that this transaction already holds the funds lock; never acquires it. */
     void assertFundsLocked();
+
+    /**
+     * Reads the account's current balance in its normal direction, including this transaction's postings.
+     *
+     * @throws IllegalStateException if this transaction does not already hold the funds lock
+     * @throws ArithmeticException if the balance is outside the JSON safe integer range (contracts section 3)
+     */
+    long balance(Account account);
 
     /**
      * Records one complete entry: locks the touched accounts in ascending code order, checks that no account

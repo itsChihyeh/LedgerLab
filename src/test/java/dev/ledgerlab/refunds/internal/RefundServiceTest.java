@@ -3,6 +3,7 @@ package dev.ledgerlab.refunds.internal;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import dev.ledgerlab.ledger.Account;
 import dev.ledgerlab.ledger.EntryRequest;
 import dev.ledgerlab.ledger.Ledger;
 import dev.ledgerlab.ledger.PostedEntry;
@@ -222,6 +223,11 @@ class RefundServiceTest {
         // Only the test adapter acquires the ledger lock late, so journal integrity still holds.
         // Neither the guard's SELECT nor its stale UPDATE is protected by the funds or payment lock.
         Ledger lateLock = new Ledger() {
+            @Override
+            public long balance(Account account) {
+                return f.ledger.balance(account);
+            }
+
             @Override
             public void lockFunds() {
                 f.ledger.lockFunds();

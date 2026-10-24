@@ -59,6 +59,8 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 
 约束：CHECK `allow_negative OR balance >= 0`（INV-5 在数据库层兜底）；CHECK `abs(balance) < 9007199254740992`（汇总值上限，contracts 第 3 节）。`code`、`kind`、`normal_side`、`allow_negative` 不在 `app` 的授权里，另由触发器禁止任何角色修改（复核 S4 的“修改账户属性”攻击）。
 
+P3 T04b 实现备注：退款队列通过 `Ledger.balance(Account.MERCHANT_AVAILABLE)` 读取 2102 当前余额；该接口先调用 `assertFundsLocked()` 确认当前事务已持资金锁，再读账户行并检查返回值严格位于 ±2^53 以内。
+
 ### `ledger.journal_entry`（不可改）
 
 | 字段 | 类型 | 说明 |

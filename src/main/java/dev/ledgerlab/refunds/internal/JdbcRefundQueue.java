@@ -1,5 +1,6 @@
 package dev.ledgerlab.refunds.internal;
 
+import dev.ledgerlab.ledger.Account;
 import dev.ledgerlab.ledger.Ledger;
 import dev.ledgerlab.refunds.RefundQueue;
 import dev.ledgerlab.shared.IdGenerator;
@@ -33,9 +34,7 @@ public final class JdbcRefundQueue implements RefundQueue {
                         "SELECT id, amount, queue_seq FROM core.refund WHERE status = 'AWAITING_FUNDS' ORDER BY id FOR UPDATE")
                 .query((rs, row) -> new Waiting(rs.getString(1), rs.getLong(2), rs.getLong(3)))
                 .list();
-        long capacity = jdbc.sql("SELECT balance FROM ledger.account WHERE code = 2102")
-                .query(Long.class)
-                .single();
+        long capacity = ledger.balance(Account.MERCHANT_AVAILABLE);
         for (var refund : waiting) capacity = Math.addExact(capacity, refund.amount());
         long prefix = 0;
         var now = clock.instant();
