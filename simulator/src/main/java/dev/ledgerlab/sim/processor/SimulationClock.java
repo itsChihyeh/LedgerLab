@@ -12,6 +12,7 @@ import java.util.PriorityQueue;
 public final class SimulationClock extends Clock {
     private Instant now;
     private long sequence;
+    private final java.util.List<Runnable> advanceListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final PriorityQueue<Scheduled> scheduled =
             new PriorityQueue<>(Comparator.comparing(Scheduled::at).thenComparingLong(Scheduled::sequence));
 
@@ -55,6 +56,11 @@ public final class SimulationClock extends Clock {
             now = now.plus(duration);
         }
         runDue();
+        advanceListeners.forEach(Runnable::run);
+    }
+
+    public void onAdvance(Runnable listener) {
+        advanceListeners.add(listener);
     }
 
     public void schedule(Duration delay, Runnable task) {

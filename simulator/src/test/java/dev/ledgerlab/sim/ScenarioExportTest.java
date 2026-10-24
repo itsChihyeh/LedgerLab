@@ -92,6 +92,35 @@ class ScenarioExportTest {
     }
 
     @Test
+    void ac_8_7_refundControlActionsUseScenarioClockAndRollbackTheirPlans() {
+        var scenario = JSON.readTree("""
+                {"format_version":1,"seed":42,"start_clock":"2026-10-23T12:00:00Z","checkpoints":[],
+                 "actions":[
+                   {"action":"refund_fault","request":{"force_pending":true,"timeout_after_create":1}},
+                   {"action":"advance_clock","seconds":60},
+                   {"action":"process_refunds"},
+                   {"action":"advance_clock","to":"2026-10-23T12:02:00Z"},
+                   {"action":"charge","alias":"P1","request":{"amount":5000}},
+                   {"action":"refund_fault","request":{"charge":"$P1","suppress_events":true}}
+                 ]}
+                """);
+        var result = runner.run(scenario);
+        assertThat(runner.run(scenario)).isEqualTo(result);
+        assertThat(JSON.readTree(result.get("events/001.json")).path("created").asLong())
+                .isEqualTo(java.time.Instant.parse("2026-10-23T12:02:00Z").getEpochSecond());
+        assertThat(jdbc.sql("select count(*) from sim_processor.refund_faults")
+                        .query(Long.class)
+                        .single())
+                .isZero();
+        assertThat(jdbc.sql("select count(*) from sim_processor.fault_plan")
+                        .query(Long.class)
+                        .single())
+                .isZero();
+        ((ObjectNode) scenario.path("actions").get(1)).put("seconds", -1);
+        assertThatThrownBy(() -> runner.run(scenario)).hasMessageContaining("Invalid seconds");
+    }
+
+    @Test
     void ac_5_13_endpointReturnsSameBundleAndRejectsUnknownNames() throws Exception {
         int port = java.util.Objects.requireNonNull(((WebServerApplicationContext) app).getWebServer())
                 .getPort();

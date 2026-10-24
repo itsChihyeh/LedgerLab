@@ -24,6 +24,7 @@ public final class Processor {
     private final EventDelivery sender;
     private final BalanceTransactions balances;
     private final JsonMapper json = JsonMapper.builder().build();
+    private final java.util.List<Runnable> chargeListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     public Processor(
             JdbcClient jdbc,
@@ -78,7 +79,12 @@ public final class Processor {
             store(event);
         });
         sender.deliver(event.path("id").asText(), json.writeValueAsString(event));
+        chargeListeners.forEach(Runnable::run);
         return Map.of("charge", charge, "event_id", event.path("id").asText());
+    }
+
+    void onCharge(Runnable listener) {
+        chargeListeners.add(listener);
     }
 
     public Map<String, Object> redeliver(String id) {
@@ -133,18 +139,20 @@ public final class Processor {
     void store(ObjectNode event) {
         JsonNode object = event.path("data").path("object");
         boolean payout = object.path("object").asText().equals("payout");
+        boolean refund = object.path("object").asText().equals("refund");
         jdbc.sql("""
-                insert into sim_processor.event (id, charge_id, type, api_version, created, payload, recorded_at, payout_id)
-                values (?, ?, ?, ?, ?, ?, ?, ?)
+                insert into sim_processor.event (id, charge_id, type, api_version, created, payload, recorded_at, payout_id, refund_id)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """)
                 .param(event.path("id").asText())
-                .param(payout ? null : object.path("id").asText())
+                .param(payout ? null : object.path(refund ? "charge" : "id").asText())
                 .param(event.path("type").asText())
                 .param(API_VERSION)
                 .param(event.path("created").asLong())
                 .param(json.writeValueAsString(event))
                 .param(Timestamp.from(clock.instant()))
                 .param(payout ? object.path("id").asText() : null)
+                .param(refund ? object.path("id").asText() : null)
                 .update();
     }
 

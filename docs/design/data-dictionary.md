@@ -389,6 +389,15 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 处理方和银行的状态分开存、分开推进，避免两边共享同一个错误（I6）。
 
+### P3 T06 实现备注（模拟器 V5）
+
+- 新表仍由 `simulator` 迁移、拥有；PUBLIC、migrator、app、readonly 的表和序列权限全部显式撤销。业务时间取 SimulationClock，`recorded_at` 取注入的审计 Clock；REST 时间转换为 Unix 秒。
+- `sim_processor.refunds`：`id text PK`（re_）、`charge text FK charge`、正整数 `amount bigint`（小于 2^53）、`status`（pending/succeeded/failed/canceled）、`metadata jsonb`（对象）、`created/recorded_at timestamptz`、可空 `failure_reason`、`balance_transaction text UNIQUE FK balance_transaction`。`creation_order bigint GENERATED ALWAYS AS IDENTITY UNIQUE` 是同刻创建的稳定次序；扫描按 created/order 正序，列表反序。CHECK 保证 succeeded 恰好有余额行、failed 恰好有失败原因。
+- `sim_processor.idempotency_keys`：`key text PK`（1～255 字符）、`request_fingerprint text`（规范 form 参数的 SHA-256）、`response text`（首次退款对象原文）、`created/recorded_at timestamptz`、`purged boolean`。重试返回首次响应，不返回对象当前状态；清理只标记至少 24 小时且早于 before 的键，再用该键会覆盖旧缓存并创建新退款。退款 metadata 不设唯一约束，以便复现 AC-8.7。
+- `sim_processor.refund_faults`：`target text PK`（`*` 全局或 ch_ 编号）、`plan jsonb`（对象）、`recorded_at timestamptz`，保存当前控制参数及剩余计数；每次设置另向既有 `fault_plan` 追加原控制 JSON。指定 charge 的字段覆盖全局同名字段，未指定字段继承全局；空计划清除该作用域的覆盖。
+- `event` 新增可空 `refund_id text FK refunds`；退款事件同时保留 charge_id，完整快照不随后续状态更新。退款、余额行、事件、幂等响应同事务提交，HTTP 投递在提交后执行。创建、执行、清理和故障计数更新共用既有余额表锁，防止跨请求重复退款或重复分配。
+- pending/succeeded 占用 charge 可退额度，failed/canceled 释放；可用余额直接汇总已有余额行的 net，refund 借记只扣一次。charge 提交后和每次模拟时钟推进同步扫描 pending；扫描按创建顺序，余额不够的跳过，继续检查后项（这不是主应用的商户 FIFO 放行队列）。
+
 ### P2 T12 实现备注（场景证据导出，无新迁移）
 
 - 场景正本、动作与人工预期发现存于 `simulator/src/main/resources/scenarios/*.json`；导出格式和命令见 [场景夹具](../testing/scenario-fixtures.md)。`truth.json` 仅替换外部别名，不从主应用数据推导。

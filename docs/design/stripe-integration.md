@@ -136,6 +136,19 @@ P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at`
 
 ## 6. 契约测试：fake Stripe 和真实 Stripe 不能漂移
 
+### P3 T06：fake 退款子集与差异
+
+- `POST /v1/refunds` 接受 form 编码的 `charge`、正整数分 `amount`、可选 `metadata[ledgerlab_refund_id]`，强制测试 Bearer 密钥、固定 `Stripe-Version: 2026-09-30.endive` 和 `Idempotency-Key`。退款 GET 同样验证密钥与版本；P2 既有只读接口的版本行为未改。字段与错误外层形状对照 [创建退款](https://docs.stripe.com/api/refunds/create)、[退款分页](https://docs.stripe.com/api/refunds/list)、[幂等请求](https://docs.stripe.com/api/idempotent_requests)。本任务不连接真实 Stripe。
+- 支持 captured/succeeded、非 live、CAD charge；未失败的 pending/succeeded 占用原 charge 的可退额度。余额只汇总未分配且 `available_on ≤ 模拟时间` 的 CAD net；执行新增立即可用的 `type=refund, amount=net=−A, fee=0, source=re_…` 行，payout 原有归集直接包含这行。不能再额外扣一次退款。资金不足 pending，不建余额行；charge 创建提交后、模拟时钟推进后、`POST /sim/refunds/process` 均按创建顺序扫描，执行有足够余额的项。真实 Stripe 的 pending 执行时间不可控，此扫描次序不是对真实调度的保证，也不是主应用的商户 FIFO 前缀规则。
+- `GET /v1/refunds/{id}` 返回当前对象；列表支持 charge、limit（默认 10，1～100）、starting_after，按 created/创建序号倒序，返回真正的 has_more；同一模拟秒的先后由创建序号固定。metadata 不唯一，跨幂等键或键清理后的重复业务操作确实能产生第二笔退款。
+- 创建事件使用当时对象快照；正常直接成功只有 `refund.created(status=succeeded)`；pending 执行后发 `refund.updated`。`fail_next` 先保存 pending 创建快照，再变 failed，发 `refund.updated` 和 `refund.failed`，不先扣款再返还。手动 fail 仅允许 pending；终态重复操作幂等、冲突操作 409，成功后再失败的撤销流程不在此子集。事件签名、redeliver/reissue、relay 均复用 P1/P2 路径。
+- 故障计划通过 `POST /sim/refunds/faults` 替换全局或 charge 范围的计划。支持 timeout_before_create、timeout_after_create 计数，fail_next 原因，force_pending、suppress_events、event_before_response 布尔值，以及 list_page_timeout 页号。charge 明确指定的字段覆盖全局，其余继承；空对象清除对应范围。fault plan 和剩余计数持久化；更新原控制请求另存入 fault_plan。
+- 创建前超时和指定列表页超时返回 504；创建后超时在已提交、已尝试投递后挂起响应，让客户端真正超时。Servlet 30 秒超时只用于回收挂起连接（最终 504），不推进业务时间、不靠 sleep 注入。沿用模拟器默认的同步 webhook 投递，因此 event_before_response=true 保证 relay HTTP 尝试完成才返回；若 relay 配置 DROP/DELAY/HOLD，它的完成只表示 relay 已接收，故障组合不保证主应用此时已收到事件。suppress_events 不创建或投递任何退款事件。
+- `POST /sim/idempotency/purge {"before":"ISO-8601"}`（默认模拟 now）只标记 created 早于 before 且已满 24 小时的键；不自动定时清理。同键同参数重放仍返回第一次响应原文对应对象，故对象后来 succeeded 时首次 pending 响应也不改变。参数校验失败不缓存。模拟器串行处理同键竞争，不复刻 Stripe 所有并发错误与 500 缓存行为。
+- 已知子集限制：不支持 PaymentIntent 发起、amount 省略、其他 metadata 键、其他币种/支付方式、完整 Refund 扩展字段、Stripe 自动重试与真实退款失败撤销。以上故障与可控清理是 fake 专用接口；P6 仍须用真实录制夹具核对所用字段，不能把这些测试当成真实沙箱验收。
+
+### 真实夹具验证（P6）
+
 - 在测试模式下跑一组固定场景，把收到的 webhook 和 API 响应录下来（脱敏后进仓库）。
 - CI 里用这些录制夹具驱动适配器，检查映射结果（不需要密钥、不联网）。
 - 同一组场景在 fake Stripe 上也跑一遍，比较两边产生的事件序列和对象字段（只比我们用到的字段）。有差异就以真实 Stripe 为准修模拟器。

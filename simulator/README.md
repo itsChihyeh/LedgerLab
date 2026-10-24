@@ -134,6 +134,58 @@ curl http://localhost:8081/sim/relay/plan
 
 `RelayTest` 以真实 PostgreSQL 和 JDK HttpServer 验证本任务场景，为 AC-2.1（字节/签名）、AC-2.2（短延迟/乱序）、AC-2.3（重复）、AC-8.2（fake Stripe 协议）提供故障注入能力验证；不替代主应用对应的账本验收测试。
 
+## 退款（P3 T06）
+
+仅合成测试数据；不连接真实 Stripe。退款 REST 必须带 `Authorization: Bearer <sim.stripe.api-key>` 和 `Stripe-Version: 2026-09-30.endive`；创建另带 `Idempotency-Key`。例如：
+
+```http
+POST /v1/refunds
+Content-Type: application/x-www-form-urlencoded
+Idempotency-Key: rfd_demo
+
+charge=ch_REPLACE&amount=2000&metadata%5Bledgerlab_refund_id%5D=rfd_demo
+```
+
+`GET /v1/refunds/re_REPLACE` 读取当前对象；`GET /v1/refunds?charge=ch_REPLACE&limit=10&starting_after=re_CURSOR` 读取创建倒序页，必须继续翻到 `has_more=false`。同一秒按实际创建顺序反排。只支持 CAD 已请款测试 charge、显式正整数 amount 与上述 metadata 字段；完整子集及 Stripe 差异见 [设计第 6 节](../docs/design/stripe-integration.md#6-契约测试fake-stripe-和真实-stripe-不能漂移)。
+
+未打出且已可用的净额够时退款立即 succeeded，新增 −amount 的余额行；否则 pending，不扣余额。推进模拟时钟、新 charge 提交、`POST /sim/refunds/process` 都检查 pending；按创建顺序检查、跳过余额不足项。该控制接口返回生成的事件数 `events`（suppress_events 时可为零）。执行后的负向退款行随下次 payout 归集。商户余额和主应用 FIFO 队列不在模拟器内建模。
+
+故障设置接口为 `POST /sim/refunds/faults`，JSON 示例：
+
+```json
+{"charge":"ch_REPLACE","timeout_after_create":1,"force_pending":true}
+```
+
+省略 charge 表示全局。每次替换该范围计划；指定 charge 的字段覆盖全局同名字段，其他字段继承全局。`{}` 清除全局计划；`{"charge":"ch_REPLACE"}` 清除该 charge 覆盖。
+
+| 字段 | 语义 |
+|---|---|
+| timeout_before_create | 前 n 次请求返回 504，不建退款、不缓存响应 |
+| timeout_after_create | 前 n 次请求保存退款并投递事件后挂起 HTTP；客户端应设置短于 30 秒的读取超时 |
+| fail_next | 下一笔创建时先 pending 再 failed，值为 failure_reason；一次性消耗，不写退款余额行 |
+| force_pending | true 时创建和自动扫描均保持 pending；false 可覆盖全局 true |
+| suppress_events | true 时不保存、不投递任何退款事件；可用于只靠响应完成退款 |
+| event_before_response | true 保证投递尝试完成才返回；模拟器默认也沿用同步投递。relay DROP/DELAY/HOLD 仍按自己的计划处理 |
+| list_page_timeout | 正整数 k 表示列表第 k 页返回 504；0 关闭。页号按当前游标偏移/limit 推导，重试同页稳定失败 |
+
+计数和计划持久化，设置记录追加存档。故障注入不使用 sleep；创建后挂起释放 servlet 线程，30 秒 transport timeout 仅回收资源并返回 504。
+
+`POST /sim/refunds/re_REPLACE/succeed` 手动推进 pending（忽略 force_pending，但仍检查可用余额）；`POST /sim/refunds/re_REPLACE/fail {"reason":"declined"}` 确认失败并释放 charge 可退额度。相同终态重试不重复产生余额行或事件；终态冲突返回 409。failed/canceled 不占可退额度；canceled 只保留为协议状态，本任务没有取消控制接口。
+
+`POST /sim/idempotency/purge {"before":"2026-10-25T12:00:00Z"}` 只清理模拟时间已满 24 小时、且创建早于 before 的键；省略 before 使用模拟 now。缓存保留首次响应，所以重放可能返回旧 pending 快照；查当前状态应 GET。清理后重用同键会新建退款，metadata 不去重，这是 AC-8.7 要重现的条件。
+
+场景导出运行器新增以下最小动作（仍在独立事务回滚，不投递外部 HTTP）：
+
+```json
+[
+  {"action":"refund_fault","request":{"charge":"$P1","force_pending":true}},
+  {"action":"advance_clock","seconds":86401},
+  {"action":"process_refunds"}
+]
+```
+
+`advance_clock` 也接受 ISO `to`，原有 `advance` 动作保留；refund_fault 支持既有别名替换。退款业务场景及回放编排留给 T13。
+
 ## 模拟银行
 
 银行只通过 `IncomingTransfers.receive(payoutRef, amount)` 接收通知，不依赖 processor 包，也不查询 `sim_processor`。fake Stripe 首次变成 paid 时，在保存 paid 状态、事件的同一事务内通知银行；重复 paid、事件 redeliver/reissue 都不会增加转账。仅标准自动 CAD 正 payout 产生银行收入，手动、即时、零或负 payout 不通知。paid 后 failed 不自动撤销银行已接收的转账；这两方的独立事实可以产生冲突，退回流程不在 T07。
