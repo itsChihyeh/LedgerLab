@@ -201,6 +201,7 @@ class SettlementWorkerTest {
 
     @AfterEach
     void stop() {
+        dev.ledgerlab.testsupport.InboxHistoryAssertions.assertConsistent(jdbc);
         assertThat(audit.check()).isEmpty();
         server.stop(0);
         http.close();
@@ -233,6 +234,7 @@ class SettlementWorkerTest {
     }
 
     void assertLedger() {
+        dev.ledgerlab.testsupport.InboxHistoryAssertions.assertConsistent(jdbc);
         assertThat(audit.check()).isEmpty();
     }
 

@@ -15,7 +15,7 @@ import tools.jackson.databind.ObjectMapper;
 @Component
 public final class AgingRule implements ReconRule {
     static final String LIMITATIONS = "老化只能发现有开始记录、没有结束记录的义务；"
-            + "其他 HELD 原因由入口差异负责，等 P4 纠错后重核；P2 未检查 PARKED 老化；"
+            + "其他 HELD 原因由入口差异负责，等 P4 纠错后重核；回填 inbox 历史之前的状态无法重建；"
             + "旧 HELD 历史缺少原因或明细存档时无法重建，未纳入检查；退款、提现老化留给 P3/P5。";
     private final JdbcClient jdbc;
     private final BusinessCalendar calendar;
@@ -46,7 +46,7 @@ public final class AgingRule implements ReconRule {
 
     @Override
     public String version() {
-        return "p2-v1";
+        return "p3-v1";
     }
 
     @Override
@@ -116,7 +116,49 @@ public final class AgingRule implements ReconRule {
                     missing ? "UNRECEIVED" : batch.status());
         }
         held(context, result);
+        parked(context, result);
         return result;
+    }
+
+    private void parked(Context context, RuleResults result) {
+        Instant asOf = context.request().evidenceAsOf();
+        // Inbox age is elapsed time since receipt, independent of the business-day cutoff.
+        // Include completed events in scope so later evidence can explain an old aging issue.
+        jdbc.sql("""
+                SELECT e.event_id, e.received_at, h.id, h.to_status, h.parked_on
+                FROM io.inbox_event e JOIN LATERAL (
+                    SELECT id, to_status, parked_on FROM io.inbox_status_history
+                    WHERE event_id=e.event_id AND recorded_at < :asOf
+                    ORDER BY recorded_at DESC, id DESC LIMIT 1
+                ) h ON true
+                WHERE e.recorded_at < :asOf AND e.received_at < :asOf ORDER BY e.event_id
+                """)
+                .param("asOf", asOf.atOffset(ZoneOffset.UTC))
+                .query((rs, n) -> {
+                    Instant start =
+                            rs.getObject("received_at", OffsetDateTime.class).toInstant();
+                    Instant due = start.plus(policy.parkedEvent());
+                    String status = rs.getString("to_status");
+                    var expected = new LinkedHashMap<String, Object>();
+                    expected.put("start_at", start.toString());
+                    expected.put("threshold", policy.parkedEvent().toString());
+                    expected.put("due_at", due.toString());
+                    expected.put("parked_on", rs.getString("parked_on"));
+                    result.check(
+                            "EVENT_PARKED_AGED",
+                            "event",
+                            rs.getString("event_id"),
+                            status.equals("PARKED") && !due.isAfter(asOf),
+                            expected,
+                            Map.of("status", status),
+                            List.of(
+                                    Map.of("table", "io.inbox_event", "id", rs.getString("event_id")),
+                                    Map.of("table", "io.inbox_status_history", "id", rs.getLong("id"))),
+                            null,
+                            "Inbox event no longer PARKED or not yet due");
+                    return 0;
+                })
+                .list();
     }
 
     private void check(

@@ -67,6 +67,12 @@ public class TestLedgerLabApplication {
                     }
                     processor.assertConsumed();
                     body = "ok";
+                } else if (method.equals("POST") && path.equals("/advance-clock")) {
+                    long seconds = Long.parseLong(
+                            new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+                    if (seconds < 0 || seconds > 7200) throw new IllegalArgumentException("Invalid clock advance");
+                    clock.set(clock.instant().plusSeconds(seconds));
+                    body = Long.toString(clock.instant().getEpochSecond());
                 } else if (method.equals("POST")
                         && path.equals("/prepare-b1-replay")
                         && scenarioDirectory().endsWith("sample-a-1-3")) {

@@ -167,7 +167,7 @@ RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，n
 ### P2 T11 实现备注
 
 - 到期缺失由 AGING 产生老化发现，并在同一事务中把同一义务的 OPEN 时间差转为 EXPLAINED，解释写“已升级为 PAYMENT_NOT_SETTLED / DEPOSIT_NOT_RECEIVED”。支付时间差原属 PROCESSOR，批次时间差原属 BANK；跨运行类别的转 EXPLAINED 由 AGING 负责，普通发现消失仍只在原运行类别内解释，INGESTION 差异不自动解释。
-- HELD 历史追加原因和固定明细 fetch 引用，包含 paid、failed 等保持原状态的证据行；按 evidence_as_of 前最后一行恢复状态与原因。PARKED 老化改到 P3，需先补 inbox 只追加状态历史，取代上文 T05 留给 T11 的安排。
+- HELD 历史追加原因和固定明细 fetch 引用，包含 paid、failed 等保持原状态的证据行；按 evidence_as_of 前最后一行恢复状态与原因。P3 T01 已补 inbox 只追加状态历史与 PARKED 老化，取代上文 T05 留给 T11 的安排；历史回填边界见 data-dictionary，时间与发现内容见 contracts 的 P3 T01 实现备注。
 
 | 从 | 到 | 触发 |
 |---|---|---|

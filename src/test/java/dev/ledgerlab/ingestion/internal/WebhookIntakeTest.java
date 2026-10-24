@@ -112,6 +112,11 @@ class WebhookIntakeTest {
     @Autowired
     StripeEventParser parser;
 
+    @org.junit.jupiter.api.AfterEach
+    void inboxHistory() {
+        dev.ledgerlab.testsupport.InboxHistoryAssertions.assertConsistent(jdbc);
+    }
+
     @BeforeEach
     void resetControls() {
         clock.set(NOW);
@@ -171,6 +176,17 @@ class WebhookIntakeTest {
         assertThat(eventCount("evt_duplicate")).isEqualTo(1);
         assertThat(conflictCount("evt_duplicate")).isZero();
         assertThat(row("evt_duplicate")).usingRecursiveComparison().isEqualTo(before);
+        assertThat(jdbc.sql(
+                                "SELECT from_status, to_status, lease_epoch, recorded_at, backfilled FROM io.inbox_status_history WHERE event_id='evt_duplicate'")
+                        .query()
+                        .listOfRows())
+                .singleElement()
+                .satisfies(history -> assertThat(history)
+                        .containsEntry("from_status", null)
+                        .containsEntry("to_status", "RECEIVED")
+                        .containsEntry("lease_epoch", 0L)
+                        .containsEntry("recorded_at", Timestamp.from(NOW))
+                        .containsEntry("backfilled", false));
         assertThat(jdbc.sql("SELECT outcome FROM io.webhook_delivery WHERE event_id = 'evt_duplicate' ORDER BY id")
                         .query(String.class)
                         .list())

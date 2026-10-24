@@ -44,9 +44,15 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 | 退款等待资金 | 受理时刻 | 5 个工作日 | `REFUND_AWAITING_FUNDS_AGED` |
 | 退款已提交、还没执行 | 提交时刻 | 3 个工作日 | `REFUND_NOT_EXECUTED` |
 | 提现结果未知或已受理还没出账 | 提交时刻 | 1 个工作日 | `PAYOUT_UNRESOLVED` |
-| 入站事件停在 `PARKED` | `received_at` | 1 小时 | `EVENT_PARKED_AGED` |
+| 入站事件停在 `PARKED` | `received_at` | 1 小时，`ledgerlab.recon.aging.parked-event` | `EVENT_PARKED_AGED` |
 
 老化逐笔检查每一笔未了结的义务，而不是看账户总额（修订 R1）。
+
+### P3 T01 实现备注：PARKED 老化
+
+- 从 `io.inbox_status_history` 取 `recorded_at < evidence_as_of` 的最后一行（同刻按 id 排序），当时为 PARKED 且 `received_at + parked-event ≤ evidence_as_of` 时产生 `EVENT_PARKED_AGED`。这是接收时间的小时阈值，不按业务 cutoff 或工作日计算；起点不会因重复投递、重试、唤醒而重置。配置为正 Duration，默认 `PT1H`。
+- subject 为 `(event, evt_…)`；expected 保存 `start_at`、ISO-8601 Duration `threshold`、`due_at` 和当时 `parked_on`；证据引用事件和选中的历史行。未到期不产生时间差。已恢复事件仍在检查范围，沿用已有 OPEN → EXPLAINED／人工处置语义；旧证据时点重跑保留相同发现。
+- 延续 BANK／AGING 共用规则版本配置的实现，两者版本升级为 `p3-v1`（BANK 算法未改），PROCESSOR 仍为 `processor-v1`；旧运行报告仍可直接读取。重跑仍须使用相同版本及阈值配置。limitations 删除 P2 未检查 PARKED 的说明，改为回填时刻之前无法还原 inbox 状态。
 
 ### P2 T11 实现备注：银行、老化与全套运行
 
@@ -55,7 +61,7 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 - 批次、支付状态取 evidence_as_of 前最后一条只追加历史。银行匹配结果从该时点前的分录还原：`BANK_DEPOSIT_RECEIVED` 为已应用，2105 的逐笔 posting 净额为未清款；BOOKED/CAD/CREDIT、有不可变 wait_until 且尚无分录为 WAITING。不会用当前 match_status、支付状态、批次状态或账户缓存余额重放。到期但 worker 尚未处理的 WAITING 仍按当时真实状态报告，不虚构应用分录。
 - BANK 重报范围内的 `DEPOSIT_AMOUNT_MISMATCH` / `UNMATCHED_BANK_LINE` 时采用入口相同 `(category, bank_txn, bank_txn_id)`。发现照常插入、关联原 INGESTION issue，不新建 issue、不覆盖其内容与人工处置、不自动 EXPLAINED。2105 未清项另以每笔 bank_txn 报 `UNAPPLIED_CASH_OPEN`。
 - AGING 只对 `HELD(UNKNOWN_PAYMENT)` 的缺失支付逐笔检查，起点为批次 occurred_at；同一支付出现在多个 HELD 批次时合并为同一识别键，取仍在等待的最早批次计算到期，保留各批次和 fetch 引用。新历史固定原因和明细 fetch；旧历史缺字段不回填、不猜当前值。相关完整 fetch 的编号（`processor_fetch:<id>`）和哈希也存入运行输入。
-- AGING `summary.limitations` 固定说明“老化只能发现有开始记录、没有结束记录的义务”“其他 HELD 原因由入口差异负责，等 P4 纠错后重核”“P2 未检查 PARKED 老化”，并说明旧 HELD 历史缺字段的覆盖边界。退款、提现分别留给 P3/P5。
+- AGING `summary.limitations` 固定说明“老化只能发现有开始记录、没有结束记录的义务”“其他 HELD 原因由入口差异负责，等 P4 纠错后重核”，并说明旧 HELD 历史缺字段的覆盖边界。PARKED 的 P3 T01 覆盖及回填限制见上节；退款、提现分别留给 P3/P5。
 - `POST /api/recon/runs` 接受 `kind=ALL`：在同一 REPEATABLE READ 事务内顺序建立 PROCESSOR、BANK、AGING 三个运行，两个时点相同，全部成功才提交。返回 `{runIds:[处理方运行号,银行运行号,老化运行号],runs:[三个报告]}`；dry run 的 runIds 为空、报告 id 为 null，完全不写库。单种类响应保持单个报告。
 - T11 的独立纯 Java 参考模型用 jqwik 状态动作组合确认、银行导入（含重复）、推进到期、WAITING 扫描、重跑；种子 2026102311，每序列最多 12 步，本地 100 条、CI 1000 条。每步比较逐笔发现集合、重放和账本不变；不替代并发测试。
 

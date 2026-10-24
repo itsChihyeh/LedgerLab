@@ -334,6 +334,7 @@ class PaymentModelProperties {
             report.checks++;
             try {
                 assertThat(app.audit.check()).as("global INV-1..5/8").isEmpty();
+                dev.ledgerlab.testsupport.InboxHistoryAssertions.assertConsistent(app.jdbc);
                 Map<Integer, Long> expectedBalances = new HashMap<>(baseline);
                 expectedBalances.merge(1101, model.balanceDelta(), Math::addExact);
                 expectedBalances.merge(2101, model.balanceDelta(), Math::addExact);

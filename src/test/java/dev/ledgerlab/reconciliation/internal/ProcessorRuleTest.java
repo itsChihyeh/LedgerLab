@@ -72,7 +72,8 @@ class ProcessorRuleTest {
                 clock,
                 ids,
                 new ReconProperties(Duration.ofSeconds(60), "processor-v1"),
-                List.of(new ProcessorRule(jdbc, calendar, json, mapper, new AgingPolicy(2, 2, 2))),
+                List.of(new ProcessorRule(
+                        jdbc, calendar, json, mapper, new AgingPolicy(2, 2, 2, java.time.Duration.ofHours(1)))),
                 json,
                 mapper,
                 new IssueStore(jdbc, ids, clock, manager));

@@ -171,6 +171,13 @@ P1b-4 入口自行按 Stripe 协议验证原始字节的 HMAC-SHA256，检查签
 
 `event_id` PK（处理方给的）、`event_type`、`api_version`、`livemode`、`payload`（原始请求体，`bytea`）、`payload_sha256`、`signed_at`、`occurred_at`、`received_at`、`status`（`RECEIVED`/`PARKED`/`PROCESSED`/`REJECTED`/`IGNORED`/`DEAD`）、`result` NULL（`APPLIED`/`DUPLICATE_FACT`/`BUSINESS_CONFLICT`/`INVALID_AMOUNT`/`UNSUPPORTED_CURRENCY`/`UNSUPPORTED_CAPTURE`/`UNSUPPORTED_TYPE`/`LIVEMODE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`lease_epoch`（每次抢占 +1，写回时作条件，见 state-machines 第 5 节）、`parked_on`（等待的对象键）、`last_error`、`processed_at`。永久保留。
 
+### P3 T01 实现备注：`io.inbox_status_history`
+
+- V13 新增只追加历史：`id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY`、`event_id text NOT NULL`（inbox 外键）、`from_status text`（初次插入／回填为空）、`to_status text NOT NULL`、可空 `result text`／`parked_on text`、`lease_epoch bigint NOT NULL`、`recorded_at timestamptz NOT NULL`、`backfilled boolean NOT NULL DEFAULT false`。状态、结果与依赖组合沿用 inbox 约束，租约世代非负；索引 `(event_id, recorded_at DESC, id DESC)` 用于还原快照，同一时刻按 id 取最后一行。
+- 接收、完成／DEAD、解除 PARKED 在原事务内追加历史，时刻来自注入 Clock；只改变重试次数或租约不写历史。原有状态更新条件、顺序及四事务边界不变。
+- 升级为每个既有事件回填一行当前状态，`recorded_at = COALESCE(processed_at, recorded_at)`，`backfilled=true`。**回填行之前的历史不可还原**；老化规则将其视为自该时刻起处于该状态，不推断更早状态。
+- migrator 为属主；UPDATE/DELETE/TRUNCATE 触发器一律拒绝（LL004，包括属主）。app 只有 SELECT/INSERT；readonly 与 inbox 一致，无 io schema／底表权限，也不新增历史视图。
+
 ### `io.inbox_conflict`
 
 同一 `event_id` 不同内容的投递：`id`、`event_id`、`payload`、`payload_sha256`、`signed_at`、`received_at`。只追加；原事件行不动（AC-2.4）。

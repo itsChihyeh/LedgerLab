@@ -121,14 +121,19 @@ final class PayoutProcessing {
     BatchSettlement.Result apply(PayoutEvidence evidence) {
         BatchSettlement.Result result = settlement.process(evidence);
         if (result != BatchSettlement.Result.PARKED) {
-            jdbc.sql("""
+            var now = clock.instant().atOffset(ZoneOffset.UTC);
+            var awakened = jdbc.sql("""
                     UPDATE io.inbox_event SET status = 'RECEIVED', parked_on = NULL,
                         next_attempt_at = :now, lease_owner = NULL, lease_until = NULL
                     WHERE status = 'PARKED' AND parked_on = :dependency
+                    RETURNING event_id
                     """)
-                    .param("now", clock.instant().atOffset(ZoneOffset.UTC))
+                    .param("now", now)
                     .param("dependency", "batch:" + evidence.batchId())
-                    .update();
+                    .query(String.class)
+                    .list();
+            for (String eventId : awakened)
+                InboxStatusHistory.append(jdbc, java.util.Objects.requireNonNull(eventId), "PARKED", now);
         }
         return result;
     }
