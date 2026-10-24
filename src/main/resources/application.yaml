@@ -41,6 +41,16 @@ ledgerlab:
     max-backoff: 30m
     poll-interval: 1m
     scheduling-enabled: ${ledgerlab.inbox.scheduling-enabled:true}
+  outbound:
+    owner: ${LEDGERLAB_WORKER_ID:outbound-1}
+    batch-size: 10
+    lease-duration: 60s
+    base: 5s
+    cap: 15m
+    max-attempts: 20
+    refund-resend-after: 20h
+    poll-interval: 1s
+    scheduling-enabled: ${ledgerlab.inbox.scheduling-enabled:true}
   stripe:
     webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
     api-key: ${STRIPE_API_KEY:}

@@ -57,4 +57,12 @@ public final class PaymentRefunds {
     }
 
     public record Payment(String id, long amount, long refundedAmount, String status) {}
+
+    /** Immutable processor identity for transaction-free outbound preparation. */
+    public String processorRef(String id) {
+        return jdbc.sql("SELECT processor_payment_ref FROM core.payment WHERE id=:id")
+                .param("id", id)
+                .query(String.class)
+                .single();
+    }
 }

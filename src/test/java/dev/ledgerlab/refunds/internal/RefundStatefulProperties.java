@@ -2,6 +2,7 @@ package dev.ledgerlab.refunds.internal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.ledgerlab.refunds.ProcessorRefundFact;
 import dev.ledgerlab.refunds.RefundResult;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,7 +26,7 @@ class RefundStatefulProperties {
         fixtures.clear();
     }
 
-    @Property(seed = "2026102404")
+    @Property(seed = "2026102407")
     void ac_3_7_ac_3_9_actionsMatchIndependentModel(@ForAll("operations") ActionChain<State> chain) {
         chain.withInvariant("refunds, funds, commands and ledger", State::verify)
                 .run();
@@ -46,7 +47,11 @@ class RefundStatefulProperties {
         ACCEPT,
         CANCEL,
         SETTLE,
-        RELEASE
+        RELEASE,
+        PENDING,
+        SUCCEEDED,
+        FAILED,
+        TIMEOUT
     }
 
     static final class Operations implements Action.Independent<State> {
@@ -66,16 +71,38 @@ class RefundStatefulProperties {
         final RefundReference model = new RefundReference();
         final String payment;
         final List<RefundResult> accepted = new ArrayList<>();
+        final JdbcRefundEvidence evidence;
         int batches;
 
         State(RefundFixture fixture) {
             f = fixture;
             payment = f.s1();
+            evidence = new JdbcRefundEvidence(
+                    f.jdbc, f.ledger, f.payments, f.queue, f.history, f.issues, f.mapper, f.clock);
         }
 
         void apply(Kind kind, long amount, int index) {
             f.clock.set(f.clock.instant().plusSeconds(1));
             switch (kind) {
+                case PENDING, SUCCEEDED, FAILED, TIMEOUT -> {
+                    if (accepted.isEmpty()) return;
+                    int selected = index % accepted.size();
+                    String id = accepted.get(selected).refundId();
+                    f.tx.executeWithoutResult(tx -> {
+                        if (kind == Kind.TIMEOUT) evidence.unknown(id, "model-timeout", f.clock.instant());
+                        else
+                            evidence.apply(new ProcessorRefundFact(
+                                    id,
+                                    "re_model_" + selected,
+                                    ProcessorRefundFact.Status.valueOf(
+                                            kind.name().toLowerCase(java.util.Locale.ROOT)),
+                                    null,
+                                    ProcessorRefundFact.Source.WEBHOOK,
+                                    "model-event",
+                                    f.clock.instant()));
+                    });
+                    model.observe(selected, kind.name());
+                }
                 case ACCEPT -> {
                     if (model.accept(amount)) accepted.add(f.accept(payment, amount));
                     else RefundServiceTest.error("REFUND_EXCEEDS_REMAINING", () -> f.accept(payment, amount));
@@ -112,18 +139,17 @@ class RefundStatefulProperties {
         void verify() {
             f.invariants();
             assertThat(f.balance(2102)).isEqualTo(model.settled - model.reserved);
-            assertThat(f.balance(2103)).isEqualTo(model.reserved);
+            assertThat(f.balance(2103)).isEqualTo(model.reserved - model.executed);
             assertThat(f.balance(1103)).isZero();
             assertThat(f.balance(1102)).isEqualTo(model.settled);
             assertThat(f.balance(2101)).isEqualTo(batches == 0 ? 10000 : 0);
-            assertThat(f.balance(1101)).isEqualTo(batches == 0 ? 10000 : 0);
+            assertThat(f.balance(1101)).isEqualTo((batches == 0 ? 10000 : 0) - model.executed);
             assertThat(f.count("core.refund")).isEqualTo(model.refunds.size());
             assertThat(f.count("io.outbound_command"))
-                    .isEqualTo(model.refunds.stream()
-                            .filter(r -> r.state.equals("READY"))
-                            .count());
+                    .isEqualTo(
+                            model.refunds.stream().filter(r -> r.commandCreated).count());
             assertThat(f.number("SELECT count(*) FROM ledger.journal_entry WHERE entry_type LIKE 'REFUND_%'"))
-                    .isEqualTo(model.refunds.size() + model.cancelled);
+                    .isEqualTo(model.refunds.size() + model.cancelled + model.failed + model.successes);
             long lastSeq = 0;
             for (int i = 0; i < accepted.size(); i++) {
                 var actual = accepted.get(i);

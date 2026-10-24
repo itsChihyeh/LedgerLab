@@ -36,5 +36,12 @@ public final class RefundAssertions {
                 .as("INV-9 refund payable")
                 .isTrue();
         noBankCashPostings(jdbc);
+        assertThat(jdbc.sql("""
+                SELECT subject_id FROM ledger.journal_entry WHERE subject_type='refund'
+                GROUP BY subject_id HAVING count(*) FILTER (WHERE entry_type='REFUND_ACCEPTED') > 1
+                    OR count(*) FILTER (WHERE entry_type IN ('REFUND_EXECUTED','REFUND_FAILED','REFUND_CANCELLED')) > 1
+                """).query(String.class).list())
+                .as("INV-10 each refund is reserved and settled or released at most once")
+                .isEmpty();
     }
 }

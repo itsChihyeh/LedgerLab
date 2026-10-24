@@ -301,6 +301,11 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - `idempotency_record` 的 `(client_id, idem_key)` 为 text 联合主键；`request_fingerprint text`、`state`、`locked_until/created_at/expires_at/recorded_at timestamptz` 非空，state 限 `IN_PROGRESS/COMPLETED`；`response_status integer`（若有则 100～599）和 `response_body jsonb` 可空，允许处理中尚无响应。应用使用注入 Clock 写入 `expires_at = created_at + 24 小时`，数据库不使用当前时刻默认值。app 的 DELETE 是为清理过期 API 缓存而设的例外：清理条件由应用给出；永久业务去重和首次受理结果仍在不可删除的 refund 行中，不依赖此缓存。
 - V15 同时替换 `io.inbox_event.result` 与 `io.inbox_status_history.result` 的 CHECK，新增 `UNKNOWN_REFUND`。两表原有组合 CHECK 的 REJECTED 分支均允许它，PROCESSED 等分支仍拒绝；结果枚举有这两处 CHECK，以后必须一起改。
 
+### P3 T07 实现备注（沿用 V15，无新迁移）
+
+- outbound_attempt 的 attempt_no 在调用前通过命令 attempts 精确递增分配；已开始但未返回就崩溃的调用可能留下编号空洞。查询与重发分别记录，旧 epoch 迟到的结果也使用其预分配编号追加，不覆盖新 epoch 的记录。request_summary 含 operation、decision、固定 request_id 和 refund_id，不含凭据；响应原文、状态和错误分别存既有字段。
+- 达到调用次数上限后，UNKNOWN 命令 next_attempt_at 使用非空 PostgreSQL infinity 表示停止自动重试；不增加状态或放宽表约束。first_sent_at 仍由既有数据库触发器保护；app／readonly／migrator 权限不变。
+
 ### `io.imported_file`
 
 `id`、`kind`（`PROCESSOR_STATEMENT`/`BANK_STATEMENT`）、`source_name`、`sha256` UNIQUE、`statement_date`、`version`、`received_at`。同一文件内容重复导入直接返回原导入结果。

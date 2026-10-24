@@ -54,6 +54,14 @@ REQUESTED ──受理──▶ AWAITING_FUNDS ──资金覆盖──▶ READY
 
 受理统一写 `NULL → AWAITING_FUNDS`（API）；若同事务资金覆盖，再写 `AWAITING_FUNDS → READY`（QUEUE）并插入命令。事务提交时对外状态仍为 AWAITING_FUNDS 或 READY。每条历史都有 Clock 时间，证据引用本地退款号；运营取消写 `AWAITING_FUNDS → CANCELLED`（OPERATOR），原因保存在退款行。其余状态拒绝取消并返回 `REFUND_NOT_CANCELLABLE`，不写历史或分录。
 
+### P3 T07 实现备注：处理方退款证据
+
+- 公开 `refunds.RefundEvidence.apply(ProcessorRefundFact)` 参加调用方事务，返回 APPLIED／DUPLICATE_FACT／CONFLICT；没有事务时拒绝执行。先取资金锁，再锁支付、退款（ADR-0004）；本地编号为空时按已知 `re_` 找退款，不存在报 REFUND_NOT_FOUND，入站停放由 T09 处理。
+- pending 使 READY／UNKNOWN 进入 SUBMITTED；重复 SUBMITTED 只允许补首次得知的处理方编号。成功、失败分别记 REFUND_EXECUTED、REFUND_FAILED；失败同事务恢复支付额度并同步放行 FIFO。终态重复事实不追加历史或分录，终态收到 pending 保持原样；相反终态、等待／运营取消后的处理方证据、编号冲突均通过既有 IngestionIssues 开 REFUND_STATE_CONFLICT，不改变退款。不同退款争用同一 `re_` 也作为冲突处理。
+- 状态变化追加来源和证据编号。分录／历史 occurred_at 使用事实携带的证据时间；命令响应／查询使用收到结果的注入 Clock 时间，resolved_at／历史 recorded_at 使用应用事务的 Clock 时间。submitted_at 优先取命令 first_sent_at；没有发送记录的外部证据以 occurred_at 为回退值。超时只让 READY／SUBMITTED 进入 UNKNOWN，不覆盖 SUCCEEDED／FAILED，重复 UNKNOWN 不追加状态历史。
+- refunds 新增对 outbound 的 SPI 和 reconciliation 的公开 IngestionIssues 依赖；outbound 不依赖任何业务模块。PaymentRefunds 只增加只读 processorRef 方法，供事务外准备不可变 charge 编号；原接口不变。
+- 真库定向测试覆盖创建即成功、失败释放队列、重复与冲突、事务回滚、两种超时／成功交错。所有退款测试共用 INV-9、INV-10 和 AC-3.14 检查。独立纯 Java 参考模型新增 pending、成功、失败、超时动作，jqwik 固定种子 2026102407、每序列最多 12 步，次数沿用本地 100／CI 1000 的配置；每步核对状态、额度、余额、命令数和分录数，受控并发仍由定向测试验证。
+
 ## 3. 提现 Payout（S1）
 
 ```
@@ -171,6 +179,16 @@ RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，n
 - 租约过期的 `IN_FLIGHT` 会被别的 worker 接管（`lease_epoch` 加 1），接管者先查询再决定是否重发。旧 worker 迟到的回执按 inbox 同样的 `lease_epoch` 条件写回，写不进去就丢弃，只留在尝试记录里。
 - 第一次真正发出请求时写入 `first_sent_at`，之后不再改；每次尝试另记一行 `io.outbound_attempt`（时间、请求、结果或错误）。退款“超过 20 小时只有完整查询确认不存在才重发”的规则以 `first_sent_at` 为准（stripe-integration 第 3 节）。
 - 命令本身没有“失败放弃”状态。重试次数超过上限只会告警并停止自动重试，业务对象保持 `UNKNOWN`，等待人工查询或流水证据。
+
+### P3 T07 实现备注：worker 与发送边界
+
+- 抢占使用 ADR-0008 指定的 `FOR UPDATE SKIP LOCKED`。T07 任务 B 写作 `FOR NO KEY UPDATE`，按已确认的“ADR 优先”口径采用前者；锁只持有到抢占短事务提交，不跨 HTTP。
+
+- `outbound.CommandHandler` 按 kind 注册；execute 在事务外执行，applyInTransaction 在 worker 的写回事务中执行。`processAvailable()` 即使被事务调用也先暂挂外层事务；抢占、调用前检查、尝试存档、业务写回各自独立提交。业务写回先取资金锁，最后以 id／lease_epoch／IN_FLIGHT 条件更新命令，0 行抛异常回滚全部业务写入，独立提交的迟到尝试保留。
+- 抢占 PENDING／UNKNOWN 的到期命令或租约严格过期的 IN_FLIGHT；每次抢占递增 epoch。发送前钩子之后再次校验 epoch、状态和租约有效期，旧 worker 在查询结束或暂停后也不能未经校验重发。调用前短事务同时分配 attempts／attempt_no，并首次设置 first_sent_at。编号提前分配防止新旧租约迟到回执撞主键；崩溃可能留下编号空洞。每次网关操作（创建、按编号查询、完整分页查询）完成后单独追加审计行，不把查询与后续重发合并为一条。
+- attempts 统计实际开始的网关操作，查询也计数；达到 max-attempts 后不再开始下一次操作，UNKNOWN 的 next_attempt_at 设 PostgreSQL infinity 并告警，不释放退款资金。进程崩溃后即使最后一次已占用上限，接管者也可完成 UNKNOWN 写回而不再调用网关。默认 20 次；退避以次数计算 5s 倍增至 15min，再加最多 25% 的可注入随机抖动，总延迟仍不超过 cap。租约 60s，每批 10，轮询 1s，配置前缀 ledgerlab.outbound；测试关闭调度直接驱动 worker。
+- 生产钩子为无操作，测试在抢占后、HTTP 前、回执写回前用 latch／异常控制交错。HTTP 异常只存安全错误码 TRANSPORT_ERROR，不把可能包含凭据的异常正文带进日志。网关提供的响应正文与状态保存到 io.outbound_attempt，last_outcome 只保存固定结果码供既有脱敏视图读取。
+- T07 不提供 HTTP 实现；没有 ProcessorRefundGateway bean 时不注册退款处理器，命令保持 PENDING。T08 提供网关后共用同一 SPI；处理器不依赖 ingestion。
 
 ## 7. 对账差异 Reconciliation issue
 

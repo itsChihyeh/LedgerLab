@@ -90,6 +90,13 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 
 否则幂等键过期后的重发可能变成第二笔退款（例如原退款在列表第二页，只查第一页就会以为不存在）。
 
+### P3 T07 实现备注：退款网关契约
+
+- `refunds.ProcessorRefundGateway` 声明 create(requestId, chargeRef, amount, refundId)、retrieve(reRef)、findByRefundId(chargeRef, refundId)，返回 Found／NotFound／Incomplete／Rejected 及 HTTP 状态、原文、安全错误码。findByRefundId 的 NotFound 必须意味着全部分页查询完整成功；任何分页中断返回 Incomplete。Rejected 仅用于明确证明退款未创建的拒绝，5xx／断线／超时不能映射为 Rejected。实际 HTTP／分页解析由 T08 实现，T07 以独立内存网关验证调用顺序和恢复规则。
+- 首次且未被接管的命令直接 create；有 first_sent_at 或重试／接管标记时先查询。优先取退款行已知的 re_，其次取命令 external_ref，否则完整列表查询 metadata。Found 作为 COMMAND_QUERY 统一应用并完成命令，Incomplete 保持 UNKNOWN；仅 NotFound 允许同 request_id 重发，发送前重新检查当前租约。阈值 `ledgerlab.outbound.refund-resend-after` 默认 20h；尝试摘要分别记录 FIRST_SEND、COMPLETE_NOT_FOUND_WITHIN_THRESHOLD、COMPLETE_NOT_FOUND_AFTER_THRESHOLD，恰好 20h 属于阈值内。
+- create 的退款对象作为 COMMAND_RESPONSE 统一应用，pending 也使命令 DONE（后续退款状态靠 webhook／查询／批次证据）；明确拒绝以无 re_ 的失败事实释放，原因保存处理方错误码。调用或查询得到状态时以注入 Clock 的接收时刻为 occurred_at，不使用对象 created。命令证据引用 `{command_id}:lease:{epoch}`，可关联同租约下查询与创建的只追加尝试。
+- first_sent_at 在首次网关操作前短事务写入；如果原 worker 在发送前崩溃，接管者的第一次查询也是首次外部调用。该时刻此后不变，退款 submitted_at 优先沿用它；初次查询后若确认不存在，重发仍使用原 request_id。短事务提交与 HTTP 发送之间的进程崩溃无法原子化，接管者始终先查。
+
 ### P2 T04 实现备注：只读客户端与拉取存档
 
 T10 采用消费者定义接口的依赖方向：`reconciliation.ProcessorSnapshotReader` 只声明快照所需的两个读取；`ingestion.internal.ProcessorSnapshotAdapter` 委托 `StripeReader`，固定使用 RECON_SNAPSHOT 并作为 bean 装配。reconciliation 不依赖 ingestion，既有 Modulith 边界不变；完整快照由 reconciliation 汇总并归档，单个 fetch 不等于完整快照。

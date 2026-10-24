@@ -99,9 +99,9 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 
 ### P3 T04 实现备注：受理、FIFO 与取消
 
-- 新 `refunds` 模块仅依赖 `ledger`、`payments`、`shared`。受理先取资金锁，再通过 `PaymentRefunds` 锁支付行并检查剩余可退额；支付额度增加、退款插入、历史、`REFUND_ACCEPTED`、队列放行与命令落库同事务完成。CAPTURED 和 SETTLED 均可受理，VOIDED 拒绝；金额允许 1～99999999 分。
+- T04 的 `refunds` 模块依赖 `ledger`、`payments`、`shared`；T07 增加 outbound SPI 与 reconciliation 的公开差异入口。受理先取资金锁，再通过 `PaymentRefunds` 锁支付行并检查剩余可退额；支付额度增加、退款插入、历史、`REFUND_ACCEPTED`、队列放行与命令落库同事务完成。CAPTURED 和 SETTLED 均可受理，VOIDED 拒绝；金额允许 1～99999999 分。
 - 新退款先作为 AWAITING_FUNDS 加入集合；`RefundQueue.release()` 只检查调用事务已持有资金锁，不主动取锁。等待退款先按 id 锁行，再按 `queue_seq` 求最长可覆盖前缀，合计用 `Math.addExact`，遇到第一个不能覆盖的退款即停止。READY 与 SUBMIT_REFUND 命令同事务创建，重复调用不会重复建命令。
-- `BatchSettlement` 在 BATCH_SETTLED 与银行等待行唤醒之后同步调用 release；取消只允许 AWAITING_FUNDS 且必须有原因，恢复支付额度、记 REFUND_CANCELLED 后同步放行。同事务回滚也撤销队列状态与命令。退款失败的接线留 T07，提现失败／退回留 P5。
+- `BatchSettlement` 在 BATCH_SETTLED 与银行等待行唤醒之后同步调用 release；取消只允许 AWAITING_FUNDS 且必须有原因，恢复支付额度、记 REFUND_CANCELLED 后同步放行。同事务回滚也撤销队列状态与命令。退款失败的接线由 T07 的 RefundEvidence 完成，提现失败／退回留 P5。
 - 公开接口只新增 `Ledger.assertFundsLocked()`（复用事务持锁标记）和 `payments.PaymentRefunds` 的窄支付行接口。settlement 模块允许依赖列表仅增加 refunds；不改变其他模块边界。
 - AC-3.13 通过包内可替换的额度协作者验证丢失更新：故障实现只存在于测试，生产没有去锁开关。真实 PostgreSQL 的资金分录与退款额度不变量检查见 [T04 测试说明](../testing/refund-acceptance.md)。
 
