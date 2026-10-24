@@ -81,9 +81,13 @@ class ProcessorRuleTest {
                 manager,
                 clock,
                 ids,
-                new ReconProperties(Duration.ofSeconds(60), "processor-v1"),
+                new ReconProperties(Duration.ofSeconds(60), "processor-v2"),
                 List.of(new ProcessorRule(
-                        jdbc, calendar, json, mapper, new AgingPolicy(2, 2, 2, java.time.Duration.ofHours(1)))),
+                        jdbc,
+                        calendar,
+                        json,
+                        mapper,
+                        new AgingPolicy(2, 2, 2, java.time.Duration.ofHours(1), 2, 5, 3))),
                 json,
                 mapper,
                 new IssueStore(jdbc, ids, clock, manager));
@@ -127,7 +131,8 @@ class ProcessorRuleTest {
         inbox(event);
         String body = mapper.writeValueAsString(List.of(ProcessorSnapshotsTest.page(
                 lines.stream()
-                        .map(l -> line(l.id(), Objects.requireNonNull(l.source()), l.gross(), l.fee()))
+                        .map(l -> line(l.id(), Objects.requireNonNull(l.source()), l.gross(), l.fee())
+                                .replace("\"charge\"", "\"" + l.type() + "\""))
                         .collect(java.util.stream.Collectors.joining(",")),
                 false)));
         long fetch = jdbc.sql("""
@@ -187,7 +192,7 @@ class ProcessorRuleTest {
     }
 
     RunReport run(Instant cutoff, Instant evidence, boolean dry) {
-        return runs.run(new RunRequest(RunRequest.Kind.PROCESSOR, cutoff, evidence, "processor-v1", List.of(), dry));
+        return runs.run(new RunRequest(RunRequest.Kind.PROCESSOR, cutoff, evidence, "processor-v2", List.of(), dry));
     }
 
     void standard() {
@@ -267,7 +272,7 @@ class ProcessorRuleTest {
         assertThat(finding(report, "MISSING_IN_STATEMENT").subjectId()).isEqualTo(paymentId("ch_p6"));
         assertThat(run(CUTOFF, AS_OF, true).findings()).isEqualTo(report.findings());
         assertThat(money()).isEqualTo(before);
-        assertThat(report.getLimitations()).anyMatch(s -> s.contains("REFUND"));
+        assertThat(report.getLimitations()).noneMatch(s -> s.contains("REFUND"));
     }
 
     String paymentId(String ref) {
@@ -332,7 +337,7 @@ class ProcessorRuleTest {
                 .contains(changed.fileId())
                 .doesNotContain(old.fileId());
         var explicit = runs.run(new RunRequest(
-                RunRequest.Kind.PROCESSOR, CUTOFF, AS_OF.plusSeconds(1), "processor-v1", List.of(old.fileId()), true));
+                RunRequest.Kind.PROCESSOR, CUTOFF, AS_OF.plusSeconds(1), "processor-v2", List.of(old.fileId()), true));
         assertThat(explicit.findings()).isEmpty();
         clock.set(AS_OF.plusSeconds(121));
         snapshot("po_b1", LocalDate.parse("2026-11-10"), line("txn_l1", "ch_p1", 10001, 320));
@@ -374,6 +379,11 @@ class ProcessorRuleTest {
         snapshot("po_b1", LocalDate.parse("2026-11-10"), String.join(",", normal, otherIdentity, refund, returned));
         clock.set(clock.instant().plusSeconds(120));
         assertThat(run(CUTOFF, clock.instant().minusSeconds(61), true).findings())
-                .isEmpty();
+                .singleElement()
+                .satisfies(finding -> {
+                    assertThat(finding.finding().category()).isEqualTo("MISSING_IN_LEDGER");
+                    assertThat(finding.finding().subjectType()).isEqualTo("refund");
+                    assertThat(finding.finding().subjectId()).isEqualTo("re_1");
+                });
     }
 }

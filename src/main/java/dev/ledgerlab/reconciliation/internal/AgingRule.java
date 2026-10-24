@@ -16,7 +16,7 @@ import tools.jackson.databind.ObjectMapper;
 public final class AgingRule implements ReconRule {
     static final String LIMITATIONS = "老化只能发现有开始记录、没有结束记录的义务；"
             + "其他 HELD 原因由入口差异负责，等 P4 纠错后重核；回填 inbox 历史之前的状态无法重建；"
-            + "旧 HELD 历史缺少原因或明细存档时无法重建，未纳入检查；退款、提现老化留给 P3/P5。";
+            + "旧 HELD 历史缺少原因或明细存档时无法重建，未纳入检查；提现老化留给 P5。";
     private final JdbcClient jdbc;
     private final BusinessCalendar calendar;
     private final AgingPolicy policy;
@@ -46,7 +46,7 @@ public final class AgingRule implements ReconRule {
 
     @Override
     public String version() {
-        return "p3-v1";
+        return "p3-v2";
     }
 
     @Override
@@ -117,7 +117,58 @@ public final class AgingRule implements ReconRule {
         }
         held(context, result);
         parked(context, result);
+        refunds(context, result);
         return result;
+    }
+
+    private void refunds(Context context, RuleResults result) {
+        Instant asOf = context.request().evidenceAsOf();
+        for (var refund : RefundEvidence.read(jdbc, asOf)) {
+            refundAge(
+                    result,
+                    refund,
+                    "REFUND_AWAITING_FUNDS_AGED",
+                    refund.accepted(),
+                    policy.refundAwaitingFundsBusinessDays(),
+                    asOf,
+                    refund.status().equals("AWAITING_FUNDS"));
+            Instant submitted = refund.submitted();
+            if (submitted != null) {
+                boolean unresolved = refund.status().equals("SUBMITTED")
+                        || refund.status().equals("UNKNOWN")
+                        || (refund.status().equals("READY") && refund.command() != null);
+                refundAge(
+                        result,
+                        refund,
+                        "REFUND_NOT_EXECUTED",
+                        submitted,
+                        policy.refundExecutionBusinessDays(),
+                        asOf,
+                        unresolved);
+            }
+        }
+    }
+
+    private void refundAge(
+            RuleResults result,
+            RefundEvidence.Refund refund,
+            String category,
+            Instant start,
+            int days,
+            Instant asOf,
+            boolean outstanding) {
+        var expected = new LinkedHashMap<String, Object>(expected(start, days, asOf));
+        expected.put("status", refund.status());
+        result.check(
+                category,
+                "refund",
+                refund.id(),
+                outstanding && !calendar.dueAt(start, days).isAfter(asOf),
+                expected,
+                Map.of("status", refund.status()),
+                refund.references(),
+                null,
+                "Refund obligation completed or not yet due: " + category);
     }
 
     private void parked(Context context, RuleResults result) {

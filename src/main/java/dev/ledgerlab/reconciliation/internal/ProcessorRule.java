@@ -39,7 +39,7 @@ public final class ProcessorRule implements ReconRule {
 
     @Override
     public String version() {
-        return "processor-v1";
+        return "processor-v2";
     }
 
     @Override
@@ -189,6 +189,8 @@ public final class ProcessorRule implements ReconRule {
                     "Local payment is present for " + line.ref());
         }
 
+        refunds(context, result, identities, unique, entries);
+
         for (Payment p : payments) {
             if (!p.occurred().isBefore(cutoff) || p.status().equals("VOIDED")) continue;
             List<Line> matched = unique.stream()
@@ -275,8 +277,6 @@ public final class ProcessorRule implements ReconRule {
             if (!coveredBatches.containsKey(b.id())) continue;
             List<Line> batchLines =
                     unique.stream().filter(l -> l.batch().equals(b.id())).toList();
-            // A mixed refund batch cannot be compared correctly before P3 refund support.
-            if (batchLines.stream().anyMatch(l -> l.type().equals("REFUND"))) continue;
             long total = 0;
             for (Line l : batchLines) total = Math.addExact(total, l.net());
             if (total <= -9007199254740992L || total >= 9007199254740992L)
@@ -301,6 +301,123 @@ public final class ProcessorRule implements ReconRule {
                     "Deduplicated statement total matches local batch");
         }
         return result;
+    }
+
+    private void refunds(
+            Context context,
+            Results result,
+            Map<String, List<Line>> identities,
+            List<Line> unique,
+            Map<String, List<String>> entries) {
+        Instant cutoff = context.request().cutoffAt();
+        var refunds = RefundEvidence.read(jdbc, context.request().evidenceAsOf());
+        Map<String, RefundEvidence.Refund> byRef = new LinkedHashMap<>();
+        refunds.forEach(r -> {
+            if (r.ref() != null) byRef.put(r.ref(), r);
+        });
+        var checked = new HashSet<String>();
+        for (var group : identities.values()) {
+            Line line = group.getFirst();
+            if (!line.type().equals("REFUND")) continue;
+            var refund = byRef.get(line.ref());
+            Instant occurred =
+                    refund != null && refund.status().equals("SUCCEEDED") ? refund.occurred() : line.occurred();
+            if (!occurred.isBefore(cutoff)) continue;
+            var refs = references(null, group, entries);
+            result.check(
+                    "DUPLICATE_STATEMENT_LINE",
+                    "statement_line",
+                    line.id(),
+                    group.size() > 1,
+                    Map.of("count", 1, "statement_line_id", line.id()),
+                    Map.of("count", group.size()),
+                    refs,
+                    null,
+                    "Latest snapshot contains one occurrence of " + line.id());
+            if (!checked.add(line.ref())) continue;
+            var matched = unique.stream()
+                    .filter(l -> l.type().equals("REFUND") && l.ref().equals(line.ref()))
+                    .toList();
+            refs = references(null, matched, entries);
+            if (refund != null) {
+                refs.addAll(refund.references());
+                refs.add(Map.of("refund_id", refund.id(), "entry_ids", entries.getOrDefault(refund.id(), List.of())));
+            }
+            result.check(
+                    "MISSING_IN_LEDGER",
+                    "refund",
+                    line.ref(),
+                    refund == null,
+                    Map.of("processor_ref", line.ref(), "present", true),
+                    Map.of("present", refund != null),
+                    refs,
+                    null,
+                    "Local refund is present for " + line.ref());
+            if (refund != null) {
+                long gross = Math.negateExact(refund.amount());
+                result.check(
+                        "AMOUNT_MISMATCH",
+                        "refund",
+                        refund.id(),
+                        matched.stream().anyMatch(l -> l.gross() != gross),
+                        Map.of("refund_id", refund.id(), "gross", gross),
+                        matched.stream()
+                                .map(l -> Map.of("statement_line_id", l.id(), "gross", l.gross()))
+                                .toList(),
+                        refs,
+                        null,
+                        "Statement refund amount matches local refund");
+            }
+        }
+        for (var refund : refunds) {
+            if (!refund.status().equals("SUCCEEDED") || !refund.occurred().isBefore(cutoff)) continue;
+            var matched = unique.stream()
+                    .filter(l -> l.type().equals("REFUND") && l.ref().equals(refund.ref()))
+                    .toList();
+            var refs = references(null, matched, entries);
+            refs.addAll(refund.references());
+            refs.add(Map.of("refund_id", refund.id(), "entry_ids", entries.getOrDefault(refund.id(), List.of())));
+            Instant due = calendar.dueAt(refund.occurred(), aging.refundStatementBusinessDays());
+            boolean overdue = !due.isAfter(cutoff);
+            var expected = Map.of(
+                    "refund_id",
+                    refund.id(),
+                    "start_at",
+                    refund.occurred().toString(),
+                    "threshold_business_days",
+                    aging.refundStatementBusinessDays(),
+                    "due_at",
+                    due.toString(),
+                    "present",
+                    true);
+            var actual = Map.of("present", !matched.isEmpty());
+            result.check(
+                    "REFUND_NOT_IN_STATEMENT",
+                    "refund",
+                    refund.id(),
+                    matched.isEmpty() && overdue,
+                    expected,
+                    actual,
+                    refs,
+                    null,
+                    "Refund appears in processor snapshot");
+            result.check(
+                    "TIMING_DIFFERENCE",
+                    "refund",
+                    refund.id(),
+                    matched.isEmpty() && !overdue,
+                    expected,
+                    actual,
+                    refs,
+                    matched.isEmpty() && !overdue ? due : null,
+                    matched.isEmpty() && overdue
+                            ? "已升级为 REFUND_NOT_IN_STATEMENT，到期时刻 " + due
+                            : "Refund explained by processor snapshot "
+                                    + matched.stream()
+                                            .map(Line::batch)
+                                            .distinct()
+                                            .toList());
+        }
     }
 
     private List<Line> lines(Context context, OffsetDateTime asOf) {

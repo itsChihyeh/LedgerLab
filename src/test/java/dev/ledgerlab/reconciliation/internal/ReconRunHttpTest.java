@@ -67,7 +67,7 @@ class ReconRunHttpTest {
 
                 @Override
                 public String version() {
-                    return "processor-v1";
+                    return "processor-v2";
                 }
 
                 @Override
@@ -203,6 +203,6 @@ class ReconRunHttpTest {
                 .bind("ledgerlab.recon", ReconProperties.class)
                 .get();
         assertThat(custom.evidenceGrace()).isEqualTo(java.time.Duration.ofMinutes(2));
-        assertThat(custom.ruleVersion()).isEqualTo("p3-v1");
+        assertThat(custom.ruleVersion()).isEqualTo("p3-v2");
     }
 }

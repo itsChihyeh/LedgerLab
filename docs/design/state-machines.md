@@ -204,6 +204,11 @@ V15 已同步放宽 inbox_event 与 inbox_status_history 的 result CHECK，本�
 
 ## 7. 对账差异 Reconciliation issue
 
+### P3 T11 实现备注
+
+- 退款 PROCESSOR 检查使用处理方退款号逐笔匹配；相同支付的不同部分退款不是重复行，相同 statement_line_id 在同一有效快照内重复才报 DUPLICATE_STATEMENT_LINE。未知 re_ 的 MISSING_IN_LEDGER 沿用入口的 `(refund, re_…)` 身份；金额差异和本地缺行以 `(refund, rfd_…)` 为 subject。
+- SUCCEEDED 缺行按执行时刻到期，由 PROCESSOR 在同一运行中解释旧 TIMING_DIFFERENCE 并打开 REFUND_NOT_IN_STATEMENT。退款本地等待／未知状态的老化由 AGING 负责；释放等待、成功或失败后解释原老化差异，绝不自动把 UNKNOWN 改成 FAILED。发现、处置、人工关闭及旧报告保留沿用第 7.1 节。
+
 ### P2 T11 实现备注
 
 - 到期缺失由 AGING 产生老化发现，并在同一事务中把同一义务的 OPEN 时间差转为 EXPLAINED，解释写“已升级为 PAYMENT_NOT_SETTLED / DEPOSIT_NOT_RECEIVED”。支付时间差原属 PROCESSOR，批次时间差原属 BANK；跨运行类别的转 EXPLAINED 由 AGING 负责，普通发现消失仍只在原运行类别内解释，INGESTION 差异不自动解释。

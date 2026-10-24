@@ -41,12 +41,23 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 | 支付请款后还没进入已确认批次 | 支付 `occurred_at` | 2 个工作日 | `PAYMENT_NOT_SETTLED` |
 | 批次已确认、银行还没入账 | 批次 `occurred_at` | 2 个工作日 | `DEPOSIT_NOT_RECEIVED` |
 | 批次 `HELD(UNKNOWN_PAYMENT)` | 批次 `occurred_at`（payout created） | 2 个工作日，`ledgerlab.recon.aging.held-batch-business-days` | `MISSING_IN_LEDGER`，subject 为本地缺失的支付号 |
+| 退款已执行、尚未进入处理方快照 | 成功历史的执行 `occurred_at` | 2 个工作日，`ledgerlab.recon.aging.refund-statement-business-days` | `REFUND_NOT_IN_STATEMENT`（到期前为 `TIMING_DIFFERENCE`） |
 | 退款等待资金 | 受理时刻 | 5 个工作日 | `REFUND_AWAITING_FUNDS_AGED` |
 | 退款已提交、还没执行 | 提交时刻 | 3 个工作日 | `REFUND_NOT_EXECUTED` |
 | 提现结果未知或已受理还没出账 | 提交时刻 | 1 个工作日 | `PAYOUT_UNRESOLVED` |
 | 入站事件停在 `PARKED` | `received_at` | 1 小时，`ledgerlab.recon.aging.parked-event` | `EVENT_PARKED_AGED` |
 
 老化逐笔检查每一笔未了结的义务，而不是看账户总额（修订 R1）。
+
+### P3 T11 实现备注：退款对账与老化
+
+- PROCESSOR 升级为 `processor-v2`；BANK／AGING 沿用共用版本配置，升级为 `p3-v2`（BANK 算法不变）。ALL 顺序执行三种规则，自动包含退款检查。读取既有运行无需重新计算；重跑须保持版本、阈值配置、截止及证据时点一致。
+- 已执行退款按 `core.refund_transition` 在 `recorded_at < evidence_as_of` 的最后一条历史恢复状态，同刻按 id 降序。SUCCEEDED 的执行 `occurred_at < cutoff_at` 才产生缺行义务；缺行的到期判定用 cutoff，和支付／批次的外部证据缺失一致。退款按 `re_` 逐笔匹配，金额比较负 gross 与本金相反数；部分退款不按支付号合并。混合批次总额包含退款的负 net。
+- AWAITING_FUNDS 的起点为不可变 accepted_at，阈值 `ledgerlab.recon.aging.refund-awaiting-funds-business-days` 默认 5；SUBMITTED／UNKNOWN 及已发送的 READY 的阈值 `ledgerlab.recon.aging.refund-execution-business-days` 默认 3。三个退款工作日阈值必须为正。
+- 退款等待和未执行是本地未完成操作，和 PARKED 一样用 evidence_as_of 判断当时状态与是否到期，不借用支付／批次的业务 cutoff；未到期不产生老化发现。expected 保存 start_at、threshold_business_days、due_at、status 和已结束工作日数。到期只报告差异，不改变退款状态、额度、命令或账本。
+- 提交起点优先使用命令不可变 first_sent_at（命令 recorded_at 和 first_sent_at 都严格早于 evidence_as_of）；无发送记录时使用该时点前首次 SUBMITTED 历史的 occurred_at，重建 T07 外部证据回退起点。不会读取当前可变 submitted_at／resolved_at 来判断旧运行。READY 没有当时可见的 first_sent_at 不报未执行。
+- 处理方退款号绑定后沿用 T07 的不覆盖语义；匹配时还要求当时已有 SUBMITTED／SUCCEEDED／FAILED 处理方结果历史，避免把后来才关联的 re_ 借给旧时点仍 READY／UNKNOWN、尚无处理方结果的退款。命令和历史证据引用同样限制在 evidence_as_of 之前。
+- 已放行、完成的退款仍纳入对应老化检查范围，后续运行能解释旧 OPEN 差异；已执行缺行到期时，PROCESSOR 同次运行将旧时间差解释为“已升级为 REFUND_NOT_IN_STATEMENT”，新缺行差异为 OPEN。后续快照出现时解释缺行，旧 finding 保留。
 
 ### P3 T01 实现备注：PARKED 老化
 
