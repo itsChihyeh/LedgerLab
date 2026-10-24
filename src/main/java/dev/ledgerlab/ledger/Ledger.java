@@ -13,6 +13,9 @@ public interface Ledger {
      */
     void lockFunds();
 
+    /** Checks that this transaction already holds the funds lock; never acquires it. */
+    void assertFundsLocked();
+
     /**
      * Records one complete entry: locks the touched accounts in ascending code order, checks that no account
      * that must stay non-negative goes below zero, writes the entry and its postings, and updates the balances.

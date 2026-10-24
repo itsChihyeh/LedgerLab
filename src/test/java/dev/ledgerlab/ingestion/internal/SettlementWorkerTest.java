@@ -103,8 +103,16 @@ class SettlementWorkerTest {
         capture = new PaymentCapture(ledger, jdbc, issues, ids, clock, mapper);
         bankStatements =
                 new BankStatements(jdbc, ledger, issues, clock, ids, new BusinessCalendar(), mapper, manager, 2);
-        var batches =
-                new BatchSettlement(jdbc, ledger, new PaymentSettlement(jdbc), issues, clock, mapper, bankStatements);
+        var batches = new BatchSettlement(
+                jdbc,
+                ledger,
+                new PaymentSettlement(jdbc),
+                issues,
+                clock,
+                mapper,
+                bankStatements,
+                new dev.ledgerlab.refunds.internal.JdbcRefundQueue(
+                        jdbc, ledger, clock, ids, new dev.ledgerlab.refunds.internal.RefundHistory(jdbc)));
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         lines = page(line("txn_payment", "charge", "ch_p1", 10000, 320), false);
         payout = payout("po_b1", "completed").toString();

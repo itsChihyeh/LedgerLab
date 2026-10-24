@@ -139,6 +139,13 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 
 退款身份、金额、受理顺序、首次结果、指纹及受理／记录时间均不授 UPDATE。所有新表对 app 均不授 TRUNCATE；除可过期的 API 幂等记录外均不授 DELETE。
 
+### P3 T04 实现备注：退款受理写入
+
+- `Refunds.accept` 接收本地支付号 `pay_…`、业务退款编号、整数分金额和调用方提供的请求指纹。T04 对联合唯一约束冲突返回 `DUPLICATE_REFUND_REFERENCE`；业务编号重放与 HTTP/API 幂等仍由 T05 实现。
+- 退款插入省略 identity 列，以 `INSERT … RETURNING queue_seq` 取得排队号；不直接调用序列、不覆盖 identity、不增加迁移或授权。排队号只用于领域返回值与 FIFO，不放入首次 API 响应。
+- `initial_result` 在 INSERT 时写为 `{status: 201, body: {...}}`，body 字段为 `refund_id`、`status`、`amount`、`payment_ref`（本次受理的本地支付号）、`merchant_refund_ref`、`accepted_at`（UTC ISO 时刻）。新退款位于队尾，扣除本次金额后的 2102 非负当且仅当整条等待队列可放行，因此可在插入前计算首次响应状态；事务结束前再核对实际放行结果。后续状态变化不改首次结果。
+- `accepted_at`、`recorded_at` 和受理历史取注入 Clock；放行命令的 `request_id = subject_id = refund_id`，`next_attempt_at = created_at = recorded_at`，初态 `PENDING`，次数与租约代数沿用数据库默认 0。取消保存原因和 Clock 提供的 `resolved_at`。
+
 ### `core.payout`
 
 `id mpo_…`（同时是 `bank_request_id`）、`merchant_payout_ref` UNIQUE、`amount` > 0、`status`、`initial_result`、`request_fingerprint`、`bank_ack_ref` NULL、`bank_txn_id` NULL（出账流水）、`return_bank_txn_id` NULL、`failure_reason` NULL、各状态时刻。

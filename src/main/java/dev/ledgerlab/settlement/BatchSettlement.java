@@ -9,6 +9,7 @@ import dev.ledgerlab.ledger.SubjectType;
 import dev.ledgerlab.payments.PaymentSettlement;
 import dev.ledgerlab.payments.PaymentSettlement.Payment;
 import dev.ledgerlab.reconciliation.IngestionIssues;
+import dev.ledgerlab.refunds.RefundQueue;
 import dev.ledgerlab.settlement.PayoutEvidence.Line;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -45,6 +46,7 @@ public final class BatchSettlement {
     private final Clock clock;
     private final ObjectMapper mapper;
     private final BankStatements bankStatements;
+    private final RefundQueue refundQueue;
 
     public BatchSettlement(
             JdbcClient jdbc,
@@ -53,7 +55,8 @@ public final class BatchSettlement {
             IngestionIssues issues,
             Clock clock,
             ObjectMapper mapper,
-            BankStatements bankStatements) {
+            BankStatements bankStatements,
+            RefundQueue refundQueue) {
         this.jdbc = jdbc;
         this.ledger = ledger;
         this.payments = payments;
@@ -61,6 +64,7 @@ public final class BatchSettlement {
         this.clock = clock;
         this.mapper = mapper;
         this.bankStatements = bankStatements;
+        this.refundQueue = refundQueue;
     }
 
     /** Optimization only: process rechecks under the funds and batch locks. */
@@ -399,6 +403,7 @@ public final class BatchSettlement {
                 evidence.batchId(),
                 postings));
         bankStatements.wakeWaiting(evidence.batchId());
+        refundQueue.release();
         return Result.APPLIED;
     }
 

@@ -71,6 +71,14 @@ public class JdbcLedger implements Ledger {
     }
 
     @Override
+    public void assertFundsLocked() {
+        requireTransaction();
+        if (!TransactionSynchronizationManager.hasResource(fundsLockKey)) {
+            throw new IllegalStateException("The caller must already hold the funds lock");
+        }
+    }
+
+    @Override
     public PostedEntry post(EntryRequest request) {
         requireTransaction();
         if (!TransactionSynchronizationManager.hasResource(fundsLockKey)) {

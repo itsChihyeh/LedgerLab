@@ -1,0 +1,141 @@
+package dev.ledgerlab.refunds.internal;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import dev.ledgerlab.refunds.RefundResult;
+import java.util.ArrayList;
+import java.util.List;
+import net.jqwik.api.Arbitraries;
+import net.jqwik.api.Arbitrary;
+import net.jqwik.api.Combinators;
+import net.jqwik.api.ForAll;
+import net.jqwik.api.Property;
+import net.jqwik.api.Provide;
+import net.jqwik.api.lifecycle.AfterTry;
+import net.jqwik.api.state.Action;
+import net.jqwik.api.state.ActionChain;
+import net.jqwik.api.state.Transformer;
+
+class RefundStatefulProperties {
+    private final List<RefundFixture> fixtures = new ArrayList<>();
+
+    @AfterTry
+    void cleanup() {
+        fixtures.forEach(RefundFixture::close);
+        fixtures.clear();
+    }
+
+    @Property(seed = "2026102404")
+    void ac_3_7_ac_3_9_actionsMatchIndependentModel(@ForAll("operations") ActionChain<State> chain) {
+        chain.withInvariant("refunds, funds, commands and ledger", State::verify)
+                .run();
+    }
+
+    @Provide
+    Arbitrary<ActionChain<State>> operations() {
+        return ActionChain.startWith(() -> {
+                    var fixture = new RefundFixture();
+                    fixtures.add(fixture);
+                    return new State(fixture);
+                })
+                .withAction(new Operations())
+                .withMaxTransformations(12);
+    }
+
+    enum Kind {
+        ACCEPT,
+        CANCEL,
+        SETTLE,
+        RELEASE
+    }
+
+    static final class Operations implements Action.Independent<State> {
+        @Override
+        public Arbitrary<Transformer<State>> transformer() {
+            return Combinators.combine(
+                            Arbitraries.of(Kind.values()),
+                            Arbitraries.of(1, 49, 1000, 2000, 5000, 6000, 10000),
+                            Arbitraries.integers().between(0, 20))
+                    .as((kind, amount, index) -> Transformer.mutate(
+                            kind + " " + amount + " " + index, state -> state.apply(kind, amount, index)));
+        }
+    }
+
+    static final class State {
+        final RefundFixture f;
+        final RefundReference model = new RefundReference();
+        final String payment;
+        final List<RefundResult> accepted = new ArrayList<>();
+        int batches;
+
+        State(RefundFixture fixture) {
+            f = fixture;
+            payment = f.s1();
+        }
+
+        void apply(Kind kind, long amount, int index) {
+            f.clock.set(f.clock.instant().plusSeconds(1));
+            switch (kind) {
+                case ACCEPT -> {
+                    if (model.accept(amount)) accepted.add(f.accept(payment, amount));
+                    else RefundServiceTest.error("REFUND_EXCEEDS_REMAINING", () -> f.accept(payment, amount));
+                }
+                case CANCEL -> {
+                    if (accepted.isEmpty()) return;
+                    int selected = index % accepted.size();
+                    String id = accepted.get(selected).refundId();
+                    if (model.cancel(selected)) f.refunds.cancel(id, "model cancellation");
+                    else
+                        RefundServiceTest.error(
+                                "REFUND_NOT_CANCELLABLE", () -> f.refunds.cancel(id, "model cancellation"));
+                }
+                case SETTLE -> {
+                    if (++batches == 1) {
+                        // Settle original payment with net 1500 to exercise a blocked large head.
+                        f.batch("po_initial", "ch_p1", 10000, 8500);
+                        model.settle(1500);
+                    } else {
+                        String ref = "ch_extra_" + batches;
+                        f.payment(ref, 1100);
+                        f.batch("po_extra_" + batches, ref, 1100, 100);
+                        model.settle(1000);
+                    }
+                }
+                case RELEASE ->
+                    f.tx.executeWithoutResult(tx -> {
+                        f.ledger.lockFunds();
+                        f.queue.release();
+                    });
+            }
+        }
+
+        void verify() {
+            f.invariants();
+            assertThat(f.balance(2102)).isEqualTo(model.settled - model.reserved);
+            assertThat(f.balance(2103)).isEqualTo(model.reserved);
+            assertThat(f.balance(1103)).isZero();
+            assertThat(f.balance(1102)).isEqualTo(model.settled);
+            assertThat(f.balance(2101)).isEqualTo(batches == 0 ? 10000 : 0);
+            assertThat(f.balance(1101)).isEqualTo(batches == 0 ? 10000 : 0);
+            assertThat(f.count("core.refund")).isEqualTo(model.refunds.size());
+            assertThat(f.count("io.outbound_command"))
+                    .isEqualTo(model.refunds.stream()
+                            .filter(r -> r.state.equals("READY"))
+                            .count());
+            assertThat(f.number("SELECT count(*) FROM ledger.journal_entry WHERE entry_type LIKE 'REFUND_%'"))
+                    .isEqualTo(model.refunds.size() + model.cancelled);
+            long lastSeq = 0;
+            for (int i = 0; i < accepted.size(); i++) {
+                var actual = accepted.get(i);
+                assertThat(actual.queueSeq()).isGreaterThan(lastSeq);
+                lastSeq = actual.queueSeq();
+                assertThat(f.status(actual.refundId())).isEqualTo(model.refunds.get(i).state);
+                assertThat(f.jdbc.sql("SELECT initial_result->'body'->>'status' FROM core.refund WHERE id=:id")
+                                .param("id", actual.refundId())
+                                .query(String.class)
+                                .single())
+                        .isEqualTo(actual.status());
+            }
+        }
+    }
+}

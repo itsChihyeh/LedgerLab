@@ -50,6 +50,10 @@ REQUESTED ──受理──▶ AWAITING_FUNDS ──资金覆盖──▶ READY
 - `UNKNOWN` 没有超时出口。老化检查会对停留过久的 `UNKNOWN` 报警，但只有处理方的明确结果能让它离开。
 - 已执行后又被处理方撤销的退款（Stripe 测试里有“先成功后失败”的路径）不在首版范围内：`SUCCEEDED` 之后再收到失败证据，不改状态、不记账，开差异 `REFUND_STATE_CONFLICT`，页面可见。
 
+### P3 T04 实现备注：受理历史与运营取消
+
+受理统一写 `NULL → AWAITING_FUNDS`（API）；若同事务资金覆盖，再写 `AWAITING_FUNDS → READY`（QUEUE）并插入命令。事务提交时对外状态仍为 AWAITING_FUNDS 或 READY。每条历史都有 Clock 时间，证据引用本地退款号；运营取消写 `AWAITING_FUNDS → CANCELLED`（OPERATOR），原因保存在退款行。其余状态拒绝取消并返回 `REFUND_NOT_CANCELLABLE`，不写历史或分录。
+
 ## 3. 提现 Payout（S1）
 
 ```

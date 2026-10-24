@@ -64,7 +64,9 @@ class ProcessorRuleTest {
                 issues,
                 clock,
                 mapper,
-                new BankStatements(jdbc, ledger, issues, clock, ids, calendar, mapper, manager, 2));
+                new BankStatements(jdbc, ledger, issues, clock, ids, calendar, mapper, manager, 2),
+                new dev.ledgerlab.refunds.internal.JdbcRefundQueue(
+                        jdbc, ledger, clock, ids, new dev.ledgerlab.refunds.internal.RefundHistory(jdbc)));
         snapshots = new ProcessorSnapshots(jdbc, manager, clock, ids, calendar, mapper, json, issues);
         runs = new ReconRuns(
                 jdbc,
