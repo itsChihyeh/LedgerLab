@@ -56,6 +56,8 @@ public final class RefundCommandHandler implements CommandHandler {
                     summary(command, ref == null ? "LIST_ALL" : "RETRIEVE", "QUERY_BEFORE_RESEND"),
                     () -> ref == null ? gateway.findByRefundId(charge, command.subjectId()) : gateway.retrieve(ref));
             if (query instanceof ProcessorRefundGateway.Found found) {
+                if (!matches(found, command, charge, refund.amount()))
+                    return new CommandResult.Unknown("REFUND_RESPONSE_MISMATCH", clock.instant());
                 return done(command, found, ProcessorRefundFact.Source.COMMAND_QUERY);
             }
             if (!(query instanceof ProcessorRefundGateway.NotFound)) {
@@ -72,6 +74,8 @@ public final class RefundCommandHandler implements CommandHandler {
                 summary(command, "CREATE", resend),
                 () -> gateway.create(command.requestId(), charge, refund.amount(), command.subjectId()));
         if (response instanceof ProcessorRefundGateway.Found found) {
+            if (!matches(found, command, charge, refund.amount()))
+                return new CommandResult.Unknown("REFUND_RESPONSE_MISMATCH", clock.instant());
             return done(command, found, ProcessorRefundFact.Source.COMMAND_RESPONSE);
         }
         if (response instanceof ProcessorRefundGateway.Rejected rejected) {
@@ -82,7 +86,7 @@ public final class RefundCommandHandler implements CommandHandler {
                     rejected.errorCode(),
                     ProcessorRefundFact.Source.COMMAND_RESPONSE,
                     evidenceId(command),
-                    clock.instant());
+                    rejected.receivedAt() == null ? clock.instant() : rejected.receivedAt());
             return new CommandResult.Done(new Receipt(fact), null, "PROCESSOR_REJECTED", fact.occurredAt());
         }
         return new CommandResult.Unknown("CREATE_UNKNOWN", clock.instant());
@@ -106,7 +110,7 @@ public final class RefundCommandHandler implements CommandHandler {
                 found.failureReason(),
                 source,
                 evidenceId(command),
-                clock.instant());
+                found.details() == null ? clock.instant() : found.details().receivedAt());
         return new CommandResult.Done(
                 new Receipt(fact),
                 found.processorRefundRef(),
@@ -124,6 +128,15 @@ public final class RefundCommandHandler implements CommandHandler {
                 command.requestId(),
                 "refund_id",
                 command.subjectId());
+    }
+
+    private static boolean matches(
+            ProcessorRefundGateway.Found found, CommandSnapshot command, String charge, long amount) {
+        var details = found.details();
+        return details == null
+                || (details.amount() == amount
+                        && details.chargeRef().equals(charge)
+                        && command.subjectId().equals(details.refundId()));
     }
 
     private static String evidenceId(CommandSnapshot command) {

@@ -50,7 +50,7 @@ final class StripeReadParser {
         return value.booleanValue();
     }
 
-    private static long integer(JsonNode node, String field) {
+    static long integer(JsonNode node, String field) {
         JsonNode value = node.path(field);
         if (!value.isIntegralNumber() || !value.canConvertToLong()) {
             throw new IllegalArgumentException("INVALID_RESPONSE");

@@ -290,6 +290,11 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 处理事件时向处理方拉取的数据（例如 payout 的 balance transactions）：`id`、`event_id`、`request`（接口和参数）、`response_body`（原始 JSON）、`response_sha256`、`fetched_at`。只追加，作为批次行的原始证据。
 
+### P3 T08 实现备注（V17：退款 HTTP 存档用途）
+
+- `io.processor_fetch.purpose` 的 CHECK 增加 `REFUND_COMMAND`、`REFUND_QUERY`，保留既有三种用途；不新增表、列或权限，三角色及只追加约束沿用 V6。
+- 每次网关 create/retrieve/findByRefundId 调用追加一行，包括失败调用；列表沿用 T04 的整次分页存档，response_body 为逐页原文字符串数组，request.attempts 保留各页参数和状态。POST 的 request 保存 form 和 Idempotency-Key，不保存 Authorization。存档在独立短事务提交，complete 表示本次调用取得可用结果（明确拒绝也算完整结果），不代表业务退款已执行。
+
 ### `io.idempotency_record`
 
 `(client_id, idem_key)` PK、`request_fingerprint`（方法＋路径＋规范化请求体的哈希）、`state`（`IN_PROGRESS`/`COMPLETED`）、`response_status`、`response_body`、`locked_until`、`created_at`、`expires_at`（24 小时）。

@@ -1,6 +1,8 @@
 package dev.ledgerlab.ingestion.internal;
 
 import dev.ledgerlab.ingestion.StripeReader;
+import dev.ledgerlab.reconciliation.IngestionIssues;
+import dev.ledgerlab.refunds.ProcessorRefundGateway;
 import java.net.http.HttpClient;
 import java.time.Clock;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -24,20 +26,35 @@ class StripeReaderConfiguration {
     }
 
     @Bean
+    RestClient stripeRestClient(StripeReaderProperties settings, HttpClient stripeReadHttpClient) {
+        var factory = new JdkClientHttpRequestFactory(stripeReadHttpClient);
+        factory.setReadTimeout(settings.readTimeout());
+        return RestClient.builder()
+                .baseUrl(settings.apiBaseUrl().toString())
+                .requestFactory(factory)
+                .build();
+    }
+
+    @Bean
     StripeReader stripeReader(
-            StripeReaderProperties settings,
+            RestClient stripeRestClient,
             StripeProperties credentials,
-            HttpClient stripeReadHttpClient,
             JdbcClient jdbc,
             PlatformTransactionManager manager,
             ObjectMapper mapper,
             Clock clock) {
-        var factory = new JdkClientHttpRequestFactory(stripeReadHttpClient);
-        factory.setReadTimeout(settings.readTimeout());
-        RestClient client = RestClient.builder()
-                .baseUrl(settings.apiBaseUrl().toString())
-                .requestFactory(factory)
-                .build();
-        return new RestStripeReader(client, credentials, jdbc, manager, mapper, clock);
+        return new RestStripeReader(stripeRestClient, credentials, jdbc, manager, mapper, clock);
+    }
+
+    @Bean
+    ProcessorRefundGateway processorRefundGateway(
+            RestClient stripeRestClient,
+            StripeProperties credentials,
+            JdbcClient jdbc,
+            PlatformTransactionManager manager,
+            ObjectMapper mapper,
+            Clock clock,
+            IngestionIssues issues) {
+        return new StripeRefundAdapter(stripeRestClient, credentials, jdbc, manager, mapper, clock, issues);
     }
 }

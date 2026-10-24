@@ -97,6 +97,15 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 - create 的退款对象作为 COMMAND_RESPONSE 统一应用，pending 也使命令 DONE（后续退款状态靠 webhook／查询／批次证据）；明确拒绝以无 re_ 的失败事实释放，原因保存处理方错误码。调用或查询得到状态时以注入 Clock 的接收时刻为 occurred_at，不使用对象 created。命令证据引用 `{command_id}:lease:{epoch}`，可关联同租约下查询与创建的只追加尝试。
 - first_sent_at 在首次网关操作前短事务写入；如果原 worker 在发送前崩溃，接管者的第一次查询也是首次外部调用。该时刻此后不变，退款 submitted_at 优先沿用它；初次查询后若确认不存在，重发仍使用原 request_id。短事务提交与 HTTP 发送之间的进程崩溃无法原子化，接管者始终先查。
 
+### P3 T08 实现备注：退款 HTTP 与过期恢复
+
+- `ingestion.internal.StripeRefundAdapter` 实现消费者定义的 `ProcessorRefundGateway`；与 `RestStripeReader` 共用 RestClient bean、JDK HTTP 配置、`StripeHttpTransport` 和 `StripeFetchArchive`。ingestion 显式声明对 refunds 及其返回类型所在 outbound 公开 SPI 的依赖，不访问两者 internal 包；既有模块校验继续执行。
+- create 用 form 的 charge、amount、`metadata[ledgerlab_refund_id]`，固定 request_id 作为 Idempotency-Key。解析 id、status、正 long 整数 amount、charge、metadata 和可空 failure_reason；金额、charge、metadata 与本地命令不符时保持 UNKNOWN，不应用金额事实。HTTP Found 增加 Details，Rejected 增加 receivedAt，保留旧构造方式供既有内存网关使用。状态证据取对应响应正文读完时的 Clock（列表取匹配对象所在页的接收时刻），不取对象 created 或后续存档／写回时刻。
+- 列表始终带 limit=100 并翻到 has_more=false，首屏找到也继续。任一页失败、非法形状、空页仍有后页或重复游标／对象编号均为 Incomplete；不同处理方编号的多笔匹配时 Incomplete 并通过 reconciliation 公开入口独立记录 REFUND_STATE_CONFLICT，证据引用本次 processor_fetch。GET 的 4xx（包括 404）也视为 Incomplete，只有完整列表无匹配才返回 NotFound。
+- 2xx 非法 JSON／金额／不支持状态、超时、断线、5xx、重定向保持不确定；POST 的结构化 Stripe 4xx 明确拒绝保存安全错误码。上游正文只保留在受限证据字段，不拼入异常、错误码或日志；不合规或带密钥的错误码降为 PROCESSOR_ERROR。无密钥不发 HTTP，仍追加失败存档。
+- HTTP 在 NOT_SUPPORTED 内执行，processor_fetch 以 REQUIRES_NEW 提交；每次网关调用一行，分页原文沿用 T04 的 JSON 字符串数组，request.attempts 留存各页查询和状态。POST 存 form 与 Idempotency-Key，不存 Authorization。V17 仅扩展 purpose CHECK；完整拒绝也记 complete=true，complete 不代表已记账。
+- `RefundHttpOutboundTest` 用 JDK HttpServer + 真实 PostgreSQL 覆盖 AC-8.7 三段（12 笔、第二页、25h 后清键、第二页超时、查询后发送前租约接管），以及 AC-3.10 的十次 HTTP 超时、AC-3.11 断线并写回前崩溃、AC-3.17 调用成功和 AC-3.18 调用 pending。超时按 T06 的九次创建前故障加一次创建后丢回执注入，随后查询恢复且处理方只有一笔；老化差异与 webhook 路径不属于 T08。适配器专项测试另覆盖存档、分页拒绝、解析和凭据安全；全部只连 loopback 替身。
+
 ### P2 T04 实现备注：只读客户端与拉取存档
 
 T10 采用消费者定义接口的依赖方向：`reconciliation.ProcessorSnapshotReader` 只声明快照所需的两个读取；`ingestion.internal.ProcessorSnapshotAdapter` 委托 `StripeReader`，固定使用 RECON_SNAPSHOT 并作为 bean 装配。reconciliation 不依赖 ingestion，既有 Modulith 边界不变；完整快照由 reconciliation 汇总并归档，单个 fetch 不等于完整快照。
