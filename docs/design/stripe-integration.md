@@ -38,7 +38,7 @@ P2 T03 fake Stripe 增加 charge 的 balance transaction、payout 生命周期�
 
 webhook 端点只订阅下表的事件类型。
 
-**当前实现（P2 T05）**：`charge.succeeded` 调用请款服务；`payout.created`、`payout.reconciliation_completed`、`payout.paid` 经 ingestion 映射后调用 settlement。`APPLIED`、`DUPLICATE_FACT` 对应 inbox `PROCESSED`，其他请款结果对应 `REJECTED`；paid 的依赖未到时为 `PARKED`。`charge.dispute.*` 为 `REJECTED / UNSUPPORTED_TYPE` 并开 `UNSUPPORTED_EVENT`；其余类型暂为 `IGNORED`、`result=NULL`，包括 refund 和 `payout.failed/canceled`。后两类由 T06 接入，refund 由 P3 接入；下表保留相应阶段的目标行为。所有类型的 `livemode=true` 优先拒绝为 `LIVEMODE` 并开一条 `LIVEMODE_EVENT`；charge 交给请款服务判定（事件或 Charge 任一为 live 即拒绝），其他类型在分流前判定，避免重复开差异。
+**当前实现（P3 T09）**：`charge.succeeded` 调用请款服务；`payout.created`、`payout.reconciliation_completed`、`payout.paid`、`payout.failed`、`payout.canceled` 经 ingestion 调用 settlement；订阅列表同时启用 `refund.created`、`refund.updated`、`refund.failed`，经 `RefundEvidence.apply` 处理。`APPLIED`、`DUPLICATE_FACT` 对应 inbox `PROCESSED`，退款 `CONFLICT` 映射 `REJECTED / BUSINESS_CONFLICT`，不重复开差异。payout 的依赖未到可以 `PARKED`，退款不走停放路径。`charge.dispute.*` 为 `REJECTED / UNSUPPORTED_TYPE` 并开 `UNSUPPORTED_EVENT`；未订阅的其他类型为 `IGNORED`、`result=NULL`。所有类型的 `livemode=true` 优先拒绝为 `LIVEMODE` 并开一条 `LIVEMODE_EVENT`；charge 交给请款服务判定，其他类型在分流前判定；退款对象自身若带 live 标志，也优先拒绝。
 
 Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 整数；小数、字符串、非数字或缺失映射为 `null`，交由请款准入判定。其余字段按 Charge 取值，`receivedAt` 使用 inbox 接收时间。worker 默认租约 30 秒、每 1 秒轮询最多 20 条、失败从 1 秒开始倍增并封顶 5 分钟，超过 5 次进入 `DEAD`（第 6 次失败）；配置与三个事务的恢复规则见 state-machines 第 5 节。
 
@@ -64,6 +64,15 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 - 批次行的 balance transaction 类型：`charge` → `PAYMENT`，`refund` → `REFUND`，`payout_failure` → `PAYOUT_FAILURE`；其他类型（`adjustment`、`dispute` 等）→ 批次 `HELD(UNSUPPORTED_LINE)`。
 
 拉取批次行是 HTTP 调用，在数据库事务**之外**做：worker 先拉取并把原始 JSON 存进 `io.processor_fetch`，再开事务核对和记账。拉取失败按 inbox 的重试规则退避。
+
+### P3 T09 实现备注：退款 webhook
+
+- `RefundParser` 只接受 1～99999999 分、可表示为 long 的 JSON 整数；缺失、null、小数、指数、字符串、非数字及溢出为 `INVALID_AMOUNT`。币种忽略大小写，仅 CAD；缺失／其他币种为 `UNSUPPORTED_CURRENCY`。缺失或非法 `re_`、`ch_`、status、非字符串且非 null 的 failure_reason 为 `UNSUPPORTED_TYPE`。failure_reason 可缺省／null。上述准入失败均以事件为主体开 `UNSUPPORTED_EVENT`；live 优先于所有其他检查。
+- metadata 缺失、类型不符、不是本地编号或找不到对应退款时，`REJECTED / UNKNOWN_REFUND` 并开 `MISSING_IN_LEDGER`（subject `refund`、处理方 `re_`；actual 保留 charge、整数金额和 metadata 编号）。即使 `re_` 已知也不回退匹配，以免接纳处理方后台发起的退款。
+- `ProcessorRefundFact` 增加可选 amount／chargeRef，保留原七参数构造器供已核对身份的命令／查询调用者使用；webhook 总是传入两字段。统一入口取资金锁、支付锁、退款锁之后，先核对金额和 charge，再判状态和幂等；不一致只开一条 `REFUND_STATE_CONFLICT`，不更新退款、不记账。复用既有 `PaymentRefunds.processorRef`，未新增跨模块数据库写入或依赖。
+- pending 按 T07 入口让 READY／UNKNOWN → SUBMITTED，只写退款历史，不记分录；重复 pending／终态后的迟到 pending 为 DUPLICATE_FACT。三种事件名都由对象 status 决定结果。WEBHOOK 的证据编号为原 evt_，历史与执行／失败分录 occurred_at 均取事件 created，绝不取退款对象 created；记录时间取注入 Clock。
+- 本地退款及命令在发送前已提交，所以不存在等待退款落库的 PARKED 路径。重投同 event_id 只新增投递记录，不重新运行已拒绝的业务；同内容新 event_id 会按处理时的本地事实重新判断，原拒绝与差异保留。空库重放须先恢复退款受理／命令，再输入这些 webhook，不能依赖停放补齐顺序。
+- 固定合成夹具 `src/test/resources/contracts/refund-updated-failed.json` 与模拟器同名夹具逐字节一致。主应用验证全部映射字段和事件时间，模拟器生成失败退款事件后仅规范化生成的编号与时间，逐字段比较完整 JSON。夹具不是实际 Stripe 录制，P6 验证范围不变。
 
 ### P2 T05 实现备注：就绪拉取与兜底轮询
 

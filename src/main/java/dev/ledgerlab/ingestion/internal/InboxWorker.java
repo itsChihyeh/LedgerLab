@@ -32,6 +32,7 @@ public final class InboxWorker {
     private final WorkerProperties properties;
     private final WorkerHooks hooks;
     private final PayoutProcessing payouts;
+    private final RefundProcessing refunds;
 
     InboxWorker(
             JdbcClient jdbc,
@@ -43,7 +44,8 @@ public final class InboxWorker {
             Clock clock,
             WorkerProperties properties,
             WorkerHooks hooks,
-            PayoutProcessing payouts) {
+            PayoutProcessing payouts,
+            RefundProcessing refunds) {
         this.jdbc = jdbc;
         this.transactions = new TransactionTemplate(manager);
         this.transactions.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -55,6 +57,7 @@ public final class InboxWorker {
         this.properties = properties;
         this.hooks = hooks;
         this.payouts = payouts;
+        this.refunds = refunds;
     }
 
     public int processAvailable() {
@@ -154,7 +157,11 @@ public final class InboxWorker {
             openIssue(claim, "UNSUPPORTED_EVENT", "UNSUPPORTED_TYPE");
             return "UNSUPPORTED_TYPE";
         }
-        // Refunds arrive in P3.
+        if (claim.type().equals("refund.created")
+                || claim.type().equals("refund.updated")
+                || claim.type().equals("refund.failed")) {
+            return refunds.apply(claim.id(), claim.payload());
+        }
         return null;
     }
 

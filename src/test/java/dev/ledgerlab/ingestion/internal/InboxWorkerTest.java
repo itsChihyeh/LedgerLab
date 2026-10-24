@@ -157,7 +157,8 @@ class InboxWorkerTest {
                 clock,
                 new WorkerProperties(owner, 1, Duration.ofSeconds(30), Duration.ofSeconds(1), Duration.ofSeconds(4), 2),
                 hooks,
-                payouts);
+                payouts,
+                context.getBean(RefundProcessing.class));
     }
 
     private InboxWorker worker() {
@@ -333,7 +334,7 @@ class InboxWorkerTest {
     @ParameterizedTest
     @CsvSource({
         "customer.created,false,IGNORED,",
-        "refund.updated,false,IGNORED,",
+        "refund.updated,false,REJECTED,UNSUPPORTED_TYPE",
         "payout.failed,true,REJECTED,LIVEMODE",
         "payout.canceled,true,REJECTED,LIVEMODE",
         "charge.dispute.created,false,REJECTED,UNSUPPORTED_TYPE",
@@ -595,7 +596,8 @@ class InboxWorkerTest {
                 new WorkerProperties(
                         "faulty", 1, Duration.ofSeconds(30), Duration.ofSeconds(1), Duration.ofSeconds(3), 5),
                 fail,
-                payouts);
+                payouts,
+                context.getBean(RefundProcessing.class));
         for (int attempts = 1; attempts <= 6; attempts++) {
             Instant failedAt = clock.instant();
             assertThat(faulty.processAvailable()).isEqualTo(1);

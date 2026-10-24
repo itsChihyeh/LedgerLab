@@ -12,7 +12,21 @@ public record ProcessorRefundFact(
         @Nullable String failureReason,
         Source source,
         String evidenceId,
-        Instant occurredAt) {
+        Instant occurredAt,
+        @Nullable Long amount,
+        @Nullable String chargeRef) {
+    /** Existing command/query callers have already validated their response identity. */
+    public ProcessorRefundFact(
+            @Nullable String refundId,
+            @Nullable String processorRefundRef,
+            Status status,
+            @Nullable String failureReason,
+            Source source,
+            String evidenceId,
+            Instant occurredAt) {
+        this(refundId, processorRefundRef, status, failureReason, source, evidenceId, occurredAt, null, null);
+    }
+
     public ProcessorRefundFact {
         if (refundId == null && processorRefundRef == null)
             throw new IllegalArgumentException("Refund identity required");

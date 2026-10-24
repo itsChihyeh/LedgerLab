@@ -94,6 +94,11 @@ final class RefundFixture implements AutoCloseable {
                 .param("id", id)
                 .param("now", clock.instant().atOffset(ZoneOffset.UTC))
                 .update();
+        jdbc.sql("""
+                INSERT INTO io.inbox_status_history (event_id, from_status, to_status, result, parked_on, lease_epoch, recorded_at)
+                SELECT event_id, NULL, status, result, parked_on, lease_epoch, recorded_at
+                FROM io.inbox_event WHERE event_id=:id
+                """).param("id", id).update();
     }
 
     void batch(String batch, String ref, long gross, long fee) {

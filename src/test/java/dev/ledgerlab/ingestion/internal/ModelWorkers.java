@@ -24,6 +24,7 @@ public final class ModelWorkers {
                 context.getBean(Clock.class),
                 new WorkerProperties(owner, 1, Duration.ofSeconds(30), Duration.ofSeconds(1), Duration.ofMinutes(5), 5),
                 hooks,
-                context.getBean(PayoutProcessing.class));
+                context.getBean(PayoutProcessing.class),
+                context.getBean(RefundProcessing.class));
     }
 }

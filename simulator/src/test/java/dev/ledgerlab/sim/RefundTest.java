@@ -39,6 +39,39 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 class RefundTest {
+    @Test
+    void ac_2_9_refundWebhookMatchesMainApplicationContract() throws Exception {
+        tools.jackson.databind.node.ObjectNode expected;
+        try (var input = java.util.Objects.requireNonNull(
+                getClass().getResourceAsStream("/contracts/refund-updated-failed.json"))) {
+            expected = (tools.jackson.databind.node.ObjectNode) JSON.readTree(input);
+        }
+        var expectedRefund = expected.path("data").path("object");
+        String charge = charge(5000);
+        post("/sim/refunds/faults", "{\"fail_next\":\"lost_or_stolen_card\"}");
+        refund(
+                charge,
+                expectedRefund.path("amount").longValue(),
+                expectedRefund.path("metadata").path("ledgerlab_refund_id").asText());
+        var actual = (tools.jackson.databind.node.ObjectNode)
+                events("refund.updated").getFirst().deepCopy();
+        var actualRefund =
+                (tools.jackson.databind.node.ObjectNode) actual.path("data").path("object");
+        // Generated identities and simulation timestamps vary; all other fields compare exactly.
+        assertThat(actual.path("id").asText()).startsWith("evt_");
+        assertThat(actual.path("created").isIntegralNumber()).isTrue();
+        actual.set("id", expected.path("id"));
+        actual.set("created", expected.path("created"));
+        for (String field : List.of("id", "charge", "payment_intent")) {
+            assertThat(actualRefund.path(field).asText())
+                    .startsWith(expectedRefund.path(field).asText().split("_")[0] + "_");
+            actualRefund.set(field, expectedRefund.path(field));
+        }
+        assertThat(actualRefund.path("created").isIntegralNumber()).isTrue();
+        actualRefund.set("created", expectedRefund.path("created"));
+        assertThat(actual).isEqualTo(expected);
+    }
+
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final String KEY = "sk_test_synthetic_refunds_only";
     private static final String SECRET = "synthetic-refund-signing-only";

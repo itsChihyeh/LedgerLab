@@ -71,6 +71,19 @@ public final class JdbcRefundEvidence implements RefundEvidence {
                 .orElseThrow(() -> new RefundException("REFUND_NOT_FOUND"));
         var payment = payments.lock(paymentId).orElseThrow();
         var refund = lock(id);
+        String charge = payments.processorRef(paymentId);
+        if ((fact.amount() != null && fact.amount().longValue() != refund.amount())
+                || (fact.chargeRef() != null && !fact.chargeRef().equals(charge))) {
+            issues.open(
+                    "REFUND_STATE_CONFLICT",
+                    "refund",
+                    refund.id(),
+                    mapper.writeValueAsString(Map.of("amount", refund.amount(), "charge", charge)),
+                    mapper.writeValueAsString(fact),
+                    mapper.writeValueAsString(
+                            List.of(Map.of("source", fact.source().name(), "id", fact.evidenceId()))));
+            return Result.CONFLICT;
+        }
         String ref = fact.processorRefundRef();
         if ((ref != null && refund.ref() != null && !ref.equals(refund.ref()))
                 || (ref != null

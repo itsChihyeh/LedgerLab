@@ -227,7 +227,14 @@ class SettlementWorkerTest {
                 clock,
                 new WorkerProperties("t05", 1, Duration.ofSeconds(30), Duration.ofSeconds(1), Duration.ofMinutes(5), 5),
                 hooks,
-                processing);
+                processing,
+                new RefundProcessing(
+                        new RefundParser(mapper),
+                        fact -> {
+                            throw new AssertionError("Unexpected refund in settlement fixture");
+                        },
+                        issues,
+                        mapper));
     }
 
     void runWorker() {

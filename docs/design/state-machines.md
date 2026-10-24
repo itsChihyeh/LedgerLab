@@ -56,7 +56,7 @@ REQUESTED ──受理──▶ AWAITING_FUNDS ──资金覆盖──▶ READY
 
 ### P3 T07 实现备注：处理方退款证据
 
-- 公开 `refunds.RefundEvidence.apply(ProcessorRefundFact)` 参加调用方事务，返回 APPLIED／DUPLICATE_FACT／CONFLICT；没有事务时拒绝执行。先取资金锁，再锁支付、退款（ADR-0004）；本地编号为空时按已知 `re_` 找退款，不存在报 REFUND_NOT_FOUND，入站停放由 T09 处理。
+- 公开 `refunds.RefundEvidence.apply(ProcessorRefundFact)` 参加调用方事务，返回 APPLIED／DUPLICATE_FACT／CONFLICT；没有事务时拒绝执行。先取资金锁，再锁支付、退款（ADR-0004）；本地编号为空时按已知 `re_` 找退款，不存在报 REFUND_NOT_FOUND。T09 webhook 强制按 metadata 找本地退款，不走 re_ 回退，也不 PARKED；未知退款的拒绝和差异见第 5 节。
 - pending 使 READY／UNKNOWN 进入 SUBMITTED；重复 SUBMITTED 只允许补首次得知的处理方编号。成功、失败分别记 REFUND_EXECUTED、REFUND_FAILED；失败同事务恢复支付额度并同步放行 FIFO。终态重复事实不追加历史或分录，终态收到 pending 保持原样；相反终态、等待／运营取消后的处理方证据、编号冲突均通过既有 IngestionIssues 开 REFUND_STATE_CONFLICT，不改变退款。不同退款争用同一 `re_` 也作为冲突处理。
 - 状态变化追加来源和证据编号。分录／历史 occurred_at 使用事实携带的证据时间；命令响应／查询使用收到结果的注入 Clock 时间，resolved_at／历史 recorded_at 使用应用事务的 Clock 时间。submitted_at 优先取命令 first_sent_at；没有发送记录的外部证据以 occurred_at 为回退值。超时只让 READY／SUBMITTED 进入 UNKNOWN，不覆盖 SUCCEEDED／FAILED，重复 UNKNOWN 不追加状态历史。
 - refunds 新增对 outbound 的 SPI 和 reconciliation 的公开 IngestionIssues 依赖；outbound 不依赖任何业务模块。PaymentRefunds 只增加只读 processorRef 方法，供事务外准备不可变 charge 编号；原接口不变。
@@ -146,7 +146,7 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 RECEIVED ──处理完成──▶ PROCESSED（result = APPLIED 或 DUPLICATE_FACT）
    │ ▲
    ▼ │ 依赖对象到达
-PARKED（依赖的对象还不存在，例如退款事件先于支付事件到达）
+PARKED（依赖的对象还不存在，例如 payout.paid 先于批次公告到达；退款不走此路径）
 RECEIVED ──事件类型不支持、字段越界、业务冲突、livemode──▶ REJECTED（result 写原因，告警，页面可见）
 RECEIVED ──订阅范围外的类型──▶ IGNORED
 RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，next_attempt_at 退避；超过上限变 DEAD）
@@ -161,8 +161,14 @@ RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，n
 - 抢占、业务、失败记录各使用独立事务。抢占提交后、业务事务开始前，以及业务写入完成后、epoch 写回前各有一个生产空操作测试钩子，用 latch 或异常控制崩溃和接管顺序。
 - P2 T05 在抢占提交后、业务事务开始前增加 payout 明细拉取及 `afterFetch` 测试钩子。HTTP 和 fetch 存档沿用 T04；分页不完整抛出处理失败，进入既有失败事务，不写批次版本或冲突差异。拉取期间租约可被接管，成功与失败仍用原 `lease_epoch` 条件写回；过期 worker 的业务历史、唤醒和分录全部随事务回滚。
 - `PARKED` 事件在它依赖的对象创建时被同一事务唤醒（回到 `RECEIVED`），后台也会定期扫描。
-- P1 处理 `charge.succeeded`；P2 T05 接入 `payout.created`、`payout.reconciliation_completed`、`payout.paid`。`charge.dispute.*` 拒绝为 `UNSUPPORTED_TYPE` 并开差异；其余类型（含 T06 的 payout.failed/canceled 和 P3 的 refund）暂为 `IGNORED`、结果为空。任何类型的 `livemode=true` 优先拒绝为 `LIVEMODE`；具体映射见 stripe-integration 第 2 节。
+- P1 处理 `charge.succeeded`；P2 接入五类 payout 事件；P3 T09 接入 `refund.created`、`refund.updated`、`refund.failed`。退款未知 metadata 为 REJECTED / UNKNOWN_REFUND，不 PARKED；冲突为 REJECTED / BUSINESS_CONFLICT；pending 的状态变化和成功／失败处理均经统一入口。`charge.dispute.*` 拒绝为 UNSUPPORTED_TYPE，其余未订阅类型 IGNORED。任何类型的 livemode=true 优先拒绝；具体准入与订阅映射见 stripe-integration 第 2 节。
 - P1 的“告警”和“开差异”写进 `recon.issue`，`detected_by = INGESTION`，不需要对账运行（data-dictionary 第 4 节）；上述 `DEAD` 不开差异。
+
+### P3 T09 实现备注：退款与 inbox 原子性
+
+退款分流复用既有四事务与 lease_epoch 写回，业务事务内同时提交退款状态／历史／分录／差异、inbox 结果与 InboxStatusHistory。失败或租约过期导致业务回滚，不留下已执行退款或终态 inbox 历史。APPLIED／DUPLICATE_FACT → PROCESSED，CONFLICT → REJECTED(BUSINESS_CONFLICT)，后者的差异已由统一入口写入。
+
+V15 已同步放宽 inbox_event 与 inbox_status_history 的 result CHECK，本任务无需迁移。拒绝和成功的新路径均通过 T01 历史一致性守卫，另外检查最后一条历史的 result 与 inbox 一致。未知退款重投不自动唤醒，空库重放必须先恢复本地受理／命令；详细重放含义见 stripe-integration 的 T09 备注。
 
 ## 6. 出站命令 Outbound command（R5）
 
