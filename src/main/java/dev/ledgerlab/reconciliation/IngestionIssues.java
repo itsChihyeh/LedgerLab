@@ -10,4 +10,7 @@ public interface IngestionIssues {
             String expectedJson,
             String actualJson,
             String evidenceRefs);
+
+    /** Resolves only OPEN issues for the returned credit, in the bank import transaction. */
+    void resolveBankReturn(String creditId, String debitId, String evidenceRefs);
 }

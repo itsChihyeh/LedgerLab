@@ -51,4 +51,30 @@ public final class JdbcIngestionIssues implements IngestionIssues {
                 .param("now", now)
                 .update();
     }
+
+    @Override
+    public void resolveBankReturn(String creditId, String debitId, String evidenceRefs) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("Bank return disposition requires the caller's transaction");
+        }
+        var open = jdbc.sql("""
+                SELECT id FROM recon.issue WHERE subject_type='bank_txn' AND subject_id=:credit
+                  AND status='OPEN' ORDER BY id FOR UPDATE
+                """).param("credit", creditId).query(String.class).list();
+        OffsetDateTime now = clock.instant().atOffset(ZoneOffset.UTC);
+        String explanation = "Unapplied cash returned by bank transaction " + debitId;
+        for (String value : open) {
+            String id = java.util.Objects.requireNonNull(value);
+            jdbc.sql("UPDATE recon.issue SET status='RESOLVED', explanation=?, updated_at=? WHERE id=?")
+                    .params(explanation, now, id)
+                    .update();
+            jdbc.sql("""
+                    INSERT INTO recon.issue_transition
+                        (id, issue_id, from_status, to_status, reason, explanation, evidence_refs, recorded_at)
+                    VALUES (?, ?, 'OPEN', 'RESOLVED', 'EXPLAINED', ?, CAST(? AS jsonb), ?)
+                    """)
+                    .params(ids.next("itr"), id, explanation, evidenceRefs, now)
+                    .update();
+        }
+    }
 }

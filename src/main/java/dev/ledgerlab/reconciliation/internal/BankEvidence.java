@@ -74,9 +74,20 @@ public final class BankEvidence {
         long unapplied(Line line) {
             long total = 0;
             for (Posting p : postings)
-                if (p.subject().equals(line.id()) && p.account() == 2105)
+                if (p.account() == 2105
+                        && (p.type().equals("UNAPPLIED_CASH_RETURNED")
+                                ? returnedTo(p, line)
+                                : p.subject().equals(line.id())))
                     total = Math.addExact(total, p.side().equals("C") ? p.amount() : Math.negateExact(p.amount()));
             return bounded(total);
+        }
+
+        private boolean returnedTo(Posting posting, Line credit) {
+            return allLines.stream()
+                    .anyMatch(debit -> debit.id().equals(posting.subject())
+                            && debit.direction().equals("DEBIT")
+                            && debit.status().equals("BOOKED")
+                            && debit.reference().equals(credit.id()));
         }
 
         long cash(LocalDate end) {
@@ -88,7 +99,7 @@ public final class BankEvidence {
                 if (p.account() == 1103
                         && date != null
                         && !date.isAfter(end)
-                        && List.of("BANK_DEPOSIT_RECEIVED", "UNAPPLIED_CASH_RECEIVED")
+                        && List.of("BANK_DEPOSIT_RECEIVED", "UNAPPLIED_CASH_RECEIVED", "UNAPPLIED_CASH_RETURNED")
                                 .contains(p.type()))
                     total = Math.addExact(total, p.side().equals("D") ? p.amount() : Math.negateExact(p.amount()));
             }
@@ -103,7 +114,19 @@ public final class BankEvidence {
         }
 
         List<Map<String, Object>> refs(Line line) {
-            return List.of(Map.of(
+            var refs = new java.util.ArrayList<Map<String, Object>>();
+            refs.add(lineRef(line));
+            allLines.stream()
+                    .filter(debit -> debit.reference().equals(line.id())
+                            && postings.stream()
+                                    .anyMatch(p -> p.subject().equals(debit.id())
+                                            && p.type().equals("UNAPPLIED_CASH_RETURNED")))
+                    .forEach(debit -> refs.add(lineRef(debit)));
+            return refs;
+        }
+
+        private Map<String, Object> lineRef(Line line) {
+            return Map.of(
                     "bank_txn_id",
                     line.id(),
                     "version",
@@ -115,7 +138,7 @@ public final class BankEvidence {
                             .filter(p -> p.subject().equals(line.id()))
                             .map(Posting::entry)
                             .distinct()
-                            .toList()));
+                            .toList());
         }
     }
 

@@ -215,6 +215,20 @@ public final class BankStatements {
 
     private Decision decide(BankCsv.Line line, Instant now, @Nullable Instant storedDeadline) {
         if (line.status().equals("PENDING")) return new Decision("IGNORED_PENDING", null, null, null, null);
+        if (line.direction().equals("DEBIT") && line.currency().equals("CAD")) {
+            var credit = jdbc.sql("""
+                    SELECT * FROM recon.bank_line WHERE bank_txn_id=:reference
+                    ORDER BY version DESC LIMIT 1 FOR UPDATE
+                    """)
+                    .param("reference", line.reference())
+                    .query((rs, n) -> rs.getString("match_status").equals("UNAPPLIED")
+                            && rs.getString("direction").equals("CREDIT")
+                            && rs.getString("status").equals("BOOKED")
+                            && rs.getString("currency").equals("CAD")
+                            && rs.getLong("amount") == line.amount())
+                    .optional();
+            if (credit.orElse(false)) return new Decision("RETURN_POSTED", null, null, null, null);
+        }
         var batch = jdbc.sql("SELECT batch_id, status, net FROM core.settlement_batch WHERE batch_id = :ref")
                 .param("ref", line.reference())
                 .query((rs, row) -> new Batch(rs.getString(1), rs.getString(2), rs.getLong(3)))
@@ -249,6 +263,28 @@ public final class BankStatements {
 
     private void apply(Stored row, Decision decision, Instant now) {
         BankCsv.Line line = row.line();
+        if (decision.status().equals("RETURN_POSTED")) {
+            jdbc.sql("""
+                    UPDATE recon.bank_line SET match_status='RETURNED'
+                    WHERE bank_txn_id=:credit AND version=(
+                        SELECT max(version) FROM recon.bank_line WHERE bank_txn_id=:credit)
+                    """).param("credit", line.reference()).update();
+            ledger.post(new EntryRequest(
+                    EntryType.UNAPPLIED_CASH_RETURNED,
+                    "bank_txn:" + line.id(),
+                    calendar.startOfDay(line.bookingDate()),
+                    SubjectType.BANK_TXN,
+                    line.id(),
+                    List.of(
+                            PostingLine.debit(Account.UNAPPLIED_CASH, line.amount()),
+                            PostingLine.credit(Account.BANK_CASH, line.amount()))));
+            issues.resolveBankReturn(
+                    line.reference(),
+                    line.id(),
+                    mapper.writeValueAsString(List.of(
+                            Map.of("table", "io.imported_file", "id", row.file()),
+                            Map.of("table", "recon.bank_line", "bank_txn_id", line.id(), "version", row.version()))));
+        }
         boolean matched = decision.status().equals("MATCHED");
         if (matched || decision.status().equals("UNAPPLIED")) {
             ledger.post(new EntryRequest(

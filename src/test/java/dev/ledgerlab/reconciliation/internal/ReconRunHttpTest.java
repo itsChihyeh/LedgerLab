@@ -203,6 +203,6 @@ class ReconRunHttpTest {
                 .bind("ledgerlab.recon", ReconProperties.class)
                 .get();
         assertThat(custom.evidenceGrace()).isEqualTo(java.time.Duration.ofMinutes(2));
-        assertThat(custom.ruleVersion()).isEqualTo("p3-v2");
+        assertThat(custom.ruleVersion()).isEqualTo("p4-v1");
     }
 }

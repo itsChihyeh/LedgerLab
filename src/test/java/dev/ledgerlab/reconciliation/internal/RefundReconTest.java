@@ -33,7 +33,7 @@ class RefundReconTest {
                 f.manager,
                 f.clock,
                 ids,
-                new ReconProperties(Duration.ofSeconds(60), "p3-v2"),
+                new ReconProperties(Duration.ofSeconds(60), "p4-v1"),
                 List.of(
                         new ProcessorRule(f.jdbc, calendar, json, f.mapper, policy),
                         new BankRule(bank, calendar, policy, json, f.jdbc),
@@ -121,7 +121,7 @@ class RefundReconTest {
     RunReport run(RunRequest.Kind kind, Instant cutoff, Instant asOf, boolean dry) {
         f.clock.set(asOf.plusSeconds(61));
         return f.runs.run(new RunRequest(
-                kind, cutoff, asOf, kind == RunRequest.Kind.PROCESSOR ? "processor-v2" : "p3-v2", List.of(), dry));
+                kind, cutoff, asOf, kind == RunRequest.Kind.PROCESSOR ? "processor-v2" : "p4-v1", List.of(), dry));
     }
 
     List<Finding> refunds(RunReport report) {
@@ -392,7 +392,7 @@ class RefundReconTest {
                         RunRequest.Kind.AGING,
                         ProcessorRuleTest.CUTOFF,
                         Instant.parse("2026-11-13T05:00:00Z"),
-                        "p3-v2",
+                        "p4-v1",
                         List.of(),
                         true),
                 java.util.Map.of());

@@ -66,9 +66,9 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
   - `status = PENDING`（银行还没记账）的行只存档，不记账、不参与匹配。流水证据身份为 `(bank_txn_id, version)`，当前有效版本为最高版本（行版本独立于按报表日期计数的文件版本）；同一 `bank_txn_id` 只有 PENDING→BOOKED 且其余内容（包括方向、金额、币种、reference、value_date）不变，才接受为状态前进，两份证据均保留，只有 BOOKED 参与匹配和记账。其他内容变化或 BOOKED→PENDING 均为 `STATEMENT_VERSION_CONFLICT`，旧行不动。
   - **银行证据早到**：`reference` 形如 `po_…`，但对应批次还不存在、或还在 `ANNOUNCED`/`RECEIVED`/`HELD`：行进入 `WAITING`，不记账。批次进入 `CONFIRMED` 的同一事务里重新匹配所有引用它的 `WAITING` 行（就像 inbox 的 `PARKED` 被唤醒）；后台也按导入顺序定期重扫。等待从 `booking_date` 起最多 2 个工作日（`ledgerlab.bank.wait-business-days`），到期仍匹配不上就按“精确匹配失败”记待查收款。等待期间账上现金比银行少，银行余额核对把恰好等于全部 `WAITING` 行合计的差额报为 `TIMING_DIFFERENCE`，不是 `BANK_BALANCE_MISMATCH`。
   - CAD 入账行精确匹配失败（引用不认识且不是 `po_…`、批次已 `CONFIRMED` 但金额不等、批次已 `BANKED` 又来一笔、批次已 `PAYOUT_FAILED`、等待到期）：记 `UNAPPLIED_CASH_RECEIVED`，让账上现金继续等于银行；开差异：金额不等是 `DEPOSIT_AMOUNT_MISMATCH`，批次已 `PAYOUT_FAILED` 是 `BATCH_STATE_CONFLICT`，其余是 `UNMATCHED_BANK_LINE`；能看出相关批次的都把它列为候选。
-  - P2 没有提现：BOOKED 出账行（`DEBIT`）和非 CAD 行一律不记账，`match_status = UNMATCHED_NO_POSTING`，开 `UNMATCHED_BANK_LINE`；非 CAD 金额不能作为 CAD 分记入账户，差额由 T11 银行余额核对暴露。`PAYOUT_PAID`、`PAYOUT_RETURNED`、`UNAPPLIED_CASH_RETURNED` 在 P5 实现。
+  - P2 没有提现：BOOKED 出账行（`DEBIT`）和非 CAD 行一律不记账，`match_status = UNMATCHED_NO_POSTING`，开 `UNMATCHED_BANK_LINE`；非 CAD 金额不能作为 CAD 分记入账户，差额由 T11 银行余额核对暴露。P4 T04 已加入下述待查收款精确退还例外；`PAYOUT_PAID`、`PAYOUT_RETURNED` 留给 P5。
 - 待查收款只有两条出路（2026-10-25 定，ADR-0011 补充）：银行出账行明确退还（`UNAPPLIED_CASH_RETURNED`，自动、精确匹配），或运营纠错归位到批次（`APPLY_UNAPPLIED_CASH` 拆分到账、`RESTORE_FAILED_PAYOUT` 冲突证据恢复）。不自动应用、不部分应用；任何未结的 2105 余额都是一条对账差异。
-- 银行流水出账行匹配不到提现时**不记账**，只开差异 `UNMATCHED_BANK_LINE`；这时账上现金和银行余额不等，会被 INV-11 抓到。
+- 银行流水出账行既不能精确退还待查收款、也匹配不到提现时**不记账**，只开差异 `UNMATCHED_BANK_LINE`；这时账上现金和银行余额不等，会被 INV-11 抓到。
 - 提现失败和退款失败都是**业务事件**，用各自的 entry_type，不用 `REVERSAL`。`REVERSAL` 只用于纠正记错的账。
 - 处理方说打款失败（Stripe `payout.failed`）时，钱回到处理方余额：记 `BATCH_PAYOUT_FAILED`（借 1101 N / 贷 1102 N）。退回的钱会作为一行 `PAYOUT_FAILURE` 出现在之后的某个批次里。
 - 处理方从我们银行账户扣款（Stripe 的负 payout）首版不支持：payout 在入口隔离；如果扣款流水已经出现在银行流水里，按 `UNMATCHED_BANK_LINE` 处理。
@@ -77,11 +77,18 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 
 - `settlement.BankStatements.importBankStatement` 先按 contracts 4.1 完整解析并校验 UTF-8 CSV（含双引号转义和字段内换行），再用一个事务处理整文件：先 `Ledger.lockFunds()`，随后检查 SHA、归档、按 CSV 顺序合并和匹配；文件、差异、分录、余额、批次历史一起提交或回滚。选择整文件事务便于重试时保持原导入结果一致；大文件会延长单商户资金锁的持有时间。
 - 行版本从 1 递增，比较全部银行事实字段，包括 booking_date、value_date 和 memo；只有 status 的 PENDING→BOOKED 可前进。不同文件版本重复同一行不再插入；冲突文件仍 ACCEPTED，原行不覆盖，冲突证据和新文件原文由 INGESTION 差异关联。
-- 匹配先排除 PENDING、DEBIT、非 CAD；PENDING 只存档，BOOKED 的 DEBIT 或非 CAD 行存为 UNMATCHED_NO_POSTING、开 UNMATCHED_BANK_LINE，不写分录或改变现金，不做外汇转换（T09b 修复）。CSV 尾合计仍按外部原数值校验，账本与银行的差额留给 T11 银行余额核对。CAD 入账行在批次已确认且未匹配时才检查金额；失败批次开 BATCH_STATE_CONFLICT，已 BANKED 的第二笔开 UNMATCHED_BANK_LINE。已知候选保存在 evidence_refs。
+- P2 匹配先排除 PENDING、DEBIT、非 CAD；PENDING 只存档，BOOKED 的 DEBIT 或非 CAD 行存为 UNMATCHED_NO_POSTING、开 UNMATCHED_BANK_LINE，不写分录或改变现金，不做外汇转换（T09b 修复；P4 T04 增加下述待查收款退还）。CSV 尾合计仍按外部原数值校验，账本与银行的差额留给 T11 银行余额核对。CAD 入账行在批次已确认且未匹配时才检查金额；失败批次开 BATCH_STATE_CONFLICT，已 BANKED 的第二笔开 UNMATCHED_BANK_LINE。已知候选保存在 evidence_refs。
 - `wait_until` 按 booking_date 的多伦多 00:00 调 T01 `dueAt` 计算，在插入 WAITING 时固定；配置变更只影响新等待行。`BatchSettlement` 在 BATCH_SETTLED 之后同步唤醒引用该批次的等待行，覆盖 webhook、轮询确认和 HELD 重核；按 import_order 处理，同事务内第一笔精确匹配后批次 BANKED，后续真实入账转待查收款。到期扫描也先取资金锁，按 import_order 处理；`ledgerlab.bank.poll-interval` 默认 1m，`scheduling-enabled` 默认继承 inbox 调度开关，测试关闭调度并直接调用 `expireWaiting()`。
 - 银行分录 occurred_at 使用 booking_date 的多伦多 00:00；received_at 是调用导入时注入 Clock 的时刻，recorded_at 是资金锁内处理时刻。日期型证据不伪造更细粒度的银行业务时间。
 - AC-1.4b 的样例 A 第 2′ 步在测试里按 4.2 公式只读计算 free_cash=0，不引入 P5 提现 API。定向测试覆盖 AC-5.4/5.5/5.6/5.10/5.12 文件部分及 AC-5.20 入账部分；银行余额对账的 TIMING_DIFFERENCE 留给后续对账任务。
 - jqwik 独立参考模型增加正常入账、第二笔、PENDING、短款、外币、出账和等待到期动作，与已有确认、失败、重打动作混排；种子 `2026102308`，最多 24 步，本地 100 条序列、CI 1000 条。每步核对全部余额、银行行版本与匹配状态、分录数量、差异身份及账本不变量；不替代栅栏并发与受控回滚测试。
+
+### P4 T04 实现备注：银行证据退还待查收款
+
+- 沿用整文件事务与资金锁；BOOKED/CAD/DEBIT 按 reference 锁定最高版本的入账流水，只有当前 UNAPPLIED 且金额精确相等才退还。入账 RETURNED、出账 RETURN_POSTED、借 2105 / 贷 1103、关闭差异同事务完成；分录 subject 与 source_key 都归出账流水，occurred_at 仍取出账 booking_date 的多伦多 00:00。不创建 correction，不支持部分退还；其余 DEBIT 沿用 P2 规则。文件 SHA 和流水身份共同保证重复导入不再记账。
+- 新增 reconciliation 公开入口 `IngestionIssues.resolveBankReturn`，按差异编号升序锁行后仅关闭入账流水为 subject 的 OPEN 差异（包括 INGESTION 与 BANK）；保留已 ACCEPTED/RESOLVED 等处置。explanation 写出账流水号，issue_transition 引用出账文件、流水号及版本。自动证据闭环沿用历史原因枚举 EXPLAINED，目标状态按 ADR-0011 为 RESOLVED，run_id 与 resolution_correction_id 均不填。
+- BANK/AGING 共用版本升级为 `p4-v1`（AGING 算法不变）。历史重建只使用 evidence_as_of 前的文件、流水及分录：2105 退还借方经出账 reference 归到原入账未结项，出账自身不产生负的 UNAPPLIED_CASH_OPEN；1103 退还贷方仍按出账 booking_date 归期，之前期间的余额不变。解释证据包含退还流水与分录；旧证据时点重跑不读取当前 match_status。旧运行报告保持可读，重新计算须使用当前规则版本。
+- `/api/overview` 原有 unappliedCash、bankCash 与 OPEN 差异计数直接反映退还，无新字段。BankAging 的 jqwik 独立模型加入退还动作，每步检查发现、历史重放、现金及 INV-12；定向真库测试覆盖样例 F、拒绝分支、PENDING→BOOKED、当前入账版本、重复导入、并发双退、回滚和银行归期。沿用 V20 的状态与授权，无新迁移、依赖或其他模块行为调整。
 
 ## 4. 两个门槛
 
