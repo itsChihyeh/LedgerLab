@@ -82,11 +82,22 @@ final class CorrectionReader {
                 .param(id)
                 .query((rs, n) -> rs.getString(1))
                 .list();
+        var bankLines = jdbc.sql("SELECT e.subject_id FROM ledger." + prefix + "correction_target t JOIN ledger."
+                        + prefix + "journal_entry e ON e.id=t.entry_id WHERE t.correction_id=?"
+                        + " AND t.role='APPLIED' AND e.subject_type='bank_txn' ORDER BY e.subject_id")
+                .param(id)
+                .query((rs, n) -> rs.getString(1))
+                .list();
         return new CorrectionResult(
                 correction,
                 targets,
                 entries,
                 new CorrectionResult.Affected(
-                        List.of((String) correction.get("subjectId")), batches, List.of(), issues));
+                        "payment".equals(correction.get("subjectType"))
+                                ? List.of((String) correction.get("subjectId"))
+                                : List.of(),
+                        batches,
+                        bankLines,
+                        issues));
     }
 }

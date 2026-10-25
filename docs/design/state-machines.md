@@ -138,6 +138,15 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 - 金额纠错在所有批次重核完成后处置差异：实际前进批次的主体 OPEN 差异自动 RESOLVED 并关联本次 correction；请求引用的非批次 OPEN 差异也按 ADR 关闭。引用了仍 HELD 或未参与本次重核的批次差异不会将其关闭；ADR-0011 第 2 节②的“仍不通过则差异保持 OPEN”也适用于请求中引用的批次差异。非 OPEN 差异保持原状态。
 - 定向测试覆盖 AC-6.5、AC-1.4d 样例 E 的分录及余额检查点、连续金额纠错和随后撤销、退款额度边界、两种受控并发顺序、原因刷新、FIFO 和银行唤醒、整体事务回滚，以及 AC-6.12 的 P2 历史退款批次、重复／并发重核和开关。没有新迁移、权限变更或模块依赖放宽。
 
+### P4 T05 实现备注：待查收款归位与失败打款恢复
+
+- `APPLY_UNAPPLIED_CASH` 接收 `batchId`、1～10 个互不重复的 `bankTxnIds`；`RESTORE_FAILED_PAYOUT` 按 ADR-0011 接收 `batchId`、单个 `bankTxnId`，不接受数组参数。内部统一成流水列表，分别只接受 `SPLIT_DEPOSIT` / `PAYOUT_FAILURE_DISPROVED` 或 `OTHER`。输入、证据、业务前置拒绝均不留写入；重复纠错的批次状态错误响应附已有 `correctionId`。
+- `settlement.SettlementCorrections` 只增加窄接口：在调用方事务和资金锁内锁批次，再按 bank_txn_id 升序锁各流水最高版本，更新流水 APPLIED 与 matched_batch_id、批次 BANKED 及其 correction 历史。CONFIRMED 有任何已匹配入账也不能归位；流水必须同时满足 BOOKED/CREDIT/CAD/UNAPPLIED、引用本批次、合计精确等于 net。恢复额外检查其他已确认批次明细是否使用过该批次的 PAYOUT_FAILURE；拒绝后按既有银行退还路径处理。
+- 两条路径均通过账本公开纠错入口记录 APPLIED 目标及一个借 2105 / 贷 1102 的 CORRECTION，subject 为 batch；恢复另将原 BATCH_PAYOUT_FAILED 登记为 REVERSED，由账本生成镜像 REVERSAL。纠错及批次历史使用注入 Clock 的纠错时刻，不回写原银行业务时间，不碰 1103、原入账分录或批次旧历史。
+- 业务更新后按差异号升序取行锁，只关闭 OPEN：归位自动关闭所选流水的全部差异及本批次 DEPOSIT_MISSING / DEPOSIT_NOT_RECEIVED / TIMING_DIFFERENCE；恢复自动关闭所选流水的全部差异及本批次 BATCH_STATE_CONFLICT。显式引用的非批次差异、本次已前进批次的差异同样关联纠错并追加 OPERATOR 历史；未前进的其他批次及非 OPEN 差异保持不变。读取纠错结果返回对应批次、流水及已关闭差异，不将批次误列为支付。
+- AC-6.10/6.11 定向真库测试核对 5000＋4680、S3 全账户余额、INV-9/12、原因与前置拒绝、当前流水版本、重复纠错、差异关闭清单和整事务回滚；BANK 规则在纠错前后均不报 BANK_BALANCE_MISMATCH。栅栏固定纠错与 T04 银行退还的两种先后顺序，只允许一方消费待查收款。纠错后再次入账沿用第二笔 UNAPPLIED / UNMATCHED_BANK_LINE；恢复后出现原失败打款退回行沿用 HELD(UNSUPPORTED_LINE)。无新迁移、依赖或权限变更。
+- 本任务的银行余额验证只涉及 INV-11 的现金口径。现有 BANK/AGING 历史匹配尚未消费 correction_target 的 APPLIED 证据；后续纠错对账接入需要按证据时点读取目标记录，才能避免已归位流水再次被发现为 UNAPPLIED_CASH_OPEN，以及已归位批次再次被发现为未到账。该规则内部变更不在 T05 可改范围内。
+
 ### P2 T05 实现备注：批次确认与入站恢复
 
 以下记录 T05 交付时的行为；版本比较、HELD 恢复、失败事件和随机模型已由下方 T06 备注更新。

@@ -14,6 +14,7 @@ import dev.ledgerlab.ledger.SubjectType;
 import dev.ledgerlab.payments.PaymentCorrections;
 import dev.ledgerlab.reconciliation.IssueDisposition;
 import dev.ledgerlab.settlement.BatchRechecks;
+import dev.ledgerlab.settlement.SettlementCorrections;
 import dev.ledgerlab.shared.Fees;
 import java.time.Clock;
 import java.util.List;
@@ -33,6 +34,7 @@ public final class JdbcCorrections implements Corrections {
     private final PaymentCorrections payments;
     private final IssueDisposition issues;
     private final BatchRechecks rechecks;
+    private final SettlementCorrections settlement;
     private final Clock clock;
     private final ObjectMapper mapper;
     private final TransactionTemplate transactions;
@@ -45,10 +47,11 @@ public final class JdbcCorrections implements Corrections {
             PaymentCorrections payments,
             IssueDisposition issues,
             BatchRechecks rechecks,
+            SettlementCorrections settlement,
             Clock clock,
             ObjectMapper mapper,
             PlatformTransactionManager manager) {
-        this(jdbc, ledger, payments, issues, rechecks, clock, mapper, manager, () -> {});
+        this(jdbc, ledger, payments, issues, rechecks, settlement, clock, mapper, manager, () -> {});
     }
 
     /** Test seam after ledger writes, before business state changes; no production failure setting. */
@@ -58,6 +61,7 @@ public final class JdbcCorrections implements Corrections {
             PaymentCorrections payments,
             IssueDisposition issues,
             BatchRechecks rechecks,
+            SettlementCorrections settlement,
             Clock clock,
             ObjectMapper mapper,
             PlatformTransactionManager manager,
@@ -67,6 +71,7 @@ public final class JdbcCorrections implements Corrections {
         this.payments = payments;
         this.issues = issues;
         this.rechecks = rechecks;
+        this.settlement = settlement;
         this.clock = clock;
         this.mapper = mapper;
         this.transactions = new TransactionTemplate(manager);
@@ -79,7 +84,7 @@ public final class JdbcCorrections implements Corrections {
             ledger.lockFunds();
             return switch (command.type()) {
                 case VOID_CAPTURE, RESTATE_CAPTURE_AMOUNT -> correctCapture(command);
-                default -> throw new CorrectionException(409, "CORRECTION_TYPE_NOT_AVAILABLE");
+                case APPLY_UNAPPLIED_CASH, RESTORE_FAILED_PAYOUT -> correctBank(command);
             };
         }));
     }
@@ -188,6 +193,109 @@ public final class JdbcCorrections implements Corrections {
                                 .param("id", id)
                                 .query(Boolean.class)
                                 .single())
+                .forEach(issueIds::add);
+        issueIds.forEach(id -> issues.resolveByCorrection(id, recorded.correctionId(), command.reasonNote()));
+        return new CorrectionReader(jdbc, mapper, false).detail(recorded.correctionId());
+    }
+
+    private CorrectionResult correctBank(CorrectionCommand command) {
+        boolean restore = command.type() == CorrectionType.RESTORE_FAILED_PAYOUT;
+        var ids = command.bankTxnIds();
+        if (!CorrectionCommand.text(command.batchId())
+                || ids == null
+                || ids.isEmpty()
+                || ids.size() > (restore ? 1 : 10)
+                || ids.stream().anyMatch(id -> !CorrectionCommand.text(id))
+                || ids.stream().distinct().count() != ids.size()
+                || (command.reasonCode()
+                                != (restore
+                                        ? CorrectionReason.PAYOUT_FAILURE_DISPROVED
+                                        : CorrectionReason.SPLIT_DEPOSIT)
+                        && command.reasonCode() != CorrectionReason.OTHER))
+            throw new CorrectionException(400, "INVALID_REQUEST");
+        for (var evidence : command.evidence()) checkEvidence(evidence);
+        String batchId = Objects.requireNonNull(command.batchId());
+        var batch = settlement.lockBatch(batchId).orElseThrow(() -> new CorrectionException(404, "BATCH_NOT_FOUND"));
+        if (!batch.status().equals(restore ? "PAYOUT_FAILED" : "CONFIRMED") || (!restore && batch.deposited())) {
+            var prior =
+                    jdbc.sql("""
+                    SELECT id FROM ledger.correction WHERE subject_type='batch' AND subject_id=?
+                        AND correction_type IN ('APPLY_UNAPPLIED_CASH','RESTORE_FAILED_PAYOUT')
+                    ORDER BY recorded_at,id LIMIT 1
+                    """).param(batchId).query(String.class).optional().orElse(null);
+            throw new CorrectionException(
+                    409, restore ? "BATCH_NOT_PAYOUT_FAILED" : "BATCH_NOT_AWAITING_DEPOSIT", prior);
+        }
+        var lines = settlement.lockBankLines(ids);
+        if (lines.size() != ids.size() || lines.stream().anyMatch(line -> !line.unapplied()))
+            throw new CorrectionException(409, "BANK_LINE_NOT_UNAPPLIED");
+        if (lines.stream().anyMatch(line -> !line.reference().equals(batchId)))
+            throw new CorrectionException(409, "BANK_LINE_REFERENCE_MISMATCH");
+        long total =
+                lines.stream().mapToLong(SettlementCorrections.BankLine::amount).reduce(0, Math::addExact);
+        if (total != batch.net()) throw new CorrectionException(409, "APPLICATION_AMOUNT_MISMATCH");
+        if (restore && batch.returned()) throw new CorrectionException(409, "FAILED_PAYOUT_ALREADY_RETURNED");
+        var applied = lines.stream()
+                .map(line -> jdbc.sql("""
+                SELECT id FROM ledger.journal_entry WHERE entry_type='UNAPPLIED_CASH_RECEIVED'
+                    AND source_key=? AND subject_type='bank_txn' AND subject_id=?
+                """)
+                        .params("bank_txn:" + line.id(), line.id())
+                        .query(String.class)
+                        .single())
+                .toList();
+        var reversed = restore
+                ? List.of(jdbc.sql("""
+                SELECT id FROM ledger.journal_entry WHERE entry_type='BATCH_PAYOUT_FAILED'
+                    AND source_key=? AND subject_type='batch' AND subject_id=?
+                """)
+                        .params("batch:" + batchId + ":payout_failed", batchId)
+                        .query(String.class)
+                        .single())
+                : List.<String>of();
+        var params = new java.util.LinkedHashMap<String, Object>();
+        params.put("batchId", batchId);
+        if (restore) params.put("bankTxnId", ids.getFirst());
+        else params.put("bankTxnIds", ids);
+        var now = clock.instant();
+        var recorded = ledger.recordCorrection(new CorrectionRequest(
+                command.type(),
+                command.reasonCode(),
+                command.reasonNote(),
+                mapper.writeValueAsString(command.evidence()),
+                mapper.writeValueAsString(params),
+                SubjectType.BATCH,
+                batchId,
+                command.requestedBy(),
+                reversed,
+                applied,
+                List.of(
+                        PostingLine.debit(Account.UNAPPLIED_CASH, total),
+                        PostingLine.credit(Account.SETTLEMENT_IN_TRANSIT, total)),
+                now));
+        afterReversal.run();
+        for (var line : lines) settlement.markApplied(line, batchId);
+        settlement.markBanked(batch, recorded.correctionId(), now);
+        var issueIds = new java.util.TreeSet<>(jdbc.sql("""
+                SELECT id FROM recon.issue WHERE (subject_type='bank_txn' AND subject_id IN (:banks))
+                    OR (subject_type='batch' AND subject_id=:batch AND category IN (:categories))
+                """)
+                .param("banks", ids)
+                .param("batch", batchId)
+                .param(
+                        "categories",
+                        restore
+                                ? List.of("BATCH_STATE_CONFLICT")
+                                : List.of("DEPOSIT_MISSING", "DEPOSIT_NOT_RECEIVED", "TIMING_DIFFERENCE"))
+                .query(String.class)
+                .list());
+        command.evidence().stream()
+                .filter(e -> e.type().equals("issue"))
+                .map(CorrectionCommand.Evidence::id)
+                .filter(id -> jdbc.sql("SELECT subject_type<>'batch' OR subject_id=? FROM recon.issue WHERE id=?")
+                        .params(batchId, id)
+                        .query(Boolean.class)
+                        .single())
                 .forEach(issueIds::add);
         issueIds.forEach(id -> issues.resolveByCorrection(id, recorded.correctionId(), command.reasonNote()));
         return new CorrectionReader(jdbc, mapper, false).detail(recorded.correctionId());

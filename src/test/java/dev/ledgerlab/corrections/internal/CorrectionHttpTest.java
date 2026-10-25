@@ -71,6 +71,7 @@ class CorrectionHttpTest {
                 new PaymentCorrections(f.jdbc, ledger),
                 new IssueStore(f.jdbc, f.ids, f.clock, f.manager),
                 f.rechecks,
+                new dev.ledgerlab.settlement.SettlementCorrections(f.jdbc, ledger),
                 f.clock,
                 f.mapper,
                 f.manager,
@@ -706,11 +707,11 @@ class CorrectionHttpTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"APPLY_UNAPPLIED_CASH", "RESTORE_FAILED_PAYOUT"})
-    void ac_6_1_otherCorrectionTypesAreUnavailable(String type) throws Exception {
+    void ac_6_1_bankCorrectionTypesRequireTheirOwnParameters(String type) throws Exception {
         var before = snapshot();
         var request = body(entry);
         request.put("type", type);
-        error(submit(request), 409, "CORRECTION_TYPE_NOT_AVAILABLE");
+        error(submit(request), 400, "INVALID_REQUEST");
         assertThat(snapshot()).isEqualTo(before);
     }
 

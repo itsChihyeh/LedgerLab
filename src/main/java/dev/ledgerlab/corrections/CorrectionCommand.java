@@ -31,7 +31,10 @@ public record CorrectionCommand(
                             .contains(ref.type())) throw new CorrectionException(400, "INVALID_REQUEST");
         }
         evidence = List.copyOf(evidence);
-        bankTxnIds = bankTxnIds == null ? null : List.copyOf(bankTxnIds);
+        if (bankTxnIds != null) {
+            if (bankTxnIds.stream().anyMatch(id -> !text(id))) throw new CorrectionException(400, "INVALID_REQUEST");
+            bankTxnIds = List.copyOf(bankTxnIds);
+        }
     }
 
     public static boolean text(@Nullable String value) {

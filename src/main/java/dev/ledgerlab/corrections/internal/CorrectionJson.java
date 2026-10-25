@@ -22,6 +22,7 @@ final class CorrectionJson {
             "newAmount",
             "batchId",
             "bankTxnIds",
+            "bankTxnId",
             "reasonCode",
             "reasonNote",
             "evidence",
@@ -71,8 +72,13 @@ final class CorrectionJson {
                     banks.add(id.asString());
                 }
             }
+            var type = CorrectionType.valueOf(text(root, "type"));
+            if (type == CorrectionType.RESTORE_FAILED_PAYOUT) {
+                if (root.has("bankTxnIds")) throw invalid();
+                banks = List.of(text(root, "bankTxnId"));
+            } else if (root.has("bankTxnId")) throw invalid();
             return new CorrectionCommand(
-                    CorrectionType.valueOf(text(root, "type")),
+                    type,
                     optional(root, "originalEntryId"),
                     amount,
                     optional(root, "batchId"),
