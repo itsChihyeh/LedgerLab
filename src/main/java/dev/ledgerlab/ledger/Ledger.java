@@ -1,5 +1,7 @@
 package dev.ledgerlab.ledger;
 
+import java.util.Optional;
+
 /**
  * The ledger interface. All methods join the caller's transaction and fail if there is none, so an entry and
  * the business state change it belongs to commit or roll back together.
@@ -33,4 +35,17 @@ public interface Ledger {
      * @throws DuplicateSourceKeyException if the source key is already recorded
      */
     PostedEntry post(EntryRequest request);
+
+    /**
+     * Writes the correction, targets and generated entries in the caller's money transaction.
+     * Requires the funds lock. The caller must roll back the transaction on any failure.
+     * Business eligibility and evidence existence are the caller's responsibility.
+     */
+    RecordedCorrection recordCorrection(CorrectionRequest request);
+
+    /** Reads correction audit data in the caller's transaction; empty if the id does not exist. */
+    Optional<CorrectionDetails> findCorrection(String correctionId);
+
+    /** Reads whether an entry has already been used as a target, and by which correction. */
+    Optional<CorrectionTarget> findCorrectionForEntry(String entryId);
 }

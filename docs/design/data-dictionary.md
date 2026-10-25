@@ -27,7 +27,8 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 | `ledger.funds_lock` | UPDATE(`touched_at`)（只为加行锁） | 只有一行，CHECK `id = 1` | INSERT、DELETE 被拒（42501） |
 | `ledger.account` | UPDATE(`balance`, `version`) | 余额 CHECK（见第 1 节）；属性列不在授权里；属性改动另由触发器拒绝（防属主误操作） | 改属性 42501；余额改成 −1（不可为负的账户）被 CHECK 拒绝（23514）；余额改成合法但错误的值能执行，INV-2 检查报错 |
 | `ledger.journal_entry`、`ledger.posting` | 只 INSERT/SELECT | 封存触发器（第 1 节）；`created_txid` 由触发器写入 | UPDATE、DELETE、TRUNCATE 42501；追加攻击、空分录、单边、条数不符在提交时失败 |
-| `core.payment` | INSERT；UPDATE(`status`, `actual_fee`, `batch_id`, `refunded_amount`) | 状态 CHECK；`refunded_amount ≤ amount`；金额范围 CHECK | 改 `amount`、`processor_payment_ref` 42501 |
+| `core.payment` | INSERT；UPDATE(`status`, `actual_fee`, `batch_id`, `refunded_amount`, `amount`, `expected_fee`) | 状态 CHECK；`refunded_amount ≤ amount`；金额范围 CHECK | 纠错可改金额和预期手续费；改 `processor_payment_ref` 42501 |
+| `ledger.correction`、`ledger.correction_target` | 只 INSERT/SELECT | 目标分录终身唯一；提交时核对冲销镜像、目标关联和至少一个分录；UPDATE/DELETE/TRUNCATE 触发器 LL004 | 改、删、清空 42501；属主操作 LL004；readonly 只读显式列视图 |
 | `core.payment_transition` | 只 INSERT/SELECT | — | UPDATE、DELETE 42501 |
 | `io.inbox_event` | INSERT；UPDATE(`status`, `result`, `attempts`, `next_attempt_at`, `lease_owner`, `lease_until`, `lease_epoch`, `parked_on`, `last_error`, `processed_at`) | `payload`、`payload_sha256`、`event_id` 不在授权里 | 改 `payload` 42501 |
 | `io.inbox_conflict` | 只 INSERT/SELECT | — | UPDATE、DELETE 42501 |
@@ -35,7 +36,7 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 | `recon.issue` | INSERT；UPDATE(`status`, `last_run_id`, `explanation`, `resolution_correction_id`, `updated_at`, `fingerprint`, `reopen_count`, `expected`, `actual`, `evidence_refs`)；内容三列只能由对账运行按最新发现刷新 | — | 改 `category`、`subject_type`、`subject_id` 42501 |
 | 只读视图 | — | `readonly` 只能 SELECT 视图，底表、`io`、`sim_*` 不可见 | 以 `readonly` 读底表、`io`、`sim_*` 被拒；读视图成功；任何写入被拒 |
 
-纠错（P4）的表结构与扩权已定在 ADR-0011 补充第 7 节（2026-10-25）：`core.payment` 增加 UPDATE(`amount`, `expected_fee`)，新增 `ledger.correction`、`ledger.correction_target`，银行行增加 `APPLIED`/`RETURNED`/`RETURN_POSTED`。P4 迁移落地后在本表补行。
+纠错（P4 T01，V20）按 ADR-0011 补充第 7 节落地：`core.payment` 增加 UPDATE(`amount`, `expected_fee`)，新增 `ledger.correction`、`ledger.correction_target`，银行行增加 `APPLIED`/`RETURNED`/`RETURN_POSTED`，沿用原有列授权。
 
 ---
 
@@ -111,6 +112,14 @@ P3 T04b 实现备注：退款队列通过 `Ledger.balance(Account.MERCHANT_AVAIL
 | 字段 | 说明 |
 |---|---|
 | `id` `cor_…`、`correction_type`、`reason_code`、`reason_note`、`evidence_refs`（非空）、`params`、`subject_type`、`subject_id`、`requested_by`、`recorded_at`；目标分录在 `ledger.correction_target`（`entry_id` UNIQUE、`role` = `REVERSED`/`APPLIED`），取代原 `original_entry_id` | 一次受限纠错 = 一条 correction ＋ 0～n 个 `REVERSAL` ＋ 0～1 个 `CORRECTION`（至少一个分录），形状由类型决定，同一事务（ADR-0011 补充） |
+
+### P4 T01 实现备注（V20）
+
+- 两张表均由 migrator 持有；app 只 INSERT/SELECT，readonly 只 SELECT `ledger.v_correction`、`ledger.v_correction_target`。目标表另记 `recorded_at`，与纠错及生成分录使用同一次 Clock 时刻。
+- 新增两个纠错外键前先检查旧 `journal_entry.correction_id` 和 `issue.resolution_correction_id`；存在非空遗留引用时中止迁移，不自动修复历史。
+- 延迟约束触发器覆盖 correction、target、journal_entry 和 posting 的 INSERT；提交时核对多重集镜像（保留重复 posting 的条数）、REVERSED 双向关联、至少一个生成分录、APPLIED 类型和禁止冲销 REVERSAL，失败 SQLSTATE 为 `LL005`。不可改触发器沿用 `LL004`。每个纠错最多一个 CORRECTION 由部分唯一索引守住。
+- `Ledger.recordCorrection` 要求调用方已持资金锁并负责事务；一次锁定全部涉及账户（代码升序），账本读取原 posting 生成镜像。查询接口要求调用方事务，返回完整纠错元数据、目标、生成分录及 posting；不存在返回 Optional.empty。证据形状由请求校验，证据存在性、类型与业务匹配由 T02–T05 业务层负责。
+- `APPLIED` 与 `MATCHED` 均要求批次号；CREDIT 才可 WAITING/MATCHED/UNAPPLIED/APPLIED/RETURNED，DEBIT 才可 RETURN_POSTED；其余银行约束不变。批次 hold_reason 增加 PAYMENT_STATE_CONFLICT，历史表没有枚举 CHECK，无须放宽。
 
 ---
 

@@ -87,9 +87,7 @@ class PaymentTablesTest {
     @ParameterizedTest
     @ValueSource(
             strings = {
-                "UPDATE core.payment SET amount = 5000",
                 "UPDATE core.payment SET processor_payment_ref = 'ch_other'",
-                "UPDATE core.payment SET expected_fee = 320",
                 "UPDATE core.payment SET occurred_at = now()",
                 "UPDATE core.payment SET id = 'pay_00000000000000000000000002'",
                 "UPDATE core.payment SET processor_intent_ref = 'pi_other'",
