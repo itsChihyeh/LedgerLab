@@ -35,7 +35,8 @@ public final class RefundInbox {
             Clock clock,
             BatchSettlement batches,
             RefundEvidence evidence,
-            dev.ledgerlab.refunds.RefundSettlement refundSettlement) {
+            dev.ledgerlab.refunds.RefundSettlement refundSettlement,
+            dev.ledgerlab.settlement.BatchRechecks rechecks) {
         this.jdbc = jdbc;
         this.manager = manager;
         this.capture = capture;
@@ -49,7 +50,8 @@ public final class RefundInbox {
                 mapper,
                 clock,
                 org.mockito.Mockito.mock(dev.ledgerlab.refunds.ProcessorRefundGateway.class),
-                refundSettlement);
+                refundSettlement,
+                rechecks);
         refunds = new RefundProcessing(new RefundParser(mapper), evidence, issues, mapper);
         intake = new InboxIntake(jdbc, new TransactionTemplate(manager), issues, mapper, clock);
     }

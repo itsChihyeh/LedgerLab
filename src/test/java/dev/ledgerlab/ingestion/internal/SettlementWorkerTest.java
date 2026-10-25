@@ -219,7 +219,15 @@ class SettlementWorkerTest {
                         mapper,
                         clock,
                         issues),
-                new RefundSettlement(jdbc, ledger, refundPayments, refundEvidence));
+                new RefundSettlement(jdbc, ledger, refundPayments, refundEvidence),
+                new dev.ledgerlab.settlement.BatchRechecks(
+                        jdbc,
+                        ledger,
+                        batches,
+                        new RefundSettlement(jdbc, ledger, refundPayments, refundEvidence),
+                        new dev.ledgerlab.reconciliation.internal.IssueStore(jdbc, ids, clock, manager),
+                        mapper,
+                        manager));
         intake = new InboxIntake(jdbc, tx, issues, mapper, clock);
         pollers = () -> new SettlementPolling(
                 reader,

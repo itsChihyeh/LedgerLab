@@ -48,7 +48,8 @@ class CorrectionsDisabledTest {
     void ac_6_1_disabledConfigurationDoesNotRegisterController() throws Exception {
         assertThat(context.getBeansOfType(CorrectionController.class)).isEmpty();
         try (var http = HttpClient.newHttpClient()) {
-            for (String path : List.of("/api/corrections", "/api/corrections/cor_probe")) {
+            for (String path :
+                    List.of("/api/corrections", "/api/corrections/cor_probe", "/api/batches/po_probe/recheck")) {
                 for (String method : List.of("GET", "POST")) {
                     var response = http.send(
                             HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))

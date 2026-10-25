@@ -158,4 +158,17 @@ class CorrectionServerTest {
     private URI uri(String path) {
         return URI.create("http://localhost:" + port + path);
     }
+
+    @Test
+    void ac_6_12_recheckRouteIsRegisteredWithDefaultCorrectionSwitch() throws Exception {
+        try (var http = HttpClient.newHttpClient()) {
+            var response = http.send(
+                    HttpRequest.newBuilder(uri("/api/batches/po_missing/recheck"))
+                            .POST(HttpRequest.BodyPublishers.noBody())
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertThat(response.statusCode()).isEqualTo(404);
+            assertThat(mapper.readTree(response.body()).path("code").asString()).isEqualTo("BATCH_NOT_FOUND");
+        }
+    }
 }

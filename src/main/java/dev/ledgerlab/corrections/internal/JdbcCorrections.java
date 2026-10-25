@@ -4,16 +4,19 @@ import dev.ledgerlab.corrections.CorrectionCommand;
 import dev.ledgerlab.corrections.CorrectionException;
 import dev.ledgerlab.corrections.CorrectionResult;
 import dev.ledgerlab.corrections.Corrections;
+import dev.ledgerlab.ledger.Account;
 import dev.ledgerlab.ledger.CorrectionReason;
 import dev.ledgerlab.ledger.CorrectionRequest;
 import dev.ledgerlab.ledger.CorrectionType;
 import dev.ledgerlab.ledger.Ledger;
+import dev.ledgerlab.ledger.PostingLine;
 import dev.ledgerlab.ledger.SubjectType;
 import dev.ledgerlab.payments.PaymentCorrections;
 import dev.ledgerlab.reconciliation.IssueDisposition;
+import dev.ledgerlab.settlement.BatchRechecks;
+import dev.ledgerlab.shared.Fees;
 import java.time.Clock;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,6 +32,7 @@ public final class JdbcCorrections implements Corrections {
     private final Ledger ledger;
     private final PaymentCorrections payments;
     private final IssueDisposition issues;
+    private final BatchRechecks rechecks;
     private final Clock clock;
     private final ObjectMapper mapper;
     private final TransactionTemplate transactions;
@@ -40,10 +44,11 @@ public final class JdbcCorrections implements Corrections {
             Ledger ledger,
             PaymentCorrections payments,
             IssueDisposition issues,
+            BatchRechecks rechecks,
             Clock clock,
             ObjectMapper mapper,
             PlatformTransactionManager manager) {
-        this(jdbc, ledger, payments, issues, clock, mapper, manager, () -> {});
+        this(jdbc, ledger, payments, issues, rechecks, clock, mapper, manager, () -> {});
     }
 
     /** Test seam after ledger writes, before business state changes; no production failure setting. */
@@ -52,6 +57,7 @@ public final class JdbcCorrections implements Corrections {
             Ledger ledger,
             PaymentCorrections payments,
             IssueDisposition issues,
+            BatchRechecks rechecks,
             Clock clock,
             ObjectMapper mapper,
             PlatformTransactionManager manager,
@@ -60,6 +66,7 @@ public final class JdbcCorrections implements Corrections {
         this.ledger = ledger;
         this.payments = payments;
         this.issues = issues;
+        this.rechecks = rechecks;
         this.clock = clock;
         this.mapper = mapper;
         this.transactions = new TransactionTemplate(manager);
@@ -71,7 +78,7 @@ public final class JdbcCorrections implements Corrections {
         return Objects.requireNonNull(transactions.execute(tx -> {
             ledger.lockFunds();
             return switch (command.type()) {
-                case VOID_CAPTURE -> voidCapture(command);
+                case VOID_CAPTURE, RESTATE_CAPTURE_AMOUNT -> correctCapture(command);
                 default -> throw new CorrectionException(409, "CORRECTION_TYPE_NOT_AVAILABLE");
             };
         }));
@@ -83,11 +90,22 @@ public final class JdbcCorrections implements Corrections {
             String subjectId,
             @Nullable String correctionId) {}
 
-    private CorrectionResult voidCapture(CorrectionCommand command) {
+    private CorrectionResult correctCapture(CorrectionCommand command) {
+        boolean restate = command.type() == CorrectionType.RESTATE_CAPTURE_AMOUNT;
         if (!CorrectionCommand.text(command.originalEntryId())
-                || (command.reasonCode() != CorrectionReason.CAPTURE_RECORDED_IN_ERROR
+                || (command.reasonCode()
+                                != (restate
+                                        ? CorrectionReason.CAPTURE_AMOUNT_ERROR
+                                        : CorrectionReason.CAPTURE_RECORDED_IN_ERROR)
                         && command.reasonCode() != CorrectionReason.OTHER))
             throw new CorrectionException(400, "INVALID_REQUEST");
+        if (restate
+                && (command.newAmount() == null
+                        || command.newAmount() < 50
+                        || command.newAmount() > 99999999
+                        || command.evidence().stream()
+                                .noneMatch(e -> List.of("issue", "statement_line", "processor_fetch", "inbox_event")
+                                        .contains(e.type())))) throw new CorrectionException(400, "INVALID_REQUEST");
         for (var evidence : command.evidence()) checkEvidence(evidence);
         String entryId = Objects.requireNonNull(command.originalEntryId());
         Entry entry = jdbc.sql(
@@ -114,36 +132,64 @@ public final class JdbcCorrections implements Corrections {
                 .orElseThrow(() -> new CorrectionException(409, "ENTRY_NOT_CORRECTABLE"));
         if (payment.status().equals("SETTLED") || payment.batchId() != null)
             throw new CorrectionException(409, "USE_REFUND_FOR_SETTLED_PAYMENT");
-        if (payment.refundedAmount() > 0) throw new CorrectionException(409, "PAYMENT_HAS_REFUNDS");
+        long newAmount = restate ? Objects.requireNonNull(command.newAmount()) : payment.amount();
+        if (restate) {
+            if (newAmount == payment.amount()) throw new CorrectionException(409, "AMOUNT_UNCHANGED");
+            if (newAmount < payment.refundedAmount()) throw new CorrectionException(409, "AMOUNT_BELOW_REFUNDED");
+        } else if (payment.refundedAmount() > 0) throw new CorrectionException(409, "PAYMENT_HAS_REFUNDS");
         if (!payment.status().equals("CAPTURED")) throw new CorrectionException(409, "ENTRY_NOT_CORRECTABLE");
         var now = clock.instant();
+        var params = new java.util.LinkedHashMap<String, Object>();
+        params.put("originalEntryId", entryId);
+        params.put("oldAmount", payment.amount());
+        params.put("expectedFee", payment.expectedFee());
+        if (restate) {
+            params.put("newAmount", newAmount);
+            params.put("newExpectedFee", Fees.contractFee(newAmount));
+        }
         var recorded = ledger.recordCorrection(new CorrectionRequest(
                 command.type(),
                 command.reasonCode(),
                 command.reasonNote(),
                 mapper.writeValueAsString(command.evidence()),
-                mapper.writeValueAsString(Map.of(
-                        "originalEntryId",
-                        entryId,
-                        "oldAmount",
-                        payment.amount(),
-                        "expectedFee",
-                        payment.expectedFee())),
+                mapper.writeValueAsString(params),
                 SubjectType.PAYMENT,
                 payment.id(),
                 command.requestedBy(),
                 List.of(entryId),
                 List.of(),
-                List.of(),
+                restate
+                        ? List.of(
+                                PostingLine.debit(Account.PROCESSOR_RECEIVABLE, newAmount),
+                                PostingLine.credit(Account.MERCHANT_PENDING, newAmount))
+                        : List.of(),
                 now));
         afterReversal.run();
-        payments.voidCapture(payment.id(), recorded.correctionId(), now);
+        List<String> advanced;
+        if (restate) {
+            payments.restateAmount(payment.id(), newAmount, recorded.correctionId(), now);
+            advanced = rechecks.recheckAmount(payments.processorRef(payment.id()), recorded.correctionId());
+        } else {
+            payments.voidCapture(payment.id(), recorded.correctionId(), now);
+            advanced = List.of();
+        }
+        var issueIds = new java.util.TreeSet<String>();
+        for (String batchId : advanced)
+            issueIds.addAll(jdbc.sql("""
+                SELECT id FROM recon.issue WHERE subject_type='batch' AND subject_id=? AND status='OPEN'
+                """).param(batchId).query(String.class).list());
         command.evidence().stream()
                 .filter(e -> e.type().equals("issue"))
                 .map(CorrectionCommand.Evidence::id)
-                .distinct()
-                .sorted()
-                .forEach(id -> issues.resolveByCorrection(id, recorded.correctionId(), command.reasonNote()));
+                .filter(id -> !restate
+                        || jdbc.sql(
+                                        "SELECT subject_type<>'batch' OR subject_id IN (:batches) FROM recon.issue WHERE id=:id")
+                                .param("batches", advanced.isEmpty() ? List.of("") : advanced)
+                                .param("id", id)
+                                .query(Boolean.class)
+                                .single())
+                .forEach(issueIds::add);
+        issueIds.forEach(id -> issues.resolveByCorrection(id, recorded.correctionId(), command.reasonNote()));
         return new CorrectionReader(jdbc, mapper, false).detail(recorded.correctionId());
     }
 

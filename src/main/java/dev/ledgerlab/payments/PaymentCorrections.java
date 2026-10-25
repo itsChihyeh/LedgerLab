@@ -1,6 +1,7 @@
 package dev.ledgerlab.payments;
 
 import dev.ledgerlab.ledger.Ledger;
+import dev.ledgerlab.shared.Fees;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Optional;
@@ -46,6 +47,31 @@ public final class PaymentCorrections {
                 INSERT INTO core.payment_transition
                     (subject_id, from_status, to_status, evidence_type, evidence_id, occurred_at, recorded_at)
                 VALUES (?, 'CAPTURED', 'VOIDED', 'correction', ?, ?, ?)
+                """).params(paymentId, correctionId, now, now).update();
+    }
+
+    public String processorRef(String paymentId) {
+        ledger.assertFundsLocked();
+        return jdbc.sql("SELECT processor_payment_ref FROM core.payment WHERE id=?")
+                .param(paymentId)
+                .query(String.class)
+                .single();
+    }
+
+    public void restateAmount(String paymentId, long amount, String correctionId, Instant at) {
+        ledger.assertFundsLocked();
+        int changed = jdbc.sql("""
+                UPDATE core.payment SET amount=?, expected_fee=?
+                WHERE id=? AND status='CAPTURED' AND batch_id IS NULL AND refunded_amount<=?
+                """)
+                .params(amount, Fees.contractFee(amount), paymentId, amount)
+                .update();
+        if (changed != 1) throw new IllegalStateException("Payment is no longer eligible for restating");
+        var now = at.atOffset(ZoneOffset.UTC);
+        jdbc.sql("""
+                INSERT INTO core.payment_transition
+                    (subject_id, from_status, to_status, evidence_type, evidence_id, occurred_at, recorded_at)
+                VALUES (?, 'CAPTURED', 'CAPTURED', 'correction', ?, ?, ?)
                 """).params(paymentId, correctionId, now, now).update();
     }
 

@@ -64,6 +64,18 @@ final class RefundFixture implements AutoCloseable {
                     ledger,
                     payments,
                     new JdbcRefundEvidence(jdbc, ledger, payments, queue, history, issues, mapper, clock)));
+    final dev.ledgerlab.settlement.BatchRechecks rechecks = new dev.ledgerlab.settlement.BatchRechecks(
+            jdbc,
+            ledger,
+            batches,
+            new dev.ledgerlab.refunds.RefundSettlement(
+                    jdbc,
+                    ledger,
+                    payments,
+                    new JdbcRefundEvidence(jdbc, ledger, payments, queue, history, issues, mapper, clock)),
+            new dev.ledgerlab.reconciliation.internal.IssueStore(jdbc, ids, clock, manager),
+            mapper,
+            manager);
     int next;
 
     JdbcRefunds service(Ledger target, RefundLimitGuard guard, Runnable inserted) {

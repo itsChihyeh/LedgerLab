@@ -29,6 +29,7 @@ public final class CorrectionFixture implements AutoCloseable {
     public final TransactionTemplate tx = f.tx;
     public final Refunds refunds = f.refunds;
     public final BatchSettlement batches = f.batches;
+    public final dev.ledgerlab.settlement.BatchRechecks rechecks = f.rechecks;
     public final PaymentCapture capture = f.capture;
     public final IngestionIssues issues = f.issues;
 
@@ -42,6 +43,82 @@ public final class CorrectionFixture implements AutoCloseable {
 
     public void batch(String id, String ref, long amount, long fee) {
         f.batch(id, ref, amount, fee);
+    }
+
+    /** Complete immutable Stripe archive, including the payout query and JSON page strings. */
+    public PayoutEvidence archivedBatch(String id, java.util.List<PayoutEvidence.Line> lines) {
+        if (!jdbc.sql("SELECT EXISTS(SELECT 1 FROM io.inbox_event WHERE event_id=?)")
+                .param("evt_" + id)
+                .query(Boolean.class)
+                .single()) f.inbox("evt_" + id);
+        String page = mapper.writeValueAsString(java.util.Map.of(
+                "object",
+                "list",
+                "has_more",
+                false,
+                "data",
+                lines.stream()
+                        .map(line -> java.util.Map.of(
+                                "id",
+                                line.id(),
+                                "type",
+                                line.type(),
+                                "source",
+                                line.source(),
+                                "amount",
+                                line.gross(),
+                                "fee",
+                                line.fee(),
+                                "net",
+                                line.net(),
+                                "currency",
+                                line.currency(),
+                                "created",
+                                line.occurredAt().getEpochSecond()))
+                        .toList()));
+        String body = mapper.writeValueAsString(java.util.List.of(page));
+        long fetch = jdbc.sql("""
+                INSERT INTO io.processor_fetch(purpose,request,response_body,response_sha256,complete,fetched_at,recorded_at)
+                VALUES ('BATCH_LINES',CAST(? AS jsonb),?,encode(sha256(convert_to(?,'UTF8')),'hex'),true,?,?) RETURNING id
+                """)
+                .params(
+                        mapper.writeValueAsString(java.util.Map.of("query", java.util.Map.of("payout", id))),
+                        body,
+                        body,
+                        clock.instant().atOffset(java.time.ZoneOffset.UTC),
+                        clock.instant().atOffset(java.time.ZoneOffset.UTC))
+                .query(Long.class)
+                .single();
+        long net = lines.stream().mapToLong(PayoutEvidence.Line::net).reduce(0, Math::addExact);
+        return new PayoutEvidence(
+                "evt_" + id,
+                "inbox_event",
+                "evt_" + id,
+                "payout.reconciliation_completed",
+                id,
+                net,
+                "cad",
+                true,
+                "standard",
+                "completed",
+                clock.instant(),
+                clock.instant(),
+                new PayoutEvidence.Lines(fetch, lines));
+    }
+
+    public PayoutEvidence.Line line(String id, String type, String ref, long gross, long fee) {
+        return new PayoutEvidence.Line(
+                id, type, ref, gross, fee, Math.subtractExact(gross, fee), "cad", clock.instant());
+    }
+
+    public void bankWaiting(String batch, long amount) {
+        String csv = "H,BANK_STATEMENT,SIM-CAD-001,2026-10-23,2026-10-23,1,CAD\r\n"
+                + "D,bt_wait,CREDIT," + amount + ",CAD,BOOKED," + batch + ",2026-10-23,2026-10-23,fixture\r\n"
+                + "T,1," + amount + ",0,0," + amount + "\r\n";
+        org.assertj.core.api.Assertions.assertThat(f.banks
+                        .importBankStatement("waiting.csv", csv.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                        .status())
+                .isEqualTo("ACCEPTED");
     }
 
     public PayoutEvidence batchEvidence(String id) {

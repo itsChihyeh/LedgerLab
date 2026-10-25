@@ -69,6 +69,7 @@ class CorrectionHttpTest {
                 ledger,
                 new PaymentCorrections(f.jdbc, ledger),
                 new IssueStore(f.jdbc, f.ids, f.clock, f.manager),
+                f.rechecks,
                 f.clock,
                 f.mapper,
                 f.manager,
@@ -131,6 +132,7 @@ class CorrectionHttpTest {
                         "core.settlement_batch",
                         "core.settlement_batch_line",
                         "core.batch_transition",
+                        "recon.bank_line",
                         "io.outbound_command")
                 .stream()
                 .map(table -> f.jdbc.sql(
@@ -143,6 +145,326 @@ class CorrectionHttpTest {
 
     private String text(String sql) {
         return f.jdbc.sql(sql).query(String.class).single();
+    }
+
+    @Test
+    void ac_6_5_restateUpdatesAmountAndFeeWithTwoEntries() throws Exception {
+        var request = body(entry);
+        request.put("type", "RESTATE_CAPTURE_AMOUNT");
+        request.put("reasonCode", "CAPTURE_AMOUNT_ERROR");
+        request.put("newAmount", 5400);
+        var response = submit(request);
+        assertThat(response.getStatus()).isEqualTo(201);
+        assertThat(json(response).path("entries").size()).isEqualTo(2);
+        assertThat(f.number("SELECT amount FROM core.payment")).isEqualTo(5400);
+        assertThat(f.number("SELECT expected_fee FROM core.payment")).isEqualTo(187);
+        f.invariants();
+    }
+
+    private ObjectNode restate(String target, long amount) {
+        return body(target)
+                .put("type", "RESTATE_CAPTURE_AMOUNT")
+                .put("reasonCode", "CAPTURE_AMOUNT_ERROR")
+                .put("newAmount", amount);
+    }
+
+    private String currentEntry() {
+        return text("SELECT id FROM ledger.journal_entry WHERE subject_id='" + payment + "' ORDER BY seq DESC LIMIT 1");
+    }
+
+    private void balances(long pr, long transit, long cash, long pending, long available, long refunds) {
+        assertThat(f.jdbc.sql("SELECT balance FROM ledger.account ORDER BY code")
+                        .query(Long.class)
+                        .list())
+                .containsExactly(pr, transit, cash, pending, available, refunds, 0L, 0L);
+        f.invariants();
+    }
+
+    @Test
+    void ac_1_4d_exampleERechecksArchiveAndResolvesIssueAtomically() throws Exception {
+        // Establish the erroneous capture at 4500, using its own real capture entry.
+        f.close();
+        f = new CorrectionFixture();
+        payment = f.payment("ch_p5", 4500);
+        entry = currentEntry();
+        mvc = controller(() -> {});
+        balances(4500, 0, 0, 4500, 0, 0);
+        var evidence = f.archivedBatch("po_b6", List.of(f.line("txn_b6", "charge", "ch_p5", 5400, 187)));
+        f.tx.executeWithoutResult(tx -> f.batches.process(evidence));
+        balances(4500, 0, 0, 4500, 0, 0);
+        String issue = text("SELECT id FROM recon.issue WHERE subject_id='po_b6'");
+        var request = restate(entry, 5400);
+        request.set(
+                "evidence",
+                f.mapper.valueToTree(List.of(
+                        Map.of("type", "issue", "id", issue),
+                        Map.of(
+                                "type",
+                                "processor_fetch",
+                                "id",
+                                Long.toString(java.util.Objects.requireNonNull(evidence.lines())
+                                        .fetchId())))));
+        var response = submit(request);
+        assertThat(response.getStatus()).isEqualTo(201);
+        var result = json(response);
+        String correction = result.path("correction").path("id").asString();
+        assertThat(result.path("affected").path("batches")).isEqualTo(f.mapper.valueToTree(List.of("po_b6")));
+        assertThat(result.path("affected").path("issues")).isEqualTo(f.mapper.valueToTree(List.of(issue)));
+        assertThat(text("SELECT status FROM core.settlement_batch")).isEqualTo("CONFIRMED");
+        assertThat(text("SELECT status FROM core.payment")).isEqualTo("SETTLED");
+        assertThat(text("SELECT status FROM recon.issue")).isEqualTo("RESOLVED");
+        assertThat(text("SELECT resolution_correction_id FROM recon.issue")).isEqualTo(correction);
+        assertThat(f.number("SELECT expected_fee FROM core.payment")).isEqualTo(187);
+        assertThat(f.jdbc.sql("""
+                SELECT e.entry_type||':'||p.account_code||':'||p.side||':'||p.amount
+                FROM ledger.journal_entry e JOIN ledger.posting p ON p.entry_id=e.id
+                WHERE e.correction_id=? ORDER BY e.seq,p.line_no
+                """).param(correction).query(String.class).list())
+                .containsExactly(
+                        "REVERSAL:1101:C:4500", "REVERSAL:2101:D:4500",
+                        "CORRECTION:1101:D:5400", "CORRECTION:2101:C:5400");
+        // Per-posting balances expose the reversal and correction checkpoints within this transaction.
+        assertThat(f.jdbc.sql("""
+                SELECT p.balance_after FROM ledger.posting p JOIN ledger.journal_entry e ON e.id=p.entry_id
+                WHERE e.correction_id=? ORDER BY e.seq,p.line_no
+                """).param(correction).query(Long.class).list()).containsExactly(0L, 0L, 5400L, 5400L);
+        assertThat(f.number(
+                        "SELECT count(*) FROM core.payment_transition WHERE from_status='CAPTURED' AND to_status='CAPTURED' AND evidence_id='"
+                                + correction + "'"))
+                .isEqualTo(1);
+        assertThat(f.jdbc.sql("SELECT to_status FROM core.batch_transition WHERE evidence_id=? ORDER BY id")
+                        .param(correction)
+                        .query(String.class)
+                        .list())
+                .containsExactly("RECEIVED", "CONFIRMED");
+        balances(0, 5213, 0, 0, 5213, 0);
+        assertThat(json(mvc.perform(get("/api/corrections/" + correction))
+                        .andReturn()
+                        .getResponse()))
+                .isEqualTo(result);
+    }
+
+    @Test
+    void ac_6_5_restateAgainThenVoidUsesCurrentCorrectionEntry() throws Exception {
+        assertThat(submit(restate(entry, 5400)).getStatus()).isEqualTo(201);
+        String first = currentEntry();
+        assertThat(submit(restate(first, 6000)).getStatus()).isEqualTo(201);
+        var before = snapshot();
+        error(submit(restate(entry, 7000)), 409, "ALREADY_REVERSED");
+        error(submit(restate(first, 7000)), 409, "ALREADY_REVERSED");
+        assertThat(snapshot()).isEqualTo(before);
+        assertThat(submit(body(currentEntry())).getStatus()).isEqualTo(201);
+        balances(0, 0, 0, 0, 0, 0);
+    }
+
+    @Test
+    void ac_6_5_refundFloorAndZeroRemainingApplyImmediately() throws Exception {
+        f.accept(payment, 3000);
+        var before = snapshot();
+        error(submit(restate(entry, 2999)), 409, "AMOUNT_BELOW_REFUNDED");
+        error(submit(restate(entry, 10000)), 409, "AMOUNT_UNCHANGED");
+        assertThat(snapshot()).isEqualTo(before);
+        assertThat(submit(restate(entry, 3000)).getStatus()).isEqualTo(201);
+        before = snapshot();
+        assertThatThrownBy(() -> f.accept(payment, 1))
+                .isInstanceOfSatisfying(
+                        RefundException.class, e -> assertThat(e.code()).isEqualTo("REFUND_EXCEEDS_REMAINING"));
+        assertThat(snapshot()).isEqualTo(before);
+        balances(3000, 0, 0, 3000, -3000, 3000);
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {Long.MIN_VALUE, 0, 49, 100000000, Long.MAX_VALUE})
+    void ac_6_5_amountRangeRejectsWithoutWrites(long amount) throws Exception {
+        var before = snapshot();
+        error(submit(restate(entry, amount)), 400, "INVALID_REQUEST");
+        assertThat(snapshot()).isEqualTo(before);
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {50, 99999999})
+    void ac_6_5_amountRangeIncludesBothEndpoints(long amount) throws Exception {
+        assertThat(submit(restate(entry, amount)).getStatus()).isEqualTo(201);
+        assertThat(f.number("SELECT amount FROM core.payment")).isEqualTo(amount);
+        assertThat(f.number("SELECT expected_fee FROM core.payment")).isEqualTo(amount == 50 ? 31 : 2900030);
+        balances(amount, 0, 0, amount, 0, 0);
+    }
+
+    @Test
+    void ac_6_5_restatePreservesTargetErrorOrderAndSettledGuard() throws Exception {
+        var before = snapshot();
+        error(submit(restate("je_missing", 5400)), 404, "ENTRY_NOT_FOUND");
+        assertThat(snapshot()).isEqualTo(before);
+        var corrected = json(submit(restate(entry, 5400)));
+        before = snapshot();
+        error(
+                submit(restate(corrected.path("entries").get(0).path("entryId").asString(), 6000)),
+                409,
+                "CANNOT_REVERSE_REVERSAL");
+        assertThat(snapshot()).isEqualTo(before);
+        String target = currentEntry();
+        f.batch("po_settled", "ch_p1", 5400, 187);
+        f.accept(payment, 1000);
+        before = snapshot();
+        error(submit(restate(target, 500)), 409, "USE_REFUND_FOR_SETTLED_PAYMENT");
+        error(
+                submit(restate(text("SELECT id FROM ledger.journal_entry WHERE entry_type='BATCH_SETTLED'"), 500)),
+                409,
+                "ENTRY_NOT_CORRECTABLE");
+        assertThat(snapshot()).isEqualTo(before);
+        f.invariants();
+    }
+
+    @Test
+    void ac_6_5_missingAmountAndBankOnlyEvidenceRejectWithoutWrites() throws Exception {
+        var request = restate(entry, 5400);
+        request.remove("newAmount");
+        error(submit(request), 400, "INVALID_REQUEST");
+        f.bankEvidence();
+        var before = snapshot();
+        request = restate(entry, 5400);
+        request.set("evidence", f.mapper.valueToTree(List.of(Map.of("type", "bank_txn", "id", "bt_evidence"))));
+        error(submit(request), 400, "INVALID_REQUEST");
+        assertThat(snapshot()).isEqualTo(before);
+    }
+
+    @Test
+    void ac_6_5_unsuccessfulRecheckCommitsCorrectionAndKeepsReferencedIssueOpen() throws Exception {
+        var evidence = f.archivedBatch("po_still_held", List.of(f.line("txn_still", "charge", "ch_p1", 5400, 187)));
+        f.tx.executeWithoutResult(tx -> f.batches.process(evidence));
+        String issue = text("SELECT id FROM recon.issue");
+        var request = restate(entry, 5000);
+        request.set("evidence", f.mapper.valueToTree(List.of(Map.of("type", "issue", "id", issue))));
+        assertThat(submit(request).getStatus()).isEqualTo(201);
+        assertThat(text("SELECT status FROM core.settlement_batch")).isEqualTo("HELD");
+        assertThat(text("SELECT hold_reason FROM core.settlement_batch")).isEqualTo("AMOUNT_MISMATCH");
+        assertThat(text("SELECT status FROM recon.issue")).isEqualTo("OPEN");
+        assertThat(f.number("SELECT count(*) FROM recon.issue WHERE resolution_correction_id IS NOT NULL"))
+                .isZero();
+        assertThat(f.number("SELECT count(*) FROM core.batch_transition WHERE to_status='HELD'"))
+                .isEqualTo(2);
+        balances(5000, 0, 0, 5000, 0, 0);
+    }
+
+    @Test
+    void ac_6_5_recheckRefreshesReasonWithoutTouchingUnrelatedBatches() throws Exception {
+        var evidence = f.archivedBatch(
+                "po_refresh",
+                List.of(
+                        f.line("txn_refresh", "charge", "ch_p1", 5400, 187),
+                        f.line("txn_missing", "charge", "ch_missing", 1000, 59)));
+        f.tx.executeWithoutResult(tx -> f.batches.process(evidence));
+        f.payment("ch_unrelated", 1000);
+        var other =
+                f.archivedBatch("po_unrelated", List.of(f.line("txn_unrelated", "charge", "ch_unrelated", 2000, 88)));
+        f.tx.executeWithoutResult(tx -> f.batches.process(other));
+        assertThat(submit(restate(entry, 5400)).getStatus()).isEqualTo(201);
+        assertThat(text("SELECT hold_reason FROM core.settlement_batch WHERE batch_id='po_refresh'"))
+                .isEqualTo("UNKNOWN_PAYMENT");
+        assertThat(text("SELECT hold_reason FROM core.settlement_batch WHERE batch_id='po_unrelated'"))
+                .isEqualTo("AMOUNT_MISMATCH");
+        assertThat(
+                        f.number(
+                                "SELECT count(*) FROM core.batch_transition WHERE subject_id='po_unrelated' AND evidence_type='correction'"))
+                .isZero();
+        assertThat(f.number("SELECT count(*) FROM recon.issue WHERE status='OPEN'"))
+                .isEqualTo(2);
+        f.invariants();
+    }
+
+    @Test
+    void ac_6_5_recheckReleasesFifoAndWakesBankWaiting() throws Exception {
+        f.accept(payment, 1000);
+        f.accept(payment, 1000);
+        var evidence = f.archivedBatch("po_wake", List.of(f.line("txn_wake", "charge", "ch_p1", 5400, 187)));
+        f.tx.executeWithoutResult(tx -> f.batches.process(evidence));
+        f.bankWaiting("po_wake", 5213);
+        assertThat(text("SELECT match_status FROM recon.bank_line")).isEqualTo("WAITING");
+        assertThat(submit(restate(entry, 5400)).getStatus()).isEqualTo(201);
+        assertThat(text("SELECT status FROM core.settlement_batch")).isEqualTo("BANKED");
+        assertThat(text("SELECT match_status FROM recon.bank_line")).isEqualTo("MATCHED");
+        assertThat(f.number("SELECT count(*) FROM core.refund WHERE status='READY'"))
+                .isEqualTo(2);
+        assertThat(f.count("io.outbound_command")).isEqualTo(2);
+        balances(0, 0, 5213, 0, 3213, 2000);
+    }
+
+    @Test
+    void ac_6_5_failureAfterRecheckRollsBackCorrectionBatchBankAndIssues() {
+        var evidence = f.archivedBatch("po_rollback", List.of(f.line("txn_rollback", "charge", "ch_p1", 5400, 187)));
+        f.tx.executeWithoutResult(tx -> f.batches.process(evidence));
+        f.bankWaiting("po_rollback", 5213);
+        var before = snapshot();
+        assertThatThrownBy(() -> f.tx.executeWithoutResult(tx -> {
+                    try {
+                        assertThat(submit(restate(entry, 5400)).getStatus()).isEqualTo(201);
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                    assertThat(text("SELECT status FROM core.settlement_batch")).isEqualTo("BANKED");
+                    throw new IllegalStateException("after recheck");
+                }))
+                .hasMessage("after recheck");
+        assertThat(snapshot()).isEqualTo(before);
+        assertThat(text("SELECT match_status FROM recon.bank_line")).isEqualTo("WAITING");
+        f.invariants();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void ac_6_5_restateAndRefundSerializeBothOrders(boolean restateFirst) throws Exception {
+        var barrier = new CyclicBarrier(2);
+        var locked = new CountDownLatch(1);
+        var attempting = new CountDownLatch(1);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(() -> {
+                barrier.await(10, TimeUnit.SECONDS);
+                return f.tx.execute(tx -> {
+                    f.ledger.lockFunds();
+                    locked.countDown();
+                    await(attempting);
+                    if (restateFirst) {
+                        try {
+                            return submit(restate(entry, 5000)).getStatus();
+                        } catch (Exception e) {
+                            throw new IllegalStateException(e);
+                        }
+                    }
+                    f.accept(payment, 6000);
+                    return 201;
+                });
+            });
+            var second = pool.submit(() -> {
+                barrier.await(10, TimeUnit.SECONDS);
+                await(locked);
+                return f.tx.execute(tx -> {
+                    attempting.countDown();
+                    f.ledger.lockFunds();
+                    if (!restateFirst) {
+                        try {
+                            error(submit(restate(entry, 5000)), 409, "AMOUNT_BELOW_REFUNDED");
+                        } catch (Exception e) {
+                            throw new IllegalStateException(e);
+                        }
+                    } else {
+                        assertThatThrownBy(() -> f.accept(payment, 6000))
+                                .isInstanceOfSatisfying(
+                                        RefundException.class,
+                                        e -> assertThat(e.code()).isEqualTo("REFUND_EXCEEDS_REMAINING"));
+                        // The joined rejection marks this outer test transaction rollback-only.
+                        tx.setRollbackOnly();
+                    }
+                    f.invariants();
+                    tx.setRollbackOnly();
+                    return 409;
+                });
+            });
+            assertThat(first.get(20, TimeUnit.SECONDS)).isEqualTo(201);
+            assertThat(second.get(20, TimeUnit.SECONDS)).isEqualTo(409);
+        }
+        assertThat(f.number("SELECT amount FROM core.payment")).isEqualTo(restateFirst ? 5000 : 10000);
+        assertThat(f.number("SELECT refunded_amount FROM core.payment")).isEqualTo(restateFirst ? 0 : 6000);
+        f.invariants();
     }
 
     @Test
@@ -382,7 +704,7 @@ class CorrectionHttpTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"RESTATE_CAPTURE_AMOUNT", "APPLY_UNAPPLIED_CASH", "RESTORE_FAILED_PAYOUT"})
+    @ValueSource(strings = {"APPLY_UNAPPLIED_CASH", "RESTORE_FAILED_PAYOUT"})
     void ac_6_1_otherCorrectionTypesAreUnavailable(String type) throws Exception {
         var before = snapshot();
         var request = body(entry);

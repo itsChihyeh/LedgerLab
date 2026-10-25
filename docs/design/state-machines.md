@@ -126,8 +126,17 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 ### P3 T10 实现备注：退款批次核对
 
 - 退款行按 processor_refund_ref 逐笔匹配，金额不等为 HELD(AMOUNT_MISMATCH)，FAILED／CANCELLED／AWAITING_FUNDS 或处理方身份冲突为 HELD(REFUND_STATE_CONFLICT)，已属于另一批为 HELD(LINE_IN_OTHER_BATCH)。沿用批次主体的金额／状态差异和 DUPLICATE_STATEMENT_LINE 映射；没有任何退款或批次分录部分提交。
-- 取回对象仍无法关联本地退款时为 HELD(UNKNOWN_REFUND)，立即开 MISSING_IN_LEDGER，subject=(refund,re_…)。未知支付的延后老化规则不变；只有 UNKNOWN_PAYMENT 自动重核。P2 因退款行而 HELD(UNSUPPORTED_LINE) 的历史批次不自动重核，留给 P4 纠错；新版本不改写旧原因或差异。
+- 取回对象仍无法关联本地退款时为 HELD(UNKNOWN_REFUND)，立即开 MISSING_IN_LEDGER，subject=(refund,re_…)。未知支付的延后老化规则不变；P3 时只有 UNKNOWN_PAYMENT 自动重核，P4 金额纠错的重核见下方 T03 备注。P2 因退款行而 HELD(UNSUPPORTED_LINE) 的历史批次不自动重核，留给 P4 纠错；新版本不改写旧原因或差异。
 - 全批核对通过后先应用退款执行证据，再记 BATCH_SETTLED，关联退款 batch_id，然后放行 FIFO，最后唤醒银行 WAITING。已确认版本规范化支持 REFUND，重放相同行只记重复证据，不重复扣款。
+
+### P4 T03 实现备注：改金额与固定存档重核
+
+- `settlement.BatchRechecks` 是固定存档重核的公开入口。`recheckUnknownPayment(paymentRef, captureEventId)` 承接 P2 路径：ingestion 只委托，不再解析重核存档；仍只选择包含该支付号的 `HELD(UNKNOWN_PAYMENT)`，保持原事务及无 HTTP 行为。`recheckAmount(paymentRef, correctionId)` 只选择包含该支付号的 `HELD(AMOUNT_MISMATCH)`，由金额纠错在更新支付之后同步调用。候选按批次号加锁，全部使用 `lines_fetch_id` 指向的完整 BATCH_LINES 存档及原 payout 金额，不使用较新的明细版本。
+- 退款优先使用本地 processor_refund_ref；尚未绑定时，UNKNOWN_PAYMENT 路径仍使用首次 UNKNOWN_PAYMENT 历史时点前的完整 REFUND_QUERY 存档，兼容 V11 未回填 lines_fetch_id 的旧历史。纠错及运营重核使用该固定明细存档首次进入 HELD 的历史时点前的完整退款查询存档，不进行外部查询。核对、退款执行、BATCH_SETTLED、支付 SETTLED、FIFO 放行、银行 WAITING 唤醒复用既有结算流程，全部加入调用方资金事务。
+- 重核通过时追加 `HELD → RECEIVED → CONFIRMED`，银行等待行精确匹配时可在同事务到 BANKED。仍失败时沿用核对顺序刷新 hold_reason，追加 `HELD → HELD` 或 `HELD → RECEIVED → HELD` 历史；历史携带本次证据和原 lines_fetch_id。旧历史、固定存档不改，新原因按既有分类开差异，原 OPEN 差异保留，金额纠错仍可提交。
+- `POST /api/batches/{batchId}/recheck` 与纠错路由共用 `ledgerlab.corrections.enabled` 开关，成功处理返回 200 `{batchId,status,holdReason}`，即使重核后仍 HELD 也是业务结果。未知批次 404 BATCH_NOT_FOUND，非 HELD 409 BATCH_NOT_HELD，UNSUPPORTED_PAYOUT 409 BATCH_NOT_RECHECKABLE，均不写入。运营历史的证据为固定 processor_fetch；通过后仅将该批次主体的 OPEN 差异置 RESOLVED，OPERATOR 历史及 explanation 为“运营重核通过”，无纠错编号。
+- 金额纠错在所有批次重核完成后处置差异：实际前进批次的主体 OPEN 差异自动 RESOLVED 并关联本次 correction；请求引用的非批次 OPEN 差异也按 ADR 关闭。引用了仍 HELD 或未参与本次重核的批次差异不会将其关闭；ADR-0011 第 2 节②的“仍不通过则差异保持 OPEN”也适用于请求中引用的批次差异。非 OPEN 差异保持原状态。
+- 定向测试覆盖 AC-6.5、AC-1.4d 样例 E 的分录及余额检查点、连续金额纠错和随后撤销、退款额度边界、两种受控并发顺序、原因刷新、FIFO 和银行唤醒、整体事务回滚，以及 AC-6.12 的 P2 历史退款批次、重复／并发重核和开关。没有新迁移、权限变更或模块依赖放宽。
 
 ### P2 T05 实现备注：批次确认与入站恢复
 
@@ -144,7 +153,7 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 
 - HELD 沿用 inbox `PROCESSED/APPLIED`，不新增 result 或数据库枚举。核对失败不插入批次行、不记批次分录；原文固定保存在 `lines_fetch_id` 指向的完整 `io.processor_fetch` 中。差异为 `detected_by=INGESTION`、subject 为 batch，`expected`／`actual` 保存核对值、行身份和处理方引用，`evidence_refs` 关联入站事件／拉取存档。
 - 差异类别映射：`AMOUNT_MISMATCH`、`FEE_EXCEEDS_GROSS` 均报 `AMOUNT_MISMATCH`（费用超过毛额是金额契约违规）；`UNSUPPORTED_LINE` 自 P3 T02 起报 `UNSUPPORTED_BATCH_LINE`（P2 原为 `UNSUPPORTED_EVENT`）；`LINE_IN_OTHER_BATCH` 报 `DUPLICATE_STATEMENT_LINE`；`TOTAL_MISMATCH` 报 `BATCH_TOTAL_MISMATCH`。具体原因仍在批次 `hold_reason` 和差异 `actual.reason` 中。`UNKNOWN_PAYMENT` 不立即开差异，留给 T11 老化。实际手续费与合同手续费不同仍按实际值结算，T10 对账再报 `FEE_MISMATCH`。
-- ingestion 在 `PaymentCapture.capture` 返回 `APPLIED`／`DUPLICATE_FACT` 后，同一事务同步调用 settlement 的按支付号重核入口。按批次号锁定 `HELD(UNKNOWN_PAYMENT)` 候选，读取其固定 `lines_fetch_id` 的完整存档，仅重核含该支付号的批次；不发 HTTP。多笔支付尚未到齐时继续 HELD；到齐后 `HELD → RECEIVED → CONFIRMED`，清 `hold_reason`，支付与批次记账一起提交或回滚。其他 HELD 原因不自动恢复。
+- ingestion 在 `PaymentCapture.capture` 返回 `APPLIED`／`DUPLICATE_FACT` 后，同一事务同步调用 settlement 的按支付号重核入口。按批次号锁定 `HELD(UNKNOWN_PAYMENT)` 候选，读取其固定 `lines_fetch_id` 的完整存档，仅重核含该支付号的批次；不发 HTTP。多笔支付尚未到齐时继续 HELD；到齐后 `HELD → RECEIVED → CONFIRMED`，清 `hold_reason`，支付与批次记账一起提交或回滚。P2 时其他 HELD 原因不自动恢复；P4 新增路径见上方 T03 备注。
 - 已 `CONFIRMED`／`BANKED`／`PAYOUT_FAILED` 的再次就绪事件完整拉取后比较规范化版本：跳过 `type=payout` 转账行，按 `balance_txn_id` 排序，对行身份、类型、引用、gross／fee／net、转小写的币种、业务时间 epoch seconds 的 JSON 数组算 SHA-256，另比较 payout 金额。相同为 `PROCESSED/DUPLICATE_FACT`；不同为 `REJECTED/BUSINESS_CONFLICT`，开 `BATCH_VERSION_CONFLICT`，新 fetch 即冲突版本存档。原批次字段、明细和分录不改，只追加证据历史；同一差异识别键不重复建 issue。原始字节哈希仅用于存档完整性。未就绪或不完整拉取不参与比较；重复 created 仍只记历史。
 - `payout.failed`／`payout.canceled` 不拉明细：批次不存在时 `PARKED`；`ANNOUNCED`／`HELD` 只记历史、`PROCESSED/APPLIED`，保留 HELD 原因；`CONFIRMED` 同事务转 `PAYOUT_FAILED`，按已核对 net 记 `BATCH_PAYOUT_FAILED`（借 1101／贷 1102），source key 为 `batch:{id}:payout_failed`；重复失败为 `PROCESSED/DUPLICATE_FACT`。`BANKED` 时仅记历史、开 `BATCH_STATE_CONFLICT`，inbox `REJECTED/BUSINESS_CONFLICT`。之后退回行仍须匹配失败批次的金额、币种、状态且未被其他批次使用；样例 H 使用真实失败事件建立前置。
 - `SettlementWorkerTest` 覆盖 AC-5.2、5.3、5.19、4.1、1.4b、5.18，包括规范化去重、冲突重复告警、不完整版本、请款与重核回滚、失败与分录回滚、BANKED 冲突。`SettlementModelProperties` 的独立纯 Java 模型新增请款、变更版本、失败／取消、退回重发、跨批次复用、异常费用和不支持行；从 S0 或 S1 开始随机组合，每步检查账本不变量、INV-9 的 2101／1102、余额、状态、hold reason、历史、明细／posting 数和差异身份。重发动作要求原批次已失败，跨批次复用要求已结算；其余可任意乱序，使用新 event_id 重复事实。种子 `2026102306`，最多 24 步，次数跟随 Maven 的 jqwik 配置（本地 100、CI 1000），动作执行／前置不满足计数和状态分布写入 Surefire 的 jqwik 报告。并发与事务故障仍由受控定向测试覆盖，不把随机模型当作并发证明。

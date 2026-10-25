@@ -77,11 +77,16 @@ final class CorrectionReader {
                 .param(id)
                 .query((rs, n) -> rs.getString(1))
                 .list();
+        var batches = jdbc.sql("SELECT DISTINCT subject_id FROM core." + prefix
+                        + "batch_transition WHERE evidence_type='correction' AND evidence_id=? ORDER BY subject_id")
+                .param(id)
+                .query((rs, n) -> rs.getString(1))
+                .list();
         return new CorrectionResult(
                 correction,
                 targets,
                 entries,
                 new CorrectionResult.Affected(
-                        List.of((String) correction.get("subjectId")), List.of(), List.of(), issues));
+                        List.of((String) correction.get("subjectId")), batches, List.of(), issues));
     }
 }
