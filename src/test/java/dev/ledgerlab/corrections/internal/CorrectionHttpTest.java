@@ -25,6 +25,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -808,5 +809,121 @@ class CorrectionHttpTest {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(e);
         }
+    }
+
+    @Test
+    void ac_6_3_concurrentAcceptCommitsBeforeCorrectionReadsIssue() throws Exception {
+        String issue = correctionRaceIssue();
+        String request = correctionRaceRequest(issue);
+        var attempting = new CountDownLatch(1);
+        var correctionPid = new AtomicInteger();
+        var controlled = controller(() -> {
+            correctionPid.set(backendPid());
+            attempting.countDown();
+        });
+        var store = new IssueStore(f.jdbc, f.ids, f.clock, f.manager);
+        try (var pool = Executors.newSingleThreadExecutor()) {
+            var correction = f.tx.execute(tx -> {
+                // The committed version is still OPEN while accept holds the updated row.
+                store.accept(issue, "concurrent operator acceptance");
+                int acceptingPid = backendPid();
+                var pending = pool.submit(() -> submit(controlled, request));
+                await(attempting);
+                awaitBlockedBy(correctionPid.get(), acceptingPid);
+                // Without FOR UPDATE, correction has read stale OPEN and is now blocked on UPDATE.
+                return pending;
+            });
+            var response = java.util.Objects.requireNonNull(correction).get(20, TimeUnit.SECONDS);
+            assertThat(response.getStatus()).isEqualTo(201);
+            assertCorrectionRaceCommitted(issue, "ACCEPTED");
+            assertThat(text("SELECT explanation FROM recon.issue WHERE id='" + issue + "'"))
+                    .isEqualTo("concurrent operator acceptance");
+            assertThat(f.number("SELECT count(*) FROM recon.issue WHERE resolution_correction_id IS NOT NULL"))
+                    .isZero();
+            assertThat(f.number("SELECT count(*) FROM recon.issue_transition WHERE to_status='RESOLVED'"))
+                    .isZero();
+        }
+    }
+
+    @Test
+    void ac_6_3_correctionCommitsBeforeConcurrentAcceptReadsIssue() throws Exception {
+        String issue = correctionRaceIssue();
+        String request = correctionRaceRequest(issue);
+        var attempting = new CountDownLatch(1);
+        var acceptingPid = new AtomicInteger();
+        var store = new IssueStore(f.jdbc, f.ids, f.clock, f.manager);
+        try (var pool = Executors.newSingleThreadExecutor()) {
+            var acceptance = f.tx.execute(tx -> {
+                try {
+                    assertThat(submit(mvc, request).getStatus()).isEqualTo(201);
+                } catch (Exception e) {
+                    throw new IllegalStateException(e);
+                }
+                int correctionPid = backendPid();
+                var pending = pool.submit(() -> assertThatThrownBy(() -> f.tx.executeWithoutResult(ignored -> {
+                            acceptingPid.set(backendPid());
+                            attempting.countDown();
+                            store.accept(issue, "concurrent operator acceptance");
+                        }))
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessage("Only OPEN issues can be disposed"));
+                await(attempting);
+                awaitBlockedBy(acceptingPid.get(), correctionPid);
+                return pending;
+            });
+            java.util.Objects.requireNonNull(acceptance).get(20, TimeUnit.SECONDS);
+            assertCorrectionRaceCommitted(issue, "RESOLVED");
+            String correctionId = text("SELECT id FROM ledger.correction");
+            assertThat(text("SELECT resolution_correction_id FROM recon.issue WHERE id='" + issue + "'"))
+                    .isEqualTo(correctionId);
+            assertThat(text("SELECT evidence_refs->0->>'id' FROM recon.issue_transition WHERE reason='OPERATOR'"))
+                    .isEqualTo(correctionId);
+            assertThat(text("SELECT evidence_refs->0->>'type' FROM recon.issue_transition WHERE reason='OPERATOR'"))
+                    .isEqualTo("correction");
+        }
+    }
+
+    private String correctionRaceIssue() {
+        f.tx.executeWithoutResult(
+                tx -> f.issues.open("EVENT_BUSINESS_CONFLICT", "event", "evt_correction_race", "{}", "{}", "[]"));
+        return text("SELECT id FROM recon.issue WHERE subject_id='evt_correction_race'");
+    }
+
+    private String correctionRaceRequest(String issue) {
+        var request = body(entry);
+        request.set("evidence", f.mapper.valueToTree(List.of(Map.of("type", "issue", "id", issue))));
+        return f.mapper.writeValueAsString(request);
+    }
+
+    private int backendPid() {
+        return f.jdbc.sql("SELECT pg_backend_pid()").query(Integer.class).single();
+    }
+
+    private void awaitBlockedBy(int waitingPid, int holdingPid) {
+        // Observe a real database wait, not elapsed time or thread scheduling.
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            if (f.jdbc.sql("SELECT ? = ANY(pg_blocking_pids(?))")
+                    .params(holdingPid, waitingPid)
+                    .query(Boolean.class)
+                    .single()) return;
+        }
+        throw new AssertionError("Expected backend " + waitingPid + " to wait for " + holdingPid);
+    }
+
+    private void assertCorrectionRaceCommitted(String issue, String status) {
+        assertThat(text("SELECT status FROM recon.issue WHERE id='" + issue + "'"))
+                .isEqualTo(status);
+        assertThat(f.jdbc.sql(
+                                "SELECT from_status || '->' || to_status FROM recon.issue_transition WHERE issue_id=? AND reason='OPERATOR'")
+                        .param(issue)
+                        .query(String.class)
+                        .list())
+                .containsExactly("OPEN->" + status);
+        assertThat(f.count("ledger.correction")).isEqualTo(1);
+        assertThat(f.number("SELECT count(*) FROM ledger.journal_entry WHERE entry_type='REVERSAL'"))
+                .isEqualTo(1);
+        assertThat(text("SELECT status FROM core.payment")).isEqualTo("VOIDED");
+        f.invariants();
     }
 }

@@ -244,6 +244,12 @@ V15 已同步放宽 inbox_event 与 inbox_status_history 的 result CHECK，本�
 
 同一差异的识别键是 `(category, subject_type, subject_id)`，重复运行对账不会生成重复差异。
 
+### P4 T02b 实现备注：纠错与运营处置并发
+
+- `IssueStore.resolveByCorrection` 在调用方事务内通过 `lockIssues` 执行 `SELECT … FOR UPDATE`，取得行锁后才判断是否为 OPEN；只有实际转为 RESOLVED 时才关联纠错并追加 OPERATOR 历史。并发 accept 先提交时保留 ACCEPTED，不写纠错处置历史，纠错本身仍提交。
+- T02/T03 的引用差异及批次自动关闭差异在 `JdbcCorrections` 汇总为 `TreeSet`，所有业务及账户写入完成后按差异号升序调用上述入口。无纠错号的运营批次重核仍走 `resolve`，在调用前按差异号升序 `FOR UPDATE` 锁住 OPEN 行。
+- `CorrectionHttpTest` 用栅栏及 `pg_blocking_pids` 控制 accept 与纠错的两种先后顺序，核对最终状态、唯一 OPEN→目标状态的处置历史及纠错提交。临时去掉行锁时，accept 先提交的测试复现 ACCEPTED 被覆盖为 RESOLVED；生产实现保留行锁。
+
 ### 7.1 运行发现与处置状态分开（2026-10-23 定，P2 开工前置 ③）
 
 - **发现**（`recon.finding`）：某次运行看到的一条差异，带当次的 `expected`/`actual`/证据和内容指纹 `fingerprint`（类别、subject、expected、actual 规范化后的 SHA-256）。只追加、永不修改，所以任何一次旧运行的报告都能原样重现。dry run 不写发现。
