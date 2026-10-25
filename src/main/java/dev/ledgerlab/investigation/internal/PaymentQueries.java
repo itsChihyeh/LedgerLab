@@ -13,7 +13,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 final class PaymentQueries {
     private static final String SUMMARY = """
-            SELECT id, processor_payment_ref, amount, status, expected_fee, actual_fee, batch_id FROM core.v_payment
+            SELECT id, processor_payment_ref, amount, status, expected_fee, actual_fee, batch_id, refunded_amount FROM core.v_payment
             """;
     private static final RowMapper<Payment> PAYMENT = (rs, row) -> new Payment(
             rs.getString("id"),
@@ -25,15 +25,18 @@ final class PaymentQueries {
     private final JdbcClient jdbc;
     private final QuerySnapshot snapshot;
     private final WorkbenchQueries workbench;
+    private final RefundQueries refunds;
 
-    PaymentQueries(QuerySnapshot snapshot, WorkbenchQueries workbench) {
+    PaymentQueries(QuerySnapshot snapshot, WorkbenchQueries workbench, RefundQueries refunds) {
         this.jdbc = snapshot.jdbc;
         this.snapshot = snapshot;
         this.workbench = workbench;
+        this.refunds = refunds;
     }
 
     private record PaymentState(
             Payment payment,
+            long refundedAmount,
             @Nullable Long actualFee,
             @Nullable String batchId) {}
 
@@ -42,7 +45,10 @@ final class PaymentQueries {
             PaymentState state = jdbc.sql(SUMMARY + " WHERE id = :ref OR processor_payment_ref = :ref")
                     .param("ref", ref)
                     .query((rs, row) -> new PaymentState(
-                            PAYMENT.mapRow(rs, row), rs.getObject("actual_fee", Long.class), rs.getString("batch_id")))
+                            PAYMENT.mapRow(rs, row),
+                            rs.getLong("refunded_amount"),
+                            rs.getObject("actual_fee", Long.class),
+                            rs.getString("batch_id")))
                     .optional()
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Payment not found"));
             Payment payment = state.payment();
@@ -61,6 +67,8 @@ final class PaymentQueries {
                     FROM ledger.v_journal_entry e JOIN ledger.v_posting p ON p.entry_id = e.id
                     JOIN ledger.v_account a ON a.code = p.account_code
                     WHERE (e.subject_type = 'payment' AND e.subject_id = :id)
+                       OR (e.subject_type = 'refund' AND e.subject_id IN
+                           (SELECT id FROM core.v_refund WHERE payment_id = :id))
                        OR (e.subject_type = 'batch' AND e.subject_id = :batch)
                        OR (e.subject_type = 'bank_txn' AND e.subject_id IN
                            (SELECT bank_txn_id FROM recon.v_bank_line WHERE matched_batch_id = :batch))
@@ -105,6 +113,8 @@ final class PaymentQueries {
                     deposit,
                     postings,
                     deliveries,
+                    refunds.forPayment(payment.id()),
+                    Math.subtractExact(payment.amount(), state.refundedAmount()),
                     asOf);
         });
     }
@@ -146,6 +156,8 @@ final class PaymentQueries {
             @Nullable BankDeposit bankDeposit,
             List<Posting> postings,
             List<EventQueries.Delivery> deliveries,
+            List<RefundQueries.Refund> refunds,
+            long refundable_remaining,
             AsOf asOf) {}
 
     record PaymentList(List<Payment> payments, AsOf asOf) {}

@@ -283,6 +283,16 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - 证据页精确使用 T13/T13b 的批次行文件号／行序号、事件脱敏摘要、银行流水编号。相关 posting 按差异明确引用的 entryId，在其关联支付／批次／银行详情中定位，保留该来源响应的 asOf，不新增后端接口、不拼成跨请求的统一快照。总览各数据区也分别保留自己的 asOf。
 - E2E 两轮分别以空 Testcontainers 数据库重放 T12 的 `sample-a-1-3` 和 `ac-5-3`（截至 first 检查点，恰好七条差异）。复用场景真值断言和真实签名 webhook、处理方 HTTP 回放、银行 CSV 导入及对账；不直接 SQL 造账。仅测试启动器在 loopback 8090 提供就绪、注入 Clock 读数、受控 worker 排空和 B1 回放准备；生产应用没有这些入口。演示辅助函数 `frontend/e2e/helpers.ts#replayB1Confirmation` 只替换 event_id 后重签并投递原 B1 确认内容。
 
+### P3 T12 实现备注：退款查询、页面与演示
+
+- V19 增加 `core.v_refund_attempt_summary`，关联退款命令，仅公开 refund_id、command_id、attempt_no、sent_at、finished_at、recorded_at、response_status 和由 HTTP 状态生成的 result_code（无响应为 NO_RESPONSE）。migrator 持有视图，readonly 仅 SELECT；app 沿用底表权限。请求、响应原文、error 和凭据均不公开，readonly 仍不能访问 io。
+- 支付详情增加 refunds 与 refundable_remaining；队列位置按整个商户当前 AWAITING_FUNDS 的 queue_seq 排序，从 1 开始，其他状态为 null。退款详情增加 queue_seq、queue_position、processor_refund_ref、entries、postings 和逐次 attempts；命令进度与业务状态分别显示。全部字段沿用同一个 readonly REPEATABLE READ 快照。
+- 总览增加 refund_payable、awaiting_funds_count、awaiting_funds_amount 和 merchant_debt；保留既有 merchantOwes 以兼容 P2。欠款为正数显示，非欠款时 merchant_debt 为 0。
+- 页面金额输入要求 CAD 元、恰好两位小数（例如 20.00），通过字符串与整数运算转换为分；100.5 提示补足两位小数。一次提交的业务编号和幂等键在网络重试中保留，完成后才能开始新退款。
+- `#/refunds/{id}` 展示状态历史、证据引用、退款分录及命令尝试摘要；差异 references 新增 refundIds，同时支持 refund_id、core.refund 以及 processor_refund_ref 解析。六种 P3 差异提供中文名，保留原枚举值用于筛选。
+- 并发面板同时发送不同业务编号与幂等键的两笔请求，逐笔显示真实 HTTP 状态与业务错误。故障演示仅在 E2E 启动时通过 VITE_E2E_REFUNDS 开启：Vite 将 /__e2e__/refund-response-loss 转至 loopback 8090；测试启动器转发真实退款 POST，取得已提交的 201 后关闭响应连接。页面先只读核实已提交退款，再以同键、同请求体重试并核对退款编号。普通生产构建不包含演示入口、控制代理或测试启动器。
+- E2E 增加三轮独立空库重放 S3（并发 6000、并发 5000、丢响应重试），关闭出站调度以固定观察受理后的状态，不运行真实 Stripe。AC-4.10 复用 T01 的挂起事件老化演示；普通表单另验证网络失败后的同键重试和取消必填原因。
+
 ### `io.outbound_command`
 
 `id cmd_…`、`kind`（`SUBMIT_REFUND`/`SUBMIT_PAYOUT`/`QUERY_REFUND`/`QUERY_PAYOUT`）、`subject_id`、`request_id`（对外幂等键，所有重试相同）、`status`（`PENDING`/`IN_FLIGHT`/`UNKNOWN`/`DONE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`lease_epoch`、`first_sent_at`（第一次真正发出的时刻，写入后不改）、`external_ref`、`last_outcome`、`created_at`。

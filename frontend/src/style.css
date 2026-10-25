@@ -195,3 +195,36 @@ pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.refund-badge {
+  display: inline-block;
+  border-radius: 4px;
+  padding: 3px 8px;
+  background: #e5eef1;
+  font-weight: 600;
+}
+.refund-badge[data-status="AWAITING_FUNDS"],
+.refund-badge[data-status="UNKNOWN"] {
+  background: #fff1ce;
+  color: #6d4700;
+}
+.refund-badge[data-status="SUCCEEDED"] {
+  background: #e0f2e7;
+  color: #1d603b;
+}
+section[aria-label="退款"] > form,
+section[aria-label="并发演示"],
+section[aria-label="故障重试演示"] {
+  padding: 20px;
+  margin-block: 20px;
+  background: white;
+  border: 1px solid #ccd6db;
+}
+section[aria-label="退款"] button {
+  margin-top: 12px;
+}
+section[aria-label="退款"] input {
+  width: min(320px, 70vw);
+}
+section[aria-label="退款"] li {
+  overflow-wrap: anywhere;
+}

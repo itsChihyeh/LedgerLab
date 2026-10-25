@@ -189,7 +189,7 @@ class PaymentQueryTest {
         assertDelivery(deliveries.get(2), "evt_002", "NEW", "DUPLICATE_FACT");
         assertThat(detail.path("asOf").path("seq").asLong()).isPositive();
         Instant.parse(detail.path("asOf").path("at").asString());
-        assertQueryCredentials(4);
+        assertQueryCredentials(5);
         JsonNode local = ok("/api/payments/" + detail.path("id").asString());
         for (String field : List.of(
                 "id", "processorPaymentRef", "amount", "currency", "status", "expectedFee", "postings", "deliveries")) {
@@ -383,7 +383,7 @@ class PaymentQueryTest {
             assertThat(before.path("deliveries").size()).isEqualTo(1);
             assertThat(before.path("postings").size()).isEqualTo(2);
             assertThat(before.path("asOf").path("seq").asLong()).isEqualTo(seq);
-            assertQueryCredentials(4);
+            assertQueryCredentials(5);
         }
         JsonNode after = ok("/api/payments/ch_snapshot");
         assertThat(after.path("deliveries").size()).isEqualTo(2);
@@ -406,8 +406,9 @@ class PaymentQueryTest {
         TestDatabase.Handle empty = TestDatabase.freshMigrated();
         try {
             var snapshot = new QuerySnapshot(empty.readonly(), java.time.Clock.systemUTC());
+            var workbench = new WorkbenchQueries(snapshot, mapper);
             PaymentQueries.PaymentList result =
-                    new PaymentQueries(snapshot, new WorkbenchQueries(snapshot, mapper)).recent(20);
+                    new PaymentQueries(snapshot, workbench, new RefundQueries(snapshot, workbench, mapper)).recent(20);
             assertThat(result.payments()).isEmpty();
             assertThat(result.asOf().seq()).isZero();
             assertThat(result.asOf().at()).isBeforeOrEqualTo(Instant.now());

@@ -53,6 +53,10 @@ final class WorkbenchQueries {
             long merchantAvailable,
             long merchantOwes,
             long unappliedCash,
+            long refund_payable,
+            long awaiting_funds_count,
+            long awaiting_funds_amount,
+            long merchant_debt,
             Map<String, Long> openIssuesByCategory,
             Map<String, Long> batchesByStatus,
             PaymentQueries.AsOf asOf) {}
@@ -63,6 +67,10 @@ final class WorkbenchQueries {
                     .query((rs, row) -> new Account(rs.getInt(1), rs.getString(2), rs.getLong(3)))
                     .list();
             long available = balance(accounts, 2102);
+            var waiting = jdbc.sql("SELECT amount FROM core.v_refund WHERE status='AWAITING_FUNDS'")
+                    .query(Long.class)
+                    .list();
+            long waitingAmount = waiting.stream().reduce(0L, Math::addExact);
             return new Overview(
                     accounts,
                     balance(accounts, 1102),
@@ -70,6 +78,10 @@ final class WorkbenchQueries {
                     available,
                     available < 0 ? Math.negateExact(available) : 0,
                     balance(accounts, 2105),
+                    balance(accounts, 2103),
+                    waiting.size(),
+                    waitingAmount,
+                    available < 0 ? Math.negateExact(available) : 0,
                     counts(
                             "SELECT category, count(*) FROM recon.v_issue WHERE status='OPEN' GROUP BY category ORDER BY category"),
                     counts("SELECT status, count(*) FROM core.v_settlement_batch GROUP BY status ORDER BY status"),

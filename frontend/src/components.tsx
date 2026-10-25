@@ -20,15 +20,17 @@ export function Resource<T>({
   path,
   children,
   loader = get<T>,
+  revision = 0,
 }: {
   path: string;
   children: (data: T) => ReactNode;
   loader?: (path: string, signal?: AbortSignal) => Promise<T>;
+  revision?: number;
 }) {
   const [state, setState] = useState<{ data?: T; error?: string }>({});
   useEffect(() => {
     const controller = new AbortController();
-    setState({});
+    if (revision === 0) setState({});
     loader(path, controller.signal)
       .then((data) => {
         if (!controller.signal.aborted) setState({ data });
@@ -41,7 +43,7 @@ export function Resource<T>({
           });
       });
     return () => controller.abort();
-  }, [path, loader]);
+  }, [path, loader, revision]);
   if (state.error) return <p role="alert">{state.error}</p>;
   if (!state.data) return <p role="status">加载中…</p>;
   return children(state.data);
@@ -72,6 +74,13 @@ export function Money({ amount }: { amount: number | null }) {
     <span className="money">
       {amount === null ? "待确认" : formatCad(amount)}
     </span>
+  );
+}
+export function MerchantBalance({ available }: { available: number }) {
+  return (
+    <Field name={available < 0 ? "商户欠款" : "商户可用"}>
+      <Money amount={available < 0 ? -available : available} />
+    </Field>
   );
 }
 export function Table({

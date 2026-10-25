@@ -215,7 +215,7 @@ test("ac_4_10 parked aging appears in overview and discrepancy list", async ({
   expect(issues.issues[0].subjectId).toBe(eventId);
   await page.goto("/#/");
   await page
-    .getByRole("link", { name: "EVENT_PARKED_AGED · 1", exact: true })
+    .getByRole("link", { name: "事件挂起超时 · 1", exact: true })
     .click();
   await expect(page.getByLabel("类别", { exact: true })).toHaveValue(
     "EVENT_PARKED_AGED",
@@ -223,8 +223,6 @@ test("ac_4_10 parked aging appears in overview and discrepancy list", async ({
   const table = page.getByRole("table", { name: "差异列表（最近 100 条）" });
   await expect(table).toContainText(eventId);
   await expect(table).toContainText("OPEN");
-  await page
-    .getByRole("link", { name: "EVENT_PARKED_AGED", exact: true })
-    .click();
+  await page.getByRole("link", { name: "事件挂起超时", exact: true }).click();
   await expect(page.locator("dl.summary")).toContainText(eventId);
 });

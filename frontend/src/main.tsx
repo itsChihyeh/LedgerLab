@@ -12,6 +12,7 @@ import {
   StatementPage,
 } from "./pages";
 import "./style.css";
+import { RefundPage } from "./refunds";
 
 function currentRoute() {
   return window.location.hash.slice(1) || window.location.pathname;
@@ -30,6 +31,7 @@ function Route({ route }: { route: string }) {
     return <ReconPage search={search} />;
   if (id && parts.length === 2) {
     if (kind === "payments") return <PaymentPage id={id} />;
+    if (kind === "refunds") return <RefundPage id={id} />;
     if (kind === "batches") return <BatchPage id={id} />;
     if (kind === "recon") return <IssuePage id={id} />;
     if (kind === "events") return <EventPage id={id} />;

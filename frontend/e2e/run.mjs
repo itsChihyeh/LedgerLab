@@ -1,13 +1,23 @@
 import { spawnSync } from "node:child_process";
 
 // Separate launches give S3 and AC-5.7 their own real PostgreSQL database.
-for (const scenario of ["sample-a-1-3", "ac-5-3"]) {
+for (const scenario of [
+  "sample-a-1-3",
+  "ac-5-3",
+  "refund-concurrent-6000",
+  "refund-concurrent-5000",
+  "refund-retry",
+]) {
   const result = spawnSync(
     process.execPath,
     ["node_modules/@playwright/test/cli.js", "test", ...process.argv.slice(2)],
     {
       stdio: "inherit",
-      env: { ...process.env, LEDGERLAB_E2E_SCENARIO: scenario },
+      env: {
+        ...process.env,
+        LEDGERLAB_E2E_SCENARIO: scenario,
+        VITE_E2E_REFUNDS: "true",
+      },
     },
   );
   if (result.error) throw result.error;

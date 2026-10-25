@@ -18,6 +18,7 @@ import {
   get,
   href,
   JsonEvidence,
+  MerchantBalance,
   Money,
   Postings,
   Resource,
@@ -25,6 +26,7 @@ import {
   Table,
 } from "./components";
 import { issueCategoryLabel, issueCategoryLabels } from "./issue-categories";
+import { RefundSection } from "./refunds";
 
 export function OverviewPage() {
   return (
@@ -40,14 +42,13 @@ export function OverviewPage() {
               <Field name="银行现金">
                 <Money amount={data.bankCash} />
               </Field>
-              <Field name={data.merchantOwes > 0 ? "商户欠款" : "商户可用"}>
-                <Money
-                  amount={
-                    data.merchantOwes > 0
-                      ? data.merchantOwes
-                      : data.merchantAvailable
-                  }
-                />
+              <MerchantBalance available={data.merchantAvailable} />
+              <Field name="退款待付">
+                <Money amount={data.refund_payable} />
+              </Field>
+              <Field name="等待资金退款数">{data.awaiting_funds_count}</Field>
+              <Field name="等待资金合计">
+                <Money amount={data.awaiting_funds_amount} />
               </Field>
               <Field name="待查收款">
                 <Money amount={data.unappliedCash} />
@@ -148,8 +149,12 @@ function RecentPayments() {
   );
 }
 export function PaymentPage({ id }: { id: string }) {
+  const [revision, setRevision] = useState(0);
   return (
-    <Resource<PaymentDetail> path={`/api/payments/${enc(id)}`}>
+    <Resource<PaymentDetail>
+      revision={revision}
+      path={`/api/payments/${enc(id)}`}
+    >
       {(p) => (
         <>
           <h1>交易详情</h1>
@@ -192,6 +197,10 @@ export function PaymentPage({ id }: { id: string }) {
           <Postings postings={p.postings} />
           <Deliveries deliveries={p.deliveries} />
           <Snapshot asOf={p.asOf} />
+          <RefundSection
+            payment={p}
+            onChanged={() => setRevision((v) => v + 1)}
+          />
         </>
       )}
     </Resource>
@@ -474,6 +483,11 @@ export function IssuePage({ id }: { id: string }) {
                   <a href={href("payments", x)}>支付 {x}</a>
                 </li>
               ))}
+              {d.references.refundIds.map((x) => (
+                <li key={x}>
+                  <a href={href("refunds", x)}>退款 {x}</a>
+                </li>
+              ))}
             </ul>
             {Object.values(d.references).every((refs) => !refs.length) && (
               <p>暂无可跳转证据</p>
@@ -720,6 +734,7 @@ async function loadEntry(path: string, signal?: AbortSignal) {
     [
       ...refs.batchIds.map((id) => `/api/batches/${enc(id)}`),
       ...refs.paymentIds.map((id) => `/api/payments/${enc(id)}`),
+      ...refs.refundIds.map((id) => `/api/refunds/${enc(id)}`),
       ...refs.bankTxnIds.map((id) => `/api/bank-lines/${enc(id)}`),
     ].map(async (url) => ({
       url,
