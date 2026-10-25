@@ -5,4 +5,7 @@ public interface IssueDisposition {
     void accept(String issueId, String reason);
 
     void resolve(String issueId, String note);
+
+    /** Joins an existing correction transaction; closes only OPEN issues. */
+    void resolveByCorrection(String issueId, String correctionId, String note);
 }

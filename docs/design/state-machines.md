@@ -25,6 +25,14 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。分录名见 [
 
 退款进度不作为支付状态，而是派生字段：`refund_state ∈ {NONE, PARTIAL, FULL}`，按未失败、未取消的退款合计计算。
 
+### P4 T02 实现备注：撤销误记请款
+
+- `corrections.Corrections.submit` 是纠错写入口，内部按类型分派；T02 仅开放 `VOID_CAPTURE`。先取资金锁，再按 ADR-0011 的顺序检查目标分录、锁支付行；通过 `Ledger.recordCorrection` 生成完整镜像冲销，再写 `CAPTURED → VOIDED` 历史，最后按 issue id 排序处置证据引用的差异。全部参加同一事务，业务 4xx 和异常均回滚，不留下纠错、目标、分录、状态历史或差异变更。
+- `payments.PaymentCorrections` 新增锁支付和撤销状态的窄接口，调用方必须已持有资金锁；支付金额、预期手续费不变。`IssueDisposition.resolveByCorrection` 只在调用方事务内将 OPEN 改为 RESOLVED，关联纠错号并记 OPERATOR 历史；已关闭的差异保持原样。VOID_CAPTURE 不自动关闭未引用的批次差异。
+- 原 PAYMENT_CAPTURED 或之前 RESTATE_CAPTURE_AMOUNT 的 CORRECTION 可以成为目标；已经作为纠错目标的分录优先返回 ALREADY_REVERSED。同一请款重放复用既有 PaymentCapture 路径，金额相同即 DUPLICATE_FACT，不重新请款。
+- 批次核对遇到 VOIDED 支付时为 HELD(PAYMENT_STATE_CONFLICT)，开 BATCH_STATE_CONFLICT，整批不记账。撤销与批次确认共用资金锁；测试用栅栏和锁前信号控制两种顺序，分别验证撤销成功后批次 HELD、或批次确认后撤销拒绝，并核对账本与 2101/1102 的业务状态不变量。
+- 故障测试通过包内构造器钩子在 REVERSAL 写完、支付更新前抛异常，经 MockMvc POST 验证回滚；生产装配为无操作，没有运行时故障开关。四种退款分录通过既有 P3 夹具逐一执行，仍没有 reverses_entry_id 或 correction。
+
 ## 2. 退款 Refund（I1、S3）
 
 ```

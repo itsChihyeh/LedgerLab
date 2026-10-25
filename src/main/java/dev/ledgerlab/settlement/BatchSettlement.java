@@ -315,9 +315,11 @@ public final class BatchSettlement {
                 Payment fact = payment.get();
                 String mismatch = fact.batchId() != null
                         ? "LINE_IN_OTHER_BATCH"
-                        : !fact.status().equals("CAPTURED")
-                                ? "UNSUPPORTED_LINE"
-                                : fact.amount() != line.gross() ? "AMOUNT_MISMATCH" : null;
+                        : fact.status().equals("VOIDED")
+                                ? "PAYMENT_STATE_CONFLICT"
+                                : !fact.status().equals("CAPTURED")
+                                        ? "UNSUPPORTED_LINE"
+                                        : fact.amount() != line.gross() ? "AMOUNT_MISMATCH" : null;
                 if (mismatch != null) {
                     hold(
                             evidence,
@@ -542,6 +544,7 @@ public final class BatchSettlement {
             return;
         }
         String category = switch (reason) {
+            case "PAYMENT_STATE_CONFLICT" -> "BATCH_STATE_CONFLICT";
             case "FEE_EXCEEDS_GROSS", "AMOUNT_MISMATCH" -> "AMOUNT_MISMATCH";
             case "UNSUPPORTED_LINE" -> "UNSUPPORTED_BATCH_LINE";
             case "LINE_IN_OTHER_BATCH" -> "DUPLICATE_STATEMENT_LINE";

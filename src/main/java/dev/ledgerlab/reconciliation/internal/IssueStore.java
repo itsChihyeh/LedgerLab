@@ -185,6 +185,25 @@ public final class IssueStore implements IssueDisposition {
         });
     }
 
+    @Override
+    public void resolveByCorrection(String issueId, String correctionId, String note) {
+        if (!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("Correction disposition requires the caller's transaction");
+        Issue issue = issues("id=?", issueId).stream()
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Unknown issue: " + issueId));
+        if (!issue.status().equals("OPEN")) return;
+        var now = clock.instant().atOffset(ZoneOffset.UTC);
+        jdbc.sql(
+                        "UPDATE recon.issue SET status='RESOLVED', resolution_correction_id=?, explanation=?, updated_at=? WHERE id=?")
+                .params(correctionId, note, now, issueId)
+                .update();
+        String evidence = tools.jackson.databind.json.JsonMapper.builder()
+                .build()
+                .writeValueAsString(java.util.List.of(java.util.Map.of("type", "correction", "id", correctionId)));
+        transition(issueId, "OPEN", "RESOLVED", null, "OPERATOR", note, evidence, now);
+    }
+
     private void transition(
             String issueId,
             @Nullable String from,

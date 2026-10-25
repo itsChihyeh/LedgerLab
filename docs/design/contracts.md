@@ -166,6 +166,29 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 
 ---
 
+### P4 T02 实现备注：纠错 HTTP
+
+- `ledgerlab.corrections.enabled` 默认 true；false 时不注册纠错控制器，三个纠错路由均不可用。`POST /api/corrections` 成功 201；`GET /api/corrections/{id}` 返回同一详情结构；`GET /api/corrections?subjectType=&subjectId=` 返回详情数组，两个过滤条件可分别省略，按 recorded_at、id 升序。GET 使用单独的 readonly 数据源和 REPEATABLE READ 只读事务，只查现有视图；POST 响应在写事务里读取，以包含本次尚未提交的状态。
+- 请求字段沿用 ADR-0011；JSON 必须是单一对象，未知键、重复键、类型错误、空白必填文本、NUL、超过 2000 码点的 reasonNote 均为 INVALID_REQUEST。newAmount 若提供，必须直接来自可转为 long 的 JSON 整数；小数、指数和溢出拒绝。T02 未开放的三种类型返回 409 CORRECTION_TYPE_NOT_AVAILABLE；VOID_CAPTURE 的 reasonCode 只接受 CAPTURE_RECORDED_IN_ERROR 或 OTHER。
+- evidence 每项为 `{type,id}`。issue、bank_txn、inbox_event、processor_fetch 分别按差异号、银行流水号、事件号、十进制抓取存档编号查存在；statement_line 按处理方 txn 编号，在 recon.statement_line 或已确认的 core.settlement_batch_line 查存在。HELD 批次仅有原始抓取存档时可引用 processor_fetch。仅校验证据存在，不扩展为证明证据结论正确的自动判断。
+- 成功结构为 `{correction, targets, entries, affected}`。correction 包含 `id/type/reasonCode/reasonNote/evidence/params/subjectType/subjectId/requestedBy/recordedAt`；params 留存 originalEntryId、oldAmount、expectedFee。targets 为 `{entryId,role}`；entries 为 `{entryId,entryType,postings:[{lineNo,accountCode,side,amount}]}`，side 为 D/C。affected 四个数组是对象编号；VOID_CAPTURE 的 payments 为该支付号，batches、bankLines 为空，issues 为通过本次纠错关闭的差异号。GET 中 issues 按当前 resolution_correction_id 关联读取；不可变的历史证据仍在 issue_transition。
+- 错误沿用 ProblemDetail（`type/title/status/detail/instance` 加 code），ALREADY_REVERSED 附带已有 correctionId。校验必填项和证据后，业务前置按 ADR-0011 第 2 节①顺序判断；不使用 API 幂等记录。下列错误均无写入。
+
+| HTTP | code | 条件 |
+|---|---|---|
+| 400 | INVALID_REQUEST | JSON、必填字段、原因与类型对应关系或查询参数不合法 |
+| 400 | EVIDENCE_NOT_FOUND | 任一支持的证据编号不存在 |
+| 404 | ENTRY_NOT_FOUND | 目标分录不存在 |
+| 404 | CORRECTION_NOT_FOUND | GET 的纠错号不存在 |
+| 409 | CORRECTION_TYPE_NOT_AVAILABLE | T02 尚未实现的纠错类型 |
+| 409 | CANNOT_REVERSE_REVERSAL | 目标为 REVERSAL |
+| 409 | ALREADY_REVERSED | 目标已用于纠错，附 correctionId |
+| 409 | ENTRY_NOT_CORRECTABLE | 目标不是当前可纠错的支付金额分录 |
+| 409 | USE_REFUND_FOR_SETTLED_PAYMENT | 支付 SETTLED 或已有 batch_id |
+| 409 | PAYMENT_HAS_REFUNDS | 支付 refunded_amount 大于 0 |
+
+AC-6.1 的完整应用 HTTP 测试对以下 15 个路径分别发送 POST、PUT、PATCH、DELETE（共 60 次），均要求 404 或 405：`/api/ledger/entries`、`/api/ledger/entries/je_probe`、`/api/ledger/postings`、`/api/ledger/accounts/1101`、`/api/payments`、`/api/payments/ch_probe`、`/api/overview`、`/api/batches`、`/api/batches/po_probe`、`/api/recon/issues`、`/api/recon/issues/iss_probe`、`/api/bank-lines/bt_probe`、`/api/statement-lines/file_probe/1`、`/api/events/evt_probe`、`/api/refunds/rfd_probe`。已有业务 POST（例如 /api/refunds、/api/recon/runs）不是通用改账入口，不在此拒绝集合中。
+
 ## 3. 金额
 
 - 一律 `BIGINT` 整数分，Java 里用 `long` 包在值类型里，不用 `double`/`float`，JSON 里传整数。
