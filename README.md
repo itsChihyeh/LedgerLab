@@ -25,6 +25,7 @@ Run from the repository root:
 ```sh
 sh scripts/smoke-p2.sh
 sh scripts/smoke-p3.sh   # S3, real refund commands, duplicate webhooks and pending execution
+sh scripts/smoke-p4.sh   # full P3, then corrections and bank returns; docs/testing/smoke-p4.md
 ```
 
 The script builds both jars and starts PostgreSQL, the simulator (fake Stripe,

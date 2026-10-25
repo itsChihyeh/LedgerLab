@@ -84,7 +84,7 @@ jobs:
       - run: ./mvnw -B -f simulator/pom.xml verify
 
   smoke:
-    name: P2 and P3 three-process smoke
+    name: P2 through P4 three-process smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -98,14 +98,16 @@ jobs:
             pom.xml
             simulator/pom.xml
       - run: sh scripts/smoke-p2.sh
-      - run: sh scripts/smoke-p3.sh
+      # P4 runs the complete P3 suite before its own fresh P4 project.
+      - run: sh scripts/smoke-p4.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: p2-p3-smoke-evidence
+          name: p2-p3-p4-smoke-evidence
           path: |
             target/smoke-p2/
             target/smoke-p3/
+            target/smoke-p4/
           if-no-files-found: error
           retention-days: 7
 

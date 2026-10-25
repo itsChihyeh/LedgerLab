@@ -1,8 +1,8 @@
 #!/bin/sh
-# Shared disposable Compose lifecycle; called by smoke-p2.sh and smoke-p3.sh.
+# Shared disposable Compose lifecycle for P2, P3 and P4.
 set -eu
 suite=$1
-case "$suite" in p2|p3) ;; *) echo "Unknown smoke suite: $suite" >&2; exit 2 ;; esac
+case "$suite" in p2|p3|p4) ;; *) echo "Unknown smoke suite: $suite" >&2; exit 2 ;; esac
 cd "$(dirname "$0")/.."
 
 command -v docker >/dev/null
