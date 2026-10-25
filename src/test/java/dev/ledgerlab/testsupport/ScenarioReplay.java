@@ -30,6 +30,7 @@ public final class ScenarioReplay {
     private final JdbcClient jdbc;
     private final JsonMapper json = JsonMapper.builder().build();
     private final Map<String, List<JsonNode>> reports = new LinkedHashMap<>();
+    private final Runnable outbound;
 
     public ScenarioReplay(
             Path directory,
@@ -39,6 +40,20 @@ public final class ScenarioReplay {
             MutableClock clock,
             InboxWorker worker,
             JdbcClient jdbc) {
+        this(directory, processor, http, base, clock, worker, jdbc, () -> {
+            throw new AssertionError("Scenario requires an outbound worker");
+        });
+    }
+
+    public ScenarioReplay(
+            Path directory,
+            ScenarioHttpReplay processor,
+            HttpClient http,
+            String base,
+            MutableClock clock,
+            InboxWorker worker,
+            JdbcClient jdbc,
+            Runnable outbound) {
         this.directory = directory;
         this.processor = processor;
         this.http = http;
@@ -46,6 +61,7 @@ public final class ScenarioReplay {
         this.clock = clock;
         this.worker = worker;
         this.jdbc = jdbc;
+        this.outbound = outbound;
     }
 
     public void run() throws Exception {
@@ -62,9 +78,25 @@ public final class ScenarioReplay {
             clock.set(Instant.parse(step.path("at").asText()));
             processor.expect(step.path("responses"));
             switch (step.path("type").asText()) {
+                case "refund_api" -> {
+                    var request = HttpRequest.newBuilder(URI.create(base + "/api/refunds"))
+                            .header("Content-Type", "application/json")
+                            .header("Idempotency-Key", step.path("key").asString())
+                            .POST(HttpRequest.BodyPublishers.ofString(
+                                    step.path("request").toString()))
+                            .build();
+                    var response = http.send(request, HttpResponse.BodyHandlers.ofString());
+                    assertThat(response.statusCode()).as(response.body()).isEqualTo(201);
+                    processor.bind(
+                            step.path("local_ref").asString(),
+                            json.readTree(response.body()).path("refund_id").asString());
+                }
+                case "outbound" -> outbound.run();
                 case "event" -> {
-                    byte[] raw = Files.readAllBytes(
-                            directory.resolve(step.path("body").asText()));
+                    byte[] raw = processor
+                            .substitute(Files.readString(
+                                    directory.resolve(step.path("body").asText())))
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
                     var request = HttpRequest.newBuilder(URI.create(base + "/webhooks/stripe"))
                             .header("Content-Type", "application/json")
                             .header(
@@ -111,7 +143,7 @@ public final class ScenarioReplay {
                         if (c.path("name").equals(step.path("name"))) matches.add(c);
                     });
                     assertThat(matches).hasSize(1);
-                    check(matches.getFirst());
+                    check(json.readTree(processor.substitute(matches.getFirst().toString())));
                 }
                 default -> throw new AssertionError("Unknown replay step: " + step);
             }

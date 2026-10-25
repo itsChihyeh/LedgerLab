@@ -64,7 +64,7 @@ final class P2Scenario {
         model = state.model.settlement;
     }
 
-    private List<String> availablePayments() {
+    List<String> availablePayments() {
         Set<String> assigned = new HashSet<>();
         model.batches.values().forEach(b -> b.lines.forEach(l -> assigned.add(l.reference())));
         return state.model.payments.keySet().stream()
@@ -194,7 +194,7 @@ final class P2Scenario {
         // readyFirst leaves external evidence available before the created webhook is delivered.
     }
 
-    private void install(SettlementModel.Batch batch, boolean interrupted) {
+    void install(SettlementModel.Batch batch, boolean interrupted) {
         List<String> lines = batch.lines.stream()
                 .map(l -> """
                 {"id":"%s","type":"%s","source":"%s","amount":%d,"fee":%d,"net":%d,
@@ -227,7 +227,7 @@ final class P2Scenario {
                 .getBytes(StandardCharsets.UTF_8);
     }
 
-    private void event(SettlementModel.Batch batch, String type) {
+    void event(SettlementModel.Batch batch, String type) {
         boolean wasAbsent = batch.status.equals("ABSENT");
         String event = state.nextEvent();
         byte[] bytes = body(batch, event, type);
@@ -235,6 +235,7 @@ final class P2Scenario {
         app.deliverRaw(bytes);
         app.drain("payout-worker");
         String result = model.event(batch, type, app.clock.instant());
+        state.p3.model.release();
         model.outcomes.put(
                 event, new PaymentModel.Outcome(result.equals("BUSINESS_CONFLICT") ? "REJECTED" : "PROCESSED", result));
         if (wasAbsent && type.equals("payout.reconciliation_completed")) {
@@ -311,7 +312,7 @@ final class P2Scenario {
                     if (List.of("CONFIRMED", "BANKED", "PAYOUT_FAILED").contains(batch.status)) {
                         assertThat(rs.getLong(4)).isEqualTo(batch.gross);
                         assertThat(rs.getLong(5)).isEqualTo(batch.fees);
-                        assertThat(rs.getLong(6)).isZero();
+                        assertThat(rs.getLong(6)).isEqualTo(batch.refunds);
                         assertThat(rs.getLong(7)).isEqualTo(batch.returned);
                         assertThat(rs.getLong(8)).isEqualTo(batch.net);
                     } else assertThat(rs.getObject(8)).isNull();
@@ -334,7 +335,11 @@ final class P2Scenario {
                 .query((rs, n) -> {
                     var line = new SettlementModel.Line(
                             rs.getString(2),
-                            rs.getString(3).equals("PAYMENT") ? "charge" : "payout_failure",
+                            switch (rs.getString(3)) {
+                                case "PAYMENT" -> "charge";
+                                case "REFUND" -> "refund";
+                                default -> "payout_failure";
+                            },
                             rs.getString(4),
                             rs.getLong(5),
                             rs.getLong(6));

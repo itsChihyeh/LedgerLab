@@ -18,7 +18,17 @@ final class ScenarioLog {
         this.idSeed = idSeed;
     }
 
-    sealed interface Input permits Webhook, ClockAdvance, WorkerRun, ProcessorRest, BankFile, BankScan {
+    sealed interface Input
+            permits Webhook,
+                    ClockAdvance,
+                    WorkerRun,
+                    ProcessorRest,
+                    BankFile,
+                    BankScan,
+                    ApiCommand,
+                    ApiResult,
+                    OutboundRun,
+                    ApiCleanup {
         Instant at();
     }
 
@@ -61,6 +71,18 @@ final class ScenarioLog {
 
     record BankScan(Instant at) implements Input {}
 
+    record ApiCommand(Instant at, String path, String key, String body) implements Input {}
+
+    record ApiCleanup(Instant at) implements Input {}
+
+    record ApiResult(Instant at, ModelApplication.ApiResponse response) implements Input {}
+
+    record OutboundRun(Instant at, List<RefundReplay.Reply> replies) implements Input {
+        OutboundRun {
+            replies = List.copyOf(replies);
+        }
+    }
+
     enum CrashPoint {
         NONE,
         AFTER_CLAIM,
@@ -83,9 +105,18 @@ final class ScenarioLog {
 
     void replay(ModelApplication target) {
         assertThat(idSeed).isEqualTo(ModelApplication.ID_SEED);
+        ModelApplication.ApiResponse lastResponse = null;
         for (Input input : inputs()) {
             target.clock.set(input.at());
             switch (input) {
+                case ApiCleanup ignored -> target.expireApiKeys();
+                case ApiCommand api -> lastResponse = target.api(api.path(), api.key(), api.body());
+                case ApiResult result -> assertThat(lastResponse).isEqualTo(result.response());
+                case OutboundRun run -> {
+                    target.refunds.replies.addAll(run.replies());
+                    target.outbound();
+                    assertThat(target.refunds.replies).isEmpty();
+                }
                 case Webhook webhook -> target.deliver(webhook.body(), webhook.signature());
                 case ClockAdvance advance -> target.clock.set(advance.to());
                 case ProcessorRest rest -> target.processor.install(rest.payout(), rest.pages());

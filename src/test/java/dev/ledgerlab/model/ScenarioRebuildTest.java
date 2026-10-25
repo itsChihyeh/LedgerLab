@@ -10,6 +10,37 @@ import org.junit.jupiter.api.Test;
 
 class ScenarioRebuildTest {
     @Test
+    void ac_4_13_failedShrinkCleanupCanCloseApplicationAgain() {
+        var app = new ModelApplication();
+        app.close();
+        app.close();
+    }
+
+    @Test
+    void ac_4_13_refundHistoryCommandAndIdempotencyDifferencesAreReported() {
+        var original = new RebuildSnapshot(
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Set.of(),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of("ch_test:R1", Map.of("status", "SUCCEEDED")),
+                Map.of("ch_test:R1:1", Map.of("to_status", "READY")),
+                Map.of("ch_test:R1", Map.of("status", "DONE")),
+                Map.of("client:key", Map.of("response_status", 201)));
+        var empty = new RebuildSnapshot(Map.of(), Map.of(), Map.of(), Map.of(), Set.of());
+        assertThatThrownBy(() -> original.assertMatches(empty))
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("refunds[ch_test:R1]")
+                .hasMessageContaining("refundHistory[ch_test:R1:1]")
+                .hasMessageContaining("commands[ch_test:R1]")
+                .hasMessageContaining("idempotency[client:key]");
+    }
+
+    @Test
     void ac_4_13_lastDeliveryIsDrainedOnBothDatabases() {
         try (ModelApplication original = new ModelApplication();
                 ModelApplication replay = new ModelApplication()) {

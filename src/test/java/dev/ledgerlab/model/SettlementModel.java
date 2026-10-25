@@ -33,6 +33,7 @@ final class SettlementModel {
         final long gross;
         final long fees;
         final long returned;
+        final long refunds;
         final long net;
         String status = "ABSENT";
 
@@ -49,7 +50,11 @@ final class SettlementModel {
                     .filter(l -> l.type().equals("payout_failure"))
                     .map(Line::gross)
                     .toList());
-            net = Math.addExact(Math.subtractExact(gross, fees), returned);
+            refunds = Math.negateExact(sum(lines.stream()
+                    .filter(l -> l.type().equals("refund"))
+                    .map(Line::gross)
+                    .toList()));
+            net = Math.subtractExact(Math.addExact(Math.subtractExact(gross, fees), returned), refunds);
         }
     }
 

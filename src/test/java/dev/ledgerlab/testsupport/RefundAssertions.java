@@ -20,6 +20,11 @@ public final class RefundAssertions {
 
     public static void invariants(JdbcClient jdbc, LedgerAudit audit) {
         assertThat(audit.check()).as("INV-1..5 and INV-8").isEmpty();
+        refundInvariants(jdbc);
+    }
+
+    /** Use when the enclosing model checkpoint already ran the whole-ledger audit. */
+    public static void refundInvariants(JdbcClient jdbc) {
         assertThat(jdbc.sql("""
                 SELECT p.id FROM core.payment p LEFT JOIN core.refund r ON r.payment_id = p.id
                     AND r.status NOT IN ('FAILED','CANCELLED')

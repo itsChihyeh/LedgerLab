@@ -54,7 +54,7 @@ class ScenarioExportTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"ac-5-3", "sample-a-1-3", "sample-h"})
+    @ValueSource(strings = {"ac-5-3", "sample-a-1-3", "sample-h", "sample-a-1-8", "sample-d"})
     void ac_5_13_exportMatchesCommittedBytesAndRepeatsWithoutState(String name) throws Exception {
         Map<String, String> result = runner.run(name);
         assertThat(runner.run(name)).isEqualTo(result);

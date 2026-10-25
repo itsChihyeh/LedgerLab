@@ -123,6 +123,39 @@ public final class ScenarioRunner {
                         bank.advance();
                     }
                     case "refund_fault" -> refundFaults.configure(resolve(action.path("request")));
+                    case "refund_accept" -> {
+                        String token = required(action, "local_ref");
+                        alias(required(action, "alias"), token);
+                        var api = step("refund_api").put("local_ref", token).put("key", required(action, "key"));
+                        api.set("request", resolve(action.path("request")));
+                    }
+                    case "refund_submit" -> {
+                        JsonNode request = resolve(action.path("request"));
+                        Map<String, String> parameters = new java.util.TreeMap<>(Map.of(
+                                "charge",
+                                required(request, "charge"),
+                                "amount",
+                                Long.toString(request.path("amount").longValue()),
+                                "metadata[ledgerlab_refund_id]",
+                                required(request, "refund_id")));
+                        var responses = step("outbound").putArray("responses");
+                        var submission = refunds.create(parameters, required(request, "refund_id"));
+                        if (submission.hang()) throw invalid("scenario refund submission timed out");
+                        alias(
+                                required(action, "alias"),
+                                submission.refund().path("id").asText());
+                        String file = "rest/%03d.json".formatted(++responseNumber);
+                        files.put(file, JSON.writeValueAsString(submission.refund()));
+                        var response = responses
+                                .addObject()
+                                .put("method", "POST")
+                                .put("path", "/v1/refunds")
+                                .put("status", 200)
+                                .put("body", file)
+                                .put("idempotency_key", required(request, "refund_id"));
+                        response.set("query", JSON.createObjectNode());
+                        response.set("form", JSON.valueToTree(parameters));
+                    }
                     case "process_refunds" -> refunds.process();
                     case "charge" -> {
                         var created = processor.create(resolve(action.path("request")));
