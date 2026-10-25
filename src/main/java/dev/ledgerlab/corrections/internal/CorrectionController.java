@@ -42,6 +42,11 @@ final class CorrectionController {
         return queries.detail(id);
     }
 
+    @GetMapping("/api/corrections/recent")
+    List<CorrectionResult> recent() {
+        return queries.recent();
+    }
+
     @GetMapping("/api/corrections")
     List<CorrectionResult> list(
             @RequestParam(required = false) @Nullable String subjectType,

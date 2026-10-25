@@ -172,6 +172,14 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 
 ---
 
+### P4 T07 实现备注：只读纠错页面与追溯
+
+- 新增 `GET /api/corrections/recent`：复用 T02 详情结构，按 `recorded_at DESC, id DESC` 返回最近 50 条；原 `GET /api/corrections` 的过滤和升序历史契约保持不变。新列表路由沿用纠错控制器开关。
+- investigation 增加 `GET /api/correction-traces/{id}` 与 `GET /api/entries/{id}`，只用 readonly 数据源、现有视图和 REPEATABLE READ 快照，返回 `asOf`。前者返回证据页面关联、受影响对象当前状态和本次纠错触发的支付／批次历史；后者返回分录、posting、所属纠错和 `reversedBy`。只有目标角色 REVERSED 才标记“已被 cor_… 冲销”，APPLIED 不标冲销。两条调查路由均无写方法。
+- 金额前后值读取不可变 correction.params 的 oldAmount/newAmount，不从当前支付金额倒推；当前对象状态与本次纠错历史分别标注。差异关闭清单沿用 T02 的当前 resolution_correction_id 关联口径。
+- 证据按类型解析：issue → 差异，bank_txn → 银行流水，inbox_event → 既有脱敏事件页；statement_line 按 txn 编号列出所有匹配的结算单文件行和已确认批次行，避免同编号跨文件时任意选一条。processor_fetch 通过批次历史的 lines_fetch_id 链接批次；无现有视图关联时保留证据编号并明确提示暂无只读页面关联，不查询 io 原表或展示抓取原文。
+- 前端新增纠错列表／详情、独立分录页及批次行页，导航、差异、支付、批次历史与 posting 互相链接。纠错页面无提交表单。样例 E 的后端测试夹具用合成外部证据和真实业务服务形成 HELD → 纠错 → CONFIRMED；Playwright 验证差异 → 纠错 → 结算单行／原事件及支付／分录反向追溯。
+
 ### P4 T02 实现备注：纠错 HTTP
 
 - `ledgerlab.corrections.enabled` 默认 true；false 时不注册纠错控制器，三个纠错路由均不可用。`POST /api/corrections` 成功 201；`GET /api/corrections/{id}` 返回同一详情结构；`GET /api/corrections?subjectType=&subjectId=` 返回详情数组，两个过滤条件可分别省略，按 recorded_at、id 升序。GET 使用单独的 readonly 数据源和 REPEATABLE READ 只读事务，只查现有视图；POST 响应在写事务里读取，以包含本次尚未提交的状态。

@@ -33,6 +33,14 @@ final class CorrectionQueries {
         return Objects.requireNonNull(snapshot.execute(tx -> reader.detail(id)));
     }
 
+    List<CorrectionResult> recent() {
+        return Objects.requireNonNull(snapshot.execute(tx -> jdbc.sql("""
+                SELECT id FROM ledger.v_correction ORDER BY recorded_at DESC, id DESC LIMIT 50
+                """).query(String.class).list().stream()
+                .map(id -> reader.detail(Objects.requireNonNull(id)))
+                .toList()));
+    }
+
     List<CorrectionResult> list(@Nullable String subjectType, @Nullable String subjectId) {
         if ((subjectType != null
                         && !List.of("payment", "refund", "payout", "batch", "bank_txn")

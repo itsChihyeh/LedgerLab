@@ -389,3 +389,58 @@ export interface RefundResponse {
   status: string;
   amount: number;
 }
+
+export interface CorrectionDetail {
+  correction: {
+    id: string;
+    type: string;
+    reasonCode: string;
+    reasonNote: string;
+    requestedBy: string;
+    recordedAt: string;
+    subjectType: string;
+    subjectId: string;
+    evidence: { type: string; id: string }[];
+    params: { oldAmount?: number; newAmount?: number };
+  };
+  targets: { entryId: string; role: string }[];
+  entries: {
+    entryId: string;
+    entryType: string;
+    postings: {
+      lineNo: number;
+      accountCode: number;
+      side: string;
+      amount: number;
+    }[];
+  }[];
+  affected: {
+    payments: string[];
+    batches: string[];
+    bankLines: string[];
+    issues: string[];
+  };
+}
+
+export interface CorrectionTrace {
+  evidence: {
+    type: string;
+    id: string;
+    links: { kind: string; id: string; lineSeq: number | null }[];
+  }[];
+  objects: { kind: string; id: string; status: string }[];
+  history: {
+    kind: string;
+    id: string;
+    fromStatus: string | null;
+    toStatus: string;
+  }[];
+  asOf: AsOf;
+}
+
+export interface EntryDetail {
+  entry: Entry;
+  reversedBy: string | null;
+  postings: PaymentDetail["postings"];
+  asOf: AsOf;
+}

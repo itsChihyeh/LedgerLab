@@ -7,6 +7,7 @@ for (const scenario of [
   "refund-concurrent-6000",
   "refund-concurrent-5000",
   "refund-retry",
+  "correction-e",
 ]) {
   const result = spawnSync(
     process.execPath,

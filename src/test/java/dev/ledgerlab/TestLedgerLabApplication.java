@@ -26,13 +26,14 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistrar;
 import tools.jackson.databind.json.JsonMapper;
 
-/** Test-only backend: fresh PostgreSQL and real HTTP inputs, never direct SQL seeding. */
+/** Test-only backend: fresh PostgreSQL, HTTP scenarios and synthetic correction evidence fixtures. */
 public class TestLedgerLabApplication {
     private static Path scenarioDirectory() {
         String scenario = System.getenv().getOrDefault("LEDGERLAB_E2E_SCENARIO", "sample-a-1-3");
         if (scenario.equals("refund-concurrent-6000")
                 || scenario.equals("refund-concurrent-5000")
-                || scenario.equals("refund-retry")) scenario = "sample-a-1-3";
+                || scenario.equals("refund-retry")
+                || scenario.equals("correction-e")) scenario = "sample-a-1-3";
         if (!scenario.equals("sample-a-1-3") && !scenario.equals("ac-5-3"))
             throw new IllegalArgumentException("Unsupported E2E scenario");
         return Path.of("src/test/resources/scenarios", scenario);
@@ -60,6 +61,8 @@ public class TestLedgerLabApplication {
                             app.getBean(JdbcClient.class))
                     .runUntil("first");
         }
+        if ("correction-e".equals(System.getenv("LEDGERLAB_E2E_SCENARIO")))
+            dev.ledgerlab.testsupport.CorrectionPageFixture.seed(app);
         // Loopback-only test control, created after seed assertions pass. Absent from production.
         var control = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 8090), 0);
         control.createContext("/", exchange -> {
