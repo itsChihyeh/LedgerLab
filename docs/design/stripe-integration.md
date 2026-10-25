@@ -74,6 +74,13 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 - 本地退款及命令在发送前已提交，所以不存在等待退款落库的 PARKED 路径。重投同 event_id 只新增投递记录，不重新运行已拒绝的业务；同内容新 event_id 会按处理时的本地事实重新判断，原拒绝与差异保留。空库重放须先恢复退款受理／命令，再输入这些 webhook，不能依赖停放补齐顺序。
 - 固定合成夹具 `src/test/resources/contracts/refund-updated-failed.json` 与模拟器同名夹具逐字节一致。主应用验证全部映射字段和事件时间，模拟器生成失败退款事件后仅规范化生成的编号与时间，逐字段比较完整 JSON。夹具不是实际 Stripe 录制，P6 验证范围不变。
 
+### P3 T14 实现备注：三进程冒烟
+
+- `scripts/smoke-p3.sh` 先复用 P2 的 S3 与全部对账断言，再按样例 A 退 P1 2000：应用出站 worker 实际调用 fake Stripe，`refund.created` 经 relay DUPLICATE 两次送达；等待命令 DONE 和 inbox PROCESSED 后验证一次执行、API 同键原结果重放，以及 B2 可用 12505／在途 2825。
+- 第二笔对 P2 退 3000，选任务允许的 `force_pending` 路径；补充处理方资金后清故障并 process，验证 SUBMITTED → SUCCEEDED。未引入提现或改动商户 FIFO 门槛。随后补齐 B2／B3 的银行流水和处理方快照，ALL 对账断言零发现、零差异且账本不变；R2 的成功 webhook 业务时刻必须早于 cutoff，避免退款检查被空范围掩盖。
+- 业务时钟沿用 P2 的历史日期，P3 截止固定为 2026-10-24 多伦多 00:00，应用时钟与默认 60 秒证据宽限不改。R1 的命令响应与 webhook 仍正常竞争，首个成功证据决定 occurred_at；R2 的执行固定由 process 后的历史 webhook 驱动。
+- 冒烟观察端只用 simulator 角色 SELECT 退款事件编号，再通过现有 HTTP 查询核对两端投递与状态；不读取 sim_truth，不把模拟器库访问加入主应用。共享起停、HTTP 和有界条件等待，smoke-p2 的场景与断言保持原样；两个脚本各用独立 Compose 项目并在退出时删除其卷。
+
 ### P3 T10 实现备注：批次行关联退款
 
 - 完整拉取 balance transactions 后，refund 行 source 为 re_、金额为负。已知 re_ 直接交批次核对；未知 re_ 在业务事务外调用 T08 `ProcessorRefundGateway.retrieve`，该网关沿用 REFUND_QUERY 独立存档，再把 metadata.ledgerlab_refund_id、退款本金和 charge 身份交给核对事务复查。查询对象的当前状态不替代批次行成功证据，退款执行时间仍取行 created。
