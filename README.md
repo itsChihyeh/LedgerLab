@@ -4,7 +4,7 @@ A reproducible sandbox for recording simulated merchant payments, tracking settl
 
 > **Synthetic data only.** All merchants, payments, events, and settlement statements in this project are synthetic or come from Stripe test mode. LedgerLab is a sandbox: it does not handle real money, real customers, or real payment credentials.
 
-**Status:** P1 done in code (ledger core, signed Stripe webhook intake with an inbox and fenced workers, payment capture, a fake Stripe and chaos relay, model-based randomized tests with empty-database rebuild, and a read-only payment detail page). Acceptance checklist and merge order: [docs/handoff/p1.md](docs/handoff/p1.md). Next: P2 (settlement, bank, reconciliation).
+**Status:** P1–P4 done (ledger core and signed webhook intake, settlement and bank reconciliation, refunds, restricted corrections); paused before P5 (payouts). Acceptance checklists: [docs/handoff/](docs/handoff/). Where work stopped and how to resume: [docs/handoff/pause-p4.md](docs/handoff/pause-p4.md).
 
 Run it (JDK 25 and a running Docker are the only prerequisites):
 
@@ -108,4 +108,3 @@ Where to start:
 - [Architecture decision records](docs/adr/)
 - [Rules for coding agents](AGENTS.md)
 
-[docs/brief.md](docs/brief.md) is the original project brief, kept as a historical snapshot; the design documents above supersede it.

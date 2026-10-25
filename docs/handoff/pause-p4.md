@@ -32,7 +32,7 @@
 | 4 | 本地只读 MCP（DBHub）连不上 | 需要用 AI 直接查库时 | 先 `docker compose up -d`，再设置环境变量 `LEDGERLAB_READONLY_PASSWORD` 并重启客户端 |
 | 5 | 只读数据源没有连接池；`core.v_payment_delivery` 每次查询解析事件 JSON 找 charge 编号 | P7 性能基线前 | 改连接池、把 charge 编号存成列 |
 | 6 | PIT 存活变异：审计事务的隔离级别没被测试观察到 | 有并发写入的模型动作时 | 补“审计期间有人记账也不报假差异”测试 |
-| 7 | 公开仓库前：`docs/brief.md` 含个人内容，要移出仓库并清理历史；之后按 [github-setup.md](../github-setup.md) 开分支保护 | P7 公开前 | 用户决定公开时间 |
+| 7 | ~~公开仓库前清理个人内容~~ 已完成（2026-10-25）：仓库公开，分支保护和密钥扫描按 [github-setup.md](../github-setup.md) 设置 | — | — |
 
 ## 3. P5 怎么重新开工
 
