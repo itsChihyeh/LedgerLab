@@ -16,6 +16,8 @@ spring:
     schemas: flyway
 
 ledgerlab:
+  corrections:
+    enabled: true
   api:
     client-id: demo-merchant
     idempotency-lock-timeout: 5s

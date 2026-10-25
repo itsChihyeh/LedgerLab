@@ -20,9 +20,18 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。分录名见 [
 |---|---|---|---|
 | — | `CAPTURED` | webhook `charge.succeeded`，通过请款准入检查（stripe-integration 第 2 节） | `PAYMENT_CAPTURED` |
 | `CAPTURED` | `SETTLED` | 所在批次 `BATCH_SETTLED` 记账 | （包含在批次分录里） |
-| `CAPTURED` | `VOIDED` | 受限纠错撤销误记的请款（只限未结算） | `REVERSAL` |
+| `CAPTURED` | `VOIDED` | 受限纠错 `VOID_CAPTURE` 撤销误记的请款（只限未结算、无退款） | `REVERSAL` |
+| `CAPTURED` | `CAPTURED` | 受限纠错 `RESTATE_CAPTURE_AMOUNT` 修正金额（只记历史，金额与预期手续费改为新值） | `REVERSAL` ＋ `CORRECTION` |
 
 退款进度不作为支付状态，而是派生字段：`refund_state ∈ {NONE, PARTIAL, FULL}`，按未失败、未取消的退款合计计算。
+
+### P4 T02 实现备注：撤销误记请款
+
+- `corrections.Corrections.submit` 是纠错写入口，内部按类型分派；T02 仅开放 `VOID_CAPTURE`。先取资金锁，再按 ADR-0011 的顺序检查目标分录、锁支付行；通过 `Ledger.recordCorrection` 生成完整镜像冲销，再写 `CAPTURED → VOIDED` 历史，最后按 issue id 排序处置证据引用的差异。全部参加同一事务，业务 4xx 和异常均回滚，不留下纠错、目标、分录、状态历史或差异变更。
+- `payments.PaymentCorrections` 新增锁支付和撤销状态的窄接口，调用方必须已持有资金锁；支付金额、预期手续费不变。`IssueDisposition.resolveByCorrection` 只在调用方事务内将 OPEN 改为 RESOLVED，关联纠错号并记 OPERATOR 历史；已关闭的差异保持原样。VOID_CAPTURE 不自动关闭未引用的批次差异。
+- 原 PAYMENT_CAPTURED 或之前 RESTATE_CAPTURE_AMOUNT 的 CORRECTION 可以成为目标；已经作为纠错目标的分录优先返回 ALREADY_REVERSED。同一请款重放复用既有 PaymentCapture 路径，金额相同即 DUPLICATE_FACT，不重新请款。
+- 批次核对遇到 VOIDED 支付时为 HELD(PAYMENT_STATE_CONFLICT)，开 BATCH_STATE_CONFLICT，整批不记账。撤销与批次确认共用资金锁；测试用栅栏和锁前信号控制两种顺序，分别验证撤销成功后批次 HELD、或批次确认后撤销拒绝，并核对账本与 2101/1102 的业务状态不变量。
+- 故障测试通过包内构造器钩子在 REVERSAL 写完、支付更新前抛异常，经 MockMvc POST 验证回滚；生产装配为无操作，没有运行时故障开关。四种退款分录通过既有 P3 夹具逐一执行，仍没有 reverses_entry_id 或 correction。
 
 ## 2. 退款 Refund（I1、S3）
 
@@ -100,6 +109,9 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 | `CONFIRMED` | `PAYOUT_FAILED` | webhook `payout.failed`／`payout.canceled`，且银行没有对应入账 | `BATCH_PAYOUT_FAILED` |
 | `HELD` | `RECEIVED` | 引用的对象到齐或纠错完成后重新核对 | — |
 | `CONFIRMED` | `BANKED` | 银行流水入账行按批次号精确匹配，金额相等 | `BANK_DEPOSIT_RECEIVED` |
+| `CONFIRMED` | `BANKED` | 受限纠错 `APPLY_UNAPPLIED_CASH`：多笔待查收款合计等于 net（拆分到账） | `CORRECTION` |
+| `PAYOUT_FAILED` | `BANKED` | 受限纠错 `RESTORE_FAILED_PAYOUT`：银行确实收到，失败通知被推翻 | `REVERSAL` ＋ `CORRECTION` |
+| `HELD` | `RECEIVED` | 运营重核 `POST /api/batches/{id}/recheck`，或改金额纠错同事务重核（ADR-0011 补充第 2、4 节） | — |
 
 - Stripe `payout.paid` 只是处理方说“应该到了”，记进状态历史作为证据，不改状态、不记账；现金只认银行流水。
 - `PAYOUT_FAILED` 之后银行又出现入账：开 `BATCH_STATE_CONFLICT`，按精确匹配失败记 `UNAPPLIED_CASH_RECEIVED`（2026-10-23 改：让账上现金等于银行，钱归属留给受限纠错），批次状态不变。
@@ -114,8 +126,26 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 ### P3 T10 实现备注：退款批次核对
 
 - 退款行按 processor_refund_ref 逐笔匹配，金额不等为 HELD(AMOUNT_MISMATCH)，FAILED／CANCELLED／AWAITING_FUNDS 或处理方身份冲突为 HELD(REFUND_STATE_CONFLICT)，已属于另一批为 HELD(LINE_IN_OTHER_BATCH)。沿用批次主体的金额／状态差异和 DUPLICATE_STATEMENT_LINE 映射；没有任何退款或批次分录部分提交。
-- 取回对象仍无法关联本地退款时为 HELD(UNKNOWN_REFUND)，立即开 MISSING_IN_LEDGER，subject=(refund,re_…)。未知支付的延后老化规则不变；只有 UNKNOWN_PAYMENT 自动重核。P2 因退款行而 HELD(UNSUPPORTED_LINE) 的历史批次不自动重核，留给 P4 纠错；新版本不改写旧原因或差异。
+- 取回对象仍无法关联本地退款时为 HELD(UNKNOWN_REFUND)，立即开 MISSING_IN_LEDGER，subject=(refund,re_…)。未知支付的延后老化规则不变；P3 时只有 UNKNOWN_PAYMENT 自动重核，P4 金额纠错的重核见下方 T03 备注。P2 因退款行而 HELD(UNSUPPORTED_LINE) 的历史批次不自动重核，留给 P4 纠错；新版本不改写旧原因或差异。
 - 全批核对通过后先应用退款执行证据，再记 BATCH_SETTLED，关联退款 batch_id，然后放行 FIFO，最后唤醒银行 WAITING。已确认版本规范化支持 REFUND，重放相同行只记重复证据，不重复扣款。
+
+### P4 T03 实现备注：改金额与固定存档重核
+
+- `settlement.BatchRechecks` 是固定存档重核的公开入口。`recheckUnknownPayment(paymentRef, captureEventId)` 承接 P2 路径：ingestion 只委托，不再解析重核存档；仍只选择包含该支付号的 `HELD(UNKNOWN_PAYMENT)`，保持原事务及无 HTTP 行为。`recheckAmount(paymentRef, correctionId)` 只选择包含该支付号的 `HELD(AMOUNT_MISMATCH)`，由金额纠错在更新支付之后同步调用。候选按批次号加锁，全部使用 `lines_fetch_id` 指向的完整 BATCH_LINES 存档及原 payout 金额，不使用较新的明细版本。
+- 退款优先使用本地 processor_refund_ref；尚未绑定时，UNKNOWN_PAYMENT 路径仍使用首次 UNKNOWN_PAYMENT 历史时点前的完整 REFUND_QUERY 存档，兼容 V11 未回填 lines_fetch_id 的旧历史。纠错及运营重核使用该固定明细存档首次进入 HELD 的历史时点前的完整退款查询存档，不进行外部查询。核对、退款执行、BATCH_SETTLED、支付 SETTLED、FIFO 放行、银行 WAITING 唤醒复用既有结算流程，全部加入调用方资金事务。
+- 重核通过时追加 `HELD → RECEIVED → CONFIRMED`，银行等待行精确匹配时可在同事务到 BANKED。仍失败时沿用核对顺序刷新 hold_reason，追加 `HELD → HELD` 或 `HELD → RECEIVED → HELD` 历史；历史携带本次证据和原 lines_fetch_id。旧历史、固定存档不改，新原因按既有分类开差异，原 OPEN 差异保留，金额纠错仍可提交。
+- `POST /api/batches/{batchId}/recheck` 与纠错路由共用 `ledgerlab.corrections.enabled` 开关，成功处理返回 200 `{batchId,status,holdReason}`，即使重核后仍 HELD 也是业务结果。未知批次 404 BATCH_NOT_FOUND，非 HELD 409 BATCH_NOT_HELD，UNSUPPORTED_PAYOUT 409 BATCH_NOT_RECHECKABLE，均不写入。运营历史的证据为固定 processor_fetch；通过后仅将该批次主体的 OPEN 差异置 RESOLVED，OPERATOR 历史及 explanation 为“运营重核通过”，无纠错编号。
+- 金额纠错在所有批次重核完成后处置差异：实际前进批次的主体 OPEN 差异自动 RESOLVED 并关联本次 correction；请求引用的非批次 OPEN 差异也按 ADR 关闭。引用了仍 HELD 或未参与本次重核的批次差异不会将其关闭；ADR-0011 第 2 节②的“仍不通过则差异保持 OPEN”也适用于请求中引用的批次差异。非 OPEN 差异保持原状态。
+- 定向测试覆盖 AC-6.5、AC-1.4d 样例 E 的分录及余额检查点、连续金额纠错和随后撤销、退款额度边界、两种受控并发顺序、原因刷新、FIFO 和银行唤醒、整体事务回滚，以及 AC-6.12 的 P2 历史退款批次、重复／并发重核和开关。没有新迁移、权限变更或模块依赖放宽。
+
+### P4 T05 实现备注：待查收款归位与失败打款恢复
+
+- `APPLY_UNAPPLIED_CASH` 接收 `batchId`、1～10 个互不重复的 `bankTxnIds`；`RESTORE_FAILED_PAYOUT` 按 ADR-0011 接收 `batchId`、单个 `bankTxnId`，不接受数组参数。内部统一成流水列表，分别只接受 `SPLIT_DEPOSIT` / `PAYOUT_FAILURE_DISPROVED` 或 `OTHER`。输入、证据、业务前置拒绝均不留写入；重复纠错的批次状态错误响应附已有 `correctionId`。
+- `settlement.SettlementCorrections` 只增加窄接口：在调用方事务和资金锁内锁批次，再按 bank_txn_id 升序锁各流水最高版本，更新流水 APPLIED 与 matched_batch_id、批次 BANKED 及其 correction 历史。CONFIRMED 有任何已匹配入账也不能归位；流水必须同时满足 BOOKED/CREDIT/CAD/UNAPPLIED、引用本批次、合计精确等于 net。恢复额外检查其他已确认批次明细是否使用过该批次的 PAYOUT_FAILURE；拒绝后按既有银行退还路径处理。
+- 两条路径均通过账本公开纠错入口记录 APPLIED 目标及一个借 2105 / 贷 1102 的 CORRECTION，subject 为 batch；恢复另将原 BATCH_PAYOUT_FAILED 登记为 REVERSED，由账本生成镜像 REVERSAL。纠错及批次历史使用注入 Clock 的纠错时刻，不回写原银行业务时间，不碰 1103、原入账分录或批次旧历史。
+- 业务更新后按差异号升序取行锁，只关闭 OPEN：归位自动关闭所选流水的全部差异及本批次 DEPOSIT_MISSING / DEPOSIT_NOT_RECEIVED / TIMING_DIFFERENCE；恢复自动关闭所选流水的全部差异及本批次 BATCH_STATE_CONFLICT。显式引用的非批次差异、本次已前进批次的差异同样关联纠错并追加 OPERATOR 历史；未前进的其他批次及非 OPEN 差异保持不变。读取纠错结果返回对应批次、流水及已关闭差异，不将批次误列为支付。
+- AC-6.10/6.11 定向真库测试核对 5000＋4680、S3 全账户余额、INV-9/12、原因与前置拒绝、当前流水版本、重复纠错、差异关闭清单和整事务回滚；BANK 规则在纠错前后均不报 BANK_BALANCE_MISMATCH。栅栏固定纠错与 T04 银行退还的两种先后顺序，只允许一方消费待查收款。纠错后再次入账沿用第二笔 UNAPPLIED / UNMATCHED_BANK_LINE；恢复后出现原失败打款退回行沿用 HELD(UNSUPPORTED_LINE)。无新迁移、依赖或权限变更。
+- T05 的银行余额验证只涉及 INV-11 的现金口径；BANK/AGING 对 `correction_target` 的历史匹配由 T05b 补齐，见第 7 节实现备注。
 
 ### P2 T05 实现备注：批次确认与入站恢复
 
@@ -132,7 +162,7 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 
 - HELD 沿用 inbox `PROCESSED/APPLIED`，不新增 result 或数据库枚举。核对失败不插入批次行、不记批次分录；原文固定保存在 `lines_fetch_id` 指向的完整 `io.processor_fetch` 中。差异为 `detected_by=INGESTION`、subject 为 batch，`expected`／`actual` 保存核对值、行身份和处理方引用，`evidence_refs` 关联入站事件／拉取存档。
 - 差异类别映射：`AMOUNT_MISMATCH`、`FEE_EXCEEDS_GROSS` 均报 `AMOUNT_MISMATCH`（费用超过毛额是金额契约违规）；`UNSUPPORTED_LINE` 自 P3 T02 起报 `UNSUPPORTED_BATCH_LINE`（P2 原为 `UNSUPPORTED_EVENT`）；`LINE_IN_OTHER_BATCH` 报 `DUPLICATE_STATEMENT_LINE`；`TOTAL_MISMATCH` 报 `BATCH_TOTAL_MISMATCH`。具体原因仍在批次 `hold_reason` 和差异 `actual.reason` 中。`UNKNOWN_PAYMENT` 不立即开差异，留给 T11 老化。实际手续费与合同手续费不同仍按实际值结算，T10 对账再报 `FEE_MISMATCH`。
-- ingestion 在 `PaymentCapture.capture` 返回 `APPLIED`／`DUPLICATE_FACT` 后，同一事务同步调用 settlement 的按支付号重核入口。按批次号锁定 `HELD(UNKNOWN_PAYMENT)` 候选，读取其固定 `lines_fetch_id` 的完整存档，仅重核含该支付号的批次；不发 HTTP。多笔支付尚未到齐时继续 HELD；到齐后 `HELD → RECEIVED → CONFIRMED`，清 `hold_reason`，支付与批次记账一起提交或回滚。其他 HELD 原因不自动恢复。
+- ingestion 在 `PaymentCapture.capture` 返回 `APPLIED`／`DUPLICATE_FACT` 后，同一事务同步调用 settlement 的按支付号重核入口。按批次号锁定 `HELD(UNKNOWN_PAYMENT)` 候选，读取其固定 `lines_fetch_id` 的完整存档，仅重核含该支付号的批次；不发 HTTP。多笔支付尚未到齐时继续 HELD；到齐后 `HELD → RECEIVED → CONFIRMED`，清 `hold_reason`，支付与批次记账一起提交或回滚。P2 时其他 HELD 原因不自动恢复；P4 新增路径见上方 T03 备注。
 - 已 `CONFIRMED`／`BANKED`／`PAYOUT_FAILED` 的再次就绪事件完整拉取后比较规范化版本：跳过 `type=payout` 转账行，按 `balance_txn_id` 排序，对行身份、类型、引用、gross／fee／net、转小写的币种、业务时间 epoch seconds 的 JSON 数组算 SHA-256，另比较 payout 金额。相同为 `PROCESSED/DUPLICATE_FACT`；不同为 `REJECTED/BUSINESS_CONFLICT`，开 `BATCH_VERSION_CONFLICT`，新 fetch 即冲突版本存档。原批次字段、明细和分录不改，只追加证据历史；同一差异识别键不重复建 issue。原始字节哈希仅用于存档完整性。未就绪或不完整拉取不参与比较；重复 created 仍只记历史。
 - `payout.failed`／`payout.canceled` 不拉明细：批次不存在时 `PARKED`；`ANNOUNCED`／`HELD` 只记历史、`PROCESSED/APPLIED`，保留 HELD 原因；`CONFIRMED` 同事务转 `PAYOUT_FAILED`，按已核对 net 记 `BATCH_PAYOUT_FAILED`（借 1101／贷 1102），source key 为 `batch:{id}:payout_failed`；重复失败为 `PROCESSED/DUPLICATE_FACT`。`BANKED` 时仅记历史、开 `BATCH_STATE_CONFLICT`，inbox `REJECTED/BUSINESS_CONFLICT`。之后退回行仍须匹配失败批次的金额、币种、状态且未被其他批次使用；样例 H 使用真实失败事件建立前置。
 - `SettlementWorkerTest` 覆盖 AC-5.2、5.3、5.19、4.1、1.4b、5.18，包括规范化去重、冲突重复告警、不完整版本、请款与重核回滚、失败与分录回滚、BANKED 冲突。`SettlementModelProperties` 的独立纯 Java 模型新增请款、变更版本、失败／取消、退回重发、跨批次复用、异常费用和不支持行；从 S0 或 S1 开始随机组合，每步检查账本不变量、INV-9 的 2101／1102、余额、状态、hold reason、历史、明细／posting 数和差异身份。重发动作要求原批次已失败，跨批次复用要求已结算；其余可任意乱序，使用新 event_id 重复事实。种子 `2026102306`，最多 24 步，次数跟随 Maven 的 jqwik 配置（本地 100、CI 1000），动作执行／前置不满足计数和状态分布写入 Surefire 的 jqwik 报告。并发与事务故障仍由受控定向测试覆盖，不把随机模型当作并发证明。
@@ -204,6 +234,13 @@ V15 已同步放宽 inbox_event 与 inbox_status_history 的 result CHECK，本�
 
 ## 7. 对账差异 Reconciliation issue
 
+### P4 T05b 实现备注：银行纠错后的发现与解释
+
+- BANK／AGING 共用 `BankEvidence`，按证据时点读取 `APPLY_UNAPPLIED_CASH`／`RESTORE_FAILED_PAYOUT` 的纠错及 `APPLIED` 目标。已归位的原 `UNAPPLIED_CASH_RECEIVED` 分录不再计入该流水的未清款；不读取当前可变 `match_status` 或差异处置来推断历史。
+- 批次历史为 BANKED，且本次选定输入包含其归位目标的 BOOKED/CAD/CREDIT 流水、归位金额合计等于 net，才视为已到账；拆分行分别匹配，不要求某一行独自等于 net。未选入的文件不能解释批次。解释证据包含纠错号、APPLIED 目标分录号、批次号及流水／文件引用。
+- 已归位、已退还的流水不再产生待查发现；相同规则范围内剩余 OPEN 差异按 7.1 转 EXPLAINED，已由纠错或退还转 RESOLVED 的不动，INGESTION 处置仍由业务入口负责。退还继续使用 `UNAPPLIED_CASH_RETURNED` 及出入账流水关联。`DEPOSIT_MISSING` 仍为保留类别，不新增发现；缺失沿用 AGING 的 `DEPOSIT_NOT_RECEIVED`。
+- INV-11 的现金汇总不变：归位纠错不碰 1103。测试覆盖拆分归位、失败恢复、归位与退还组合、dry run 无写入、旧时点发现与旧报告保持、规则归属和真实现金差额仍被发现。PROCESSOR 不依赖银行匹配状态，本次不改其算法或版本。
+
 ### P3 T11 实现备注
 
 - 退款 PROCESSOR 检查使用处理方退款号逐笔匹配；相同支付的不同部分退款不是重复行，相同 statement_line_id 在同一有效快照内重复才报 DUPLICATE_STATEMENT_LINE。未知 re_ 的 MISSING_IN_LEDGER 沿用入口的 `(refund, re_…)` 身份；金额差异和本地缺行以 `(refund, rfd_…)` 为 subject。
@@ -222,6 +259,12 @@ V15 已同步放宽 inbox_event 与 inbox_status_history 的 result CHECK，本�
 | `OPEN` | `ACCEPTED` | 运营确认无需处理（必须写原因） |
 
 同一差异的识别键是 `(category, subject_type, subject_id)`，重复运行对账不会生成重复差异。
+
+### P4 T02b 实现备注：纠错与运营处置并发
+
+- `IssueStore.resolveByCorrection` 在调用方事务内通过 `lockIssues` 执行 `SELECT … FOR UPDATE`，取得行锁后才判断是否为 OPEN；只有实际转为 RESOLVED 时才关联纠错并追加 OPERATOR 历史。并发 accept 先提交时保留 ACCEPTED，不写纠错处置历史，纠错本身仍提交。
+- T02/T03 的引用差异及批次自动关闭差异在 `JdbcCorrections` 汇总为 `TreeSet`，所有业务及账户写入完成后按差异号升序调用上述入口。无纠错号的运营批次重核仍走 `resolve`，在调用前按差异号升序 `FOR UPDATE` 锁住 OPEN 行。
+- `CorrectionHttpTest` 用栅栏及 `pg_blocking_pids` 控制 accept 与纠错的两种先后顺序，核对最终状态、唯一 OPEN→目标状态的处置历史及纠错提交。临时去掉行锁时，accept 先提交的测试复现 ACCEPTED 被覆盖为 RESOLVED；生产实现保留行锁。
 
 ### 7.1 运行发现与处置状态分开（2026-10-23 定，P2 开工前置 ③）
 

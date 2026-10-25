@@ -23,7 +23,37 @@ record RebuildSnapshot(
         Map<String, Map<String, Object>> refunds,
         Map<String, Map<String, Object>> refundHistory,
         Map<String, Map<String, Object>> commands,
-        Map<String, Map<String, Object>> idempotency) {
+        Map<String, Map<String, Object>> idempotency,
+        Map<String, Map<String, Object>> corrections) {
+    RebuildSnapshot(
+            Map<Integer, Long> balances,
+            Map<String, Payment> payments,
+            Map<String, Outcome> inbox,
+            Map<String, List<Entry>> entries,
+            Set<Issue> issues,
+            Map<String, Map<String, Object>> batches,
+            Map<String, Map<String, Object>> batchLines,
+            Map<String, Map<String, Object>> bankLines,
+            Map<String, Map<String, Object>> refunds,
+            Map<String, Map<String, Object>> refundHistory,
+            Map<String, Map<String, Object>> commands,
+            Map<String, Map<String, Object>> idempotency) {
+        this(
+                balances,
+                payments,
+                inbox,
+                entries,
+                issues,
+                batches,
+                batchLines,
+                bankLines,
+                refunds,
+                refundHistory,
+                commands,
+                idempotency,
+                Map.of());
+    }
+
     RebuildSnapshot(
             Map<Integer, Long> balances,
             Map<String, Payment> payments,
@@ -149,7 +179,37 @@ record RebuildSnapshot(
                         SELECT client_id || ':' || idem_key AS external_key, request_fingerprint,state,
                             response_status,response_body::text,created_at,expires_at
                         FROM io.idempotency_record
-                        """));
+                        """),
+                correctionRows(jdbc));
+    }
+
+    private static Map<String, Map<String, Object>> correctionRows(JdbcClient jdbc) {
+        var result = new TreeMap<String, Map<String, Object>>();
+        // Seeded IDs are stable operator input dependencies; retain evidence and ledger links too.
+        for (String table : List.of(
+                "ledger.correction",
+                "ledger.correction_target",
+                "core.payment_transition",
+                "core.batch_transition",
+                "recon.issue_transition")) {
+            result.putAll(rows(
+                    jdbc,
+                    "SELECT '" + table
+                            + ":' || row_number() OVER (ORDER BY to_jsonb(t)::text) AS external_key, to_jsonb(t)::text AS row FROM "
+                            + table + " t"));
+        }
+        result.putAll(
+                rows(
+                        jdbc,
+                        "SELECT 'payment:' || processor_payment_ref AS external_key,expected_fee,refunded_amount,amount-refunded_amount AS remaining FROM core.payment"));
+        result.putAll(
+                rows(
+                        jdbc,
+                        "SELECT 'entry:' || source_key AS external_key,correction_id,reverses_entry_id FROM ledger.journal_entry WHERE correction_id IS NOT NULL"));
+        result.putAll(rows(
+                jdbc,
+                "SELECT 'issue:' || id AS external_key,status,resolution_correction_id,explanation FROM recon.issue"));
+        return result;
     }
 
     private static Map<String, Map<String, Object>> rows(JdbcClient jdbc, String sql) {
@@ -174,6 +234,7 @@ record RebuildSnapshot(
         compare("refundHistory", refundHistory, replay.refundHistory, differences);
         compare("commands", commands, replay.commands, differences);
         compare("idempotency", idempotency, replay.idempotency, differences);
+        compare("corrections", corrections, replay.corrections, differences);
         // Entry order and posting order are irrelevant; multiplicity is retained at both levels.
         compare("entries", entryBags(entries), entryBags(replay.entries), differences);
         Set<Issue> missing = new HashSet<>(issues);

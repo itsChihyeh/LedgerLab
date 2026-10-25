@@ -2,9 +2,15 @@ package dev.ledgerlab.reconciliation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.ledgerlab.ledger.CorrectionReason;
+import dev.ledgerlab.ledger.CorrectionRequest;
+import dev.ledgerlab.ledger.CorrectionType;
+import dev.ledgerlab.ledger.SubjectType;
+import dev.ledgerlab.testsupport.LedgerFixture;
 import dev.ledgerlab.testsupport.Sql;
 import dev.ledgerlab.testsupport.TestDatabase;
 import java.sql.SQLException;
+import java.util.List;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -40,6 +46,7 @@ class IssueTableTest {
 
     @Test
     void ac_1_13_appCanInsertAndUpdateAllDispositionColumns() throws SQLException {
+        String correctionId = seedCorrection();
         Sql.execute(db.app(), ISSUE.replace("'INGESTION'", "'AGING'"));
         assertThat(Sql.queryLong(db.app(), """
                 SELECT count(*) FROM recon.issue WHERE evidence_refs = '[]'::jsonb
@@ -48,14 +55,14 @@ class IssueTableTest {
                 """)).isEqualTo(1);
         Sql.execute(db.app(), """
                 UPDATE recon.issue SET status = 'RESOLVED', last_run_id = 'rr_00000000000000000000000002',
-                    explanation = 'corrected', resolution_correction_id = 'cor_test',
+                    explanation = 'corrected', resolution_correction_id = '%s',
                     updated_at = '2030-01-01Z'
-                """);
+                """.formatted(correctionId));
         assertThat(Sql.queryLong(db.app(), """
                 SELECT count(*) FROM recon.issue WHERE status = 'RESOLVED' AND last_run_id = 'rr_00000000000000000000000002'
-                    AND explanation = 'corrected' AND resolution_correction_id = 'cor_test'
+                    AND explanation = 'corrected' AND resolution_correction_id = '%s'
                     AND updated_at = '2030-01-01Z'
-                """)).isEqualTo(1);
+                """.formatted(correctionId))).isEqualTo(1);
     }
 
     @ParameterizedTest
@@ -208,11 +215,11 @@ class IssueTableTest {
     @MethodSource("dispositions")
     void ac_1_13_statusExplanationMatrixIsEnforced(String status, boolean explanation, boolean correction)
             throws SQLException {
+        String correctionSql = correction ? "'" + seedCorrection() + "'" : "NULL";
         String sql = ISSUE.replace("status, recorded_at", "explanation, resolution_correction_id, status, recorded_at")
                 .replace(
                         "'OPEN'",
-                        (explanation ? "'evidence arrived'" : "NULL") + ", " + (correction ? "'cor_test'" : "NULL")
-                                + ", '" + status + "'");
+                        (explanation ? "'evidence arrived'" : "NULL") + ", " + correctionSql + ", '" + status + "'");
         boolean valid = switch (status) {
             case "OPEN" -> true;
             case "RESOLVED" -> explanation || correction;
@@ -225,6 +232,25 @@ class IssueTableTest {
         } else {
             Sql.assertRejected("23514", db.app(), sql);
         }
+    }
+
+    private String seedCorrection() {
+        var fixture = new LedgerFixture(db);
+        String original = fixture.s1().entryId();
+        return fixture.inMoneyTransaction(l -> l.recordCorrection(new CorrectionRequest(
+                        CorrectionType.VOID_CAPTURE,
+                        CorrectionReason.OTHER,
+                        "Synthetic fixture",
+                        "[{\"type\":\"inbox_event\",\"id\":\"evt_test\"}]",
+                        "{}",
+                        SubjectType.PAYMENT,
+                        "pay_P1",
+                        "test",
+                        List.of(original),
+                        List.of(),
+                        List.of(),
+                        LedgerFixture.T0)))
+                .correctionId();
     }
 
     @ParameterizedTest

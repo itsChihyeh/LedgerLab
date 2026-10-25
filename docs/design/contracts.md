@@ -59,6 +59,12 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 - 处理方退款号绑定后沿用 T07 的不覆盖语义；匹配时还要求当时已有 SUBMITTED／SUCCEEDED／FAILED 处理方结果历史，避免把后来才关联的 re_ 借给旧时点仍 READY／UNKNOWN、尚无处理方结果的退款。命令和历史证据引用同样限制在 evidence_as_of 之前。
 - 已放行、完成的退款仍纳入对应老化检查范围，后续运行能解释旧 OPEN 差异；已执行缺行到期时，PROCESSOR 同次运行将旧时间差解释为“已升级为 REFUND_NOT_IN_STATEMENT”，新缺行差异为 OPEN。后续快照出现时解释缺行，旧 finding 保留。
 
+### P4 T05b 实现备注：银行纠错证据时点
+
+- 沿用 1.2 的严格边界：纠错、目标记录及原待查收款分录都必须满足 `recorded_at < evidence_as_of`，等于时点也不可见；银行行／文件、批次历史继续使用既有时点过滤。T05b 任务范围第 2 条写作 `≤`，实现按本设计正本的 `<` 执行。
+- BANK／AGING 及默认规则版本从 `p4-v1` 升为 `p4-v2`，标明新增 APPLIED 纠错证据匹配；PROCESSOR 保持 `processor-v2`。旧运行报告直接按已保存 finding 读取；新版本支持按纠错前的证据时点恢复原待查发现，但不提供旧算法版本的执行器。
+- 纠错可以晚于业务 cutoff，只要早于 evidence_as_of 就能解释范围内的批次与流水。dry run 与正式运行使用相同的历史证据；仅正式运行写 finding／差异处置，原运行报告不受影响。
+
 ### P3 T01 实现备注：PARKED 老化
 
 - 从 `io.inbox_status_history` 取 `recorded_at < evidence_as_of` 的最后一行（同刻按 id 排序），当时为 PARKED 且 `received_at + parked-event ≤ evidence_as_of` 时产生 `EVENT_PARKED_AGED`。这是接收时间的小时阈值，不按业务 cutoff 或工作日计算；起点不会因重复投递、重试、唤醒而重置。配置为正 Duration，默认 `PT1H`。
@@ -165,6 +171,39 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 - 测试以真实 PostgreSQL 和 MockMvc 覆盖全部写接口场景，另以随机端口 Spring Boot 与 JDK HTTP 客户端验证配置绑定、受理／重放、只读查询和取消的完整装配。包内构造器钩子分别在退款插入后、幂等记录完成但提交前、提交成功且 HTTP 响应写出前抛异常；生产装配为无操作，没有运行时故障开关。最后一种用新连接确认提交可见后抛异常，再同键重试，验证 AC-4.7；不将此测试称为真实网络断线测试。
 
 ---
+
+### P4 T07 实现备注：只读纠错页面与追溯
+
+- 新增 `GET /api/corrections/recent`：复用 T02 详情结构，按 `recorded_at DESC, id DESC` 返回最近 50 条；原 `GET /api/corrections` 的过滤和升序历史契约保持不变。新列表路由沿用纠错控制器开关。
+- investigation 增加 `GET /api/correction-traces/{id}` 与 `GET /api/entries/{id}`，只用 readonly 数据源、现有视图和 REPEATABLE READ 快照，返回 `asOf`。前者返回证据页面关联、受影响对象当前状态和本次纠错触发的支付／批次历史；后者返回分录、posting、所属纠错和 `reversedBy`。只有目标角色 REVERSED 才标记“已被 cor_… 冲销”，APPLIED 不标冲销。两条调查路由均无写方法。
+- 金额前后值读取不可变 correction.params 的 oldAmount/newAmount，不从当前支付金额倒推；当前对象状态与本次纠错历史分别标注。差异关闭清单沿用 T02 的当前 resolution_correction_id 关联口径。
+- 证据按类型解析：issue → 差异，bank_txn → 银行流水，inbox_event → 既有脱敏事件页；statement_line 按 txn 编号列出所有匹配的结算单文件行和已确认批次行，避免同编号跨文件时任意选一条。processor_fetch 通过批次历史的 lines_fetch_id 链接批次；无现有视图关联时保留证据编号并明确提示暂无只读页面关联，不查询 io 原表或展示抓取原文。
+- 前端新增纠错列表／详情、独立分录页及批次行页，导航、差异、支付、批次历史与 posting 互相链接。纠错页面无提交表单。样例 E 的后端测试夹具用合成外部证据和真实业务服务形成 HELD → 纠错 → CONFIRMED；Playwright 验证差异 → 纠错 → 结算单行／原事件及支付／分录反向追溯。
+
+### P4 T02 实现备注：纠错 HTTP
+
+- `ledgerlab.corrections.enabled` 默认 true；false 时不注册纠错控制器，三个纠错路由均不可用。`POST /api/corrections` 成功 201；`GET /api/corrections/{id}` 返回同一详情结构；`GET /api/corrections?subjectType=&subjectId=` 返回详情数组，两个过滤条件可分别省略，按 recorded_at、id 升序。GET 使用单独的 readonly 数据源和 REPEATABLE READ 只读事务，只查现有视图；POST 响应在写事务里读取，以包含本次尚未提交的状态。
+- 请求字段沿用 ADR-0011；JSON 必须是单一对象，未知键、重复键、类型错误、空白必填文本、NUL、超过 2000 码点的 reasonNote 均为 INVALID_REQUEST。newAmount 若提供，必须直接来自可转为 long 的 JSON 整数；小数、指数和溢出拒绝。T03 已开放 RESTATE_CAPTURE_AMOUNT，reasonCode 只接受 CAPTURE_AMOUNT_ERROR 或 OTHER；尚未实现的另外两种类型返回 409 CORRECTION_TYPE_NOT_AVAILABLE。VOID_CAPTURE 的 reasonCode 只接受 CAPTURE_RECORDED_IN_ERROR 或 OTHER。
+- evidence 每项为 `{type,id}`。issue、bank_txn、inbox_event、processor_fetch 分别按差异号、银行流水号、事件号、十进制抓取存档编号查存在；statement_line 按处理方 txn 编号，在 recon.statement_line 或已确认的 core.settlement_batch_line 查存在。HELD 批次仅有原始抓取存档时可引用 processor_fetch。仅校验证据存在，不扩展为证明证据结论正确的自动判断。
+- 成功结构为 `{correction, targets, entries, affected}`。correction 包含 `id/type/reasonCode/reasonNote/evidence/params/subjectType/subjectId/requestedBy/recordedAt`；params 留存 originalEntryId、oldAmount、expectedFee。targets 为 `{entryId,role}`；entries 为 `{entryId,entryType,postings:[{lineNo,accountCode,side,amount}]}`，side 为 D/C。affected 四个数组是对象编号；VOID_CAPTURE 的 payments 为该支付号，batches、bankLines 为空，issues 为通过本次纠错关闭的差异号。GET 中 issues 按当前 resolution_correction_id 关联读取；不可变的历史证据仍在 issue_transition。
+- 错误沿用 ProblemDetail（`type/title/status/detail/instance` 加 code），ALREADY_REVERSED 附带已有 correctionId。校验必填项和证据后，业务前置按 ADR-0011 第 2 节①顺序判断；不使用 API 幂等记录。下列错误均无写入。
+
+T03 的 RESTATE_CAPTURE_AMOUNT 在 params 增加 newAmount、newExpectedFee，保留 oldAmount 和旧 expectedFee；affected.batches 从本次 correction 证据关联的 batch_transition 读取，包含成功和仍 HELD 的重核批次。newAmount 缺失、范围不合法或仅有 bank_txn 证据为 400 INVALID_REQUEST；相等为 409 AMOUNT_UNCHANGED，低于已退为 409 AMOUNT_BELOW_REFUNDED。运营重核路由及返回结构见 state-machines 第 4 节 T03 实现备注。
+
+| HTTP | code | 条件 |
+|---|---|---|
+| 400 | INVALID_REQUEST | JSON、必填字段、原因与类型对应关系或查询参数不合法 |
+| 400 | EVIDENCE_NOT_FOUND | 任一支持的证据编号不存在 |
+| 404 | ENTRY_NOT_FOUND | 目标分录不存在 |
+| 404 | CORRECTION_NOT_FOUND | GET 的纠错号不存在 |
+| 409 | CORRECTION_TYPE_NOT_AVAILABLE | T02 尚未实现的纠错类型 |
+| 409 | CANNOT_REVERSE_REVERSAL | 目标为 REVERSAL |
+| 409 | ALREADY_REVERSED | 目标已用于纠错，附 correctionId |
+| 409 | ENTRY_NOT_CORRECTABLE | 目标不是当前可纠错的支付金额分录 |
+| 409 | USE_REFUND_FOR_SETTLED_PAYMENT | 支付 SETTLED 或已有 batch_id |
+| 409 | PAYMENT_HAS_REFUNDS | 支付 refunded_amount 大于 0 |
+
+AC-6.1 的完整应用 HTTP 测试对以下 15 个路径分别发送 POST、PUT、PATCH、DELETE（共 60 次），均要求 404 或 405：`/api/ledger/entries`、`/api/ledger/entries/je_probe`、`/api/ledger/postings`、`/api/ledger/accounts/1101`、`/api/payments`、`/api/payments/ch_probe`、`/api/overview`、`/api/batches`、`/api/batches/po_probe`、`/api/recon/issues`、`/api/recon/issues/iss_probe`、`/api/bank-lines/bt_probe`、`/api/statement-lines/file_probe/1`、`/api/events/evt_probe`、`/api/refunds/rfd_probe`。已有业务 POST（例如 /api/refunds、/api/recon/runs）不是通用改账入口，不在此拒绝集合中。
 
 ## 3. 金额
 

@@ -69,7 +69,7 @@
 | **P1c** 模型测试、重建、页面 | 模型随机测试框架、空库重建一致、最简交易详情页 | AC-1.14、AC-4.11（P1 动作）、AC-4.13 |
 | **P2** 结算＋银行入账＋对账 | 手续费、批次＝payout＋balance transactions、明细就绪、结算在途、模拟银行入账、待查收款、两段精确对账、老化 | AC-1.4b、AC-1.11、AC-2.8、AC-2.16、AC-4.1、AC-5.1–5.13、AC-5.15–5.21 |
 | **P3** 退款 | 退款状态机、额度、并发、资金门槛与等待队列、处理方可用余额、出站命令、失败与未知结果、API 幂等 | AC-1.4c、AC-2.9–2.15、AC-3、AC-4.2、AC-4.7–4.10、AC-4.12、AC-5.14、AC-8.7 |
-| **P4** 纠错 | 误记撤销、冲销＋重记、待查收款清出 | AC-1.4d、AC-6 |
+| **P4** 纠错 | 误记撤销、冲销＋重记、待查收款清出与归位、冲突证据恢复、HELD 重核 | AC-1.4d、AC-6 |
 | **P5** 提现 | 双门槛、出站命令、结果未知恢复、失败、退回、提现侧三方对账 | AC-1.4e、AC-7 |
 | **P6** 接真实 Stripe 测试模式 | 用户的测试账号、密钥管理、契约测试、真实 webhook 经 chaos relay、对账接真实 balance transactions、运行报告 | AC-8.3–8.6、AC-8.8–8.10 |
 | **P7** 部署＋公开演示页 | AWS 部署、“来搞坏它”演示页、性能基线、演示视频、技术文章 | AC-9（部署与性能的验收另写） |
@@ -270,6 +270,11 @@ webhook 入口：`POST /webhooks/stripe`，签名用 Stripe 的方案（`Stripe-
 | AC-6.7 | 原因和证据必填 | **When** 缺原因或证据 **Then** 400；无写入 | TC | P4 |
 | AC-6.8 | 纠错原子 | **When** 写完 `REVERSAL` 后、写 `CORRECTION` 前注入异常 **Then** 三者都不存在 | TC | P4 |
 | AC-6.9 | 待查收款清出 | **Given** AC-5.6 的待查收款 9680 **When** 银行流水出现出账行 9680，引用 T2（退还处理方）**Then** 记 `UNAPPLIED_CASH_RETURNED`：待查收款 0、现金 9680；差异 `RESOLVED` | TC | P4 |
+| AC-6.10 | 拆分到账归位 | **Given** B1 已 `CONFIRMED`（net 9680），银行流水两行入账 5000（T5）、4680（T6），都引用 B1，各记待查收款、开 `DEPOSIT_AMOUNT_MISMATCH` **When** 提交 `APPLY_UNAPPLIED_CASH`（B1，T5＋T6，原因 `SPLIT_DEPOSIT`）**Then** 一个 `CORRECTION`：借 待查收款 9680 / 贷 在途 9680，没有 `REVERSAL`；现金仍 9680、待查收款 0、在途 0；B1 `BANKED`；T5、T6 `APPLIED`；两条差异 `RESOLVED` 并关联纠错。**When** 只提交 T5，或再提交一次 **Then** 409 `APPLICATION_AMOUNT_MISMATCH` / `BATCH_NOT_AWAITING_DEPOSIT`，无写入 | TC | P4 |
+| AC-6.11 | 银行冲突证据恢复 | **Given** B1 `CONFIRMED` 后收到 `payout.failed`（`PAYOUT_FAILED`），之后银行入账 9680 引用 B1（待查收款、`BATCH_STATE_CONFLICT`）**When** 提交 `RESTORE_FAILED_PAYOUT`（B1，该流水）**Then** `REVERSAL` 冲销 `BATCH_PAYOUT_FAILED` ＋ `CORRECTION` 借 待查收款 9680 / 贷 在途 9680；余额 = S3；B1 `BANKED`；差异 `RESOLVED`。**When** 失败打款已作为退回行出现在 B2 **Then** 409 `FAILED_PAYOUT_ALREADY_RETURNED` | TC | P4 |
+| AC-6.12 | HELD 批次运营重核 | **Given** 一个 P2 时因退款行 `HELD(UNSUPPORTED_LINE)` 的历史批次，批次里的退款在本地都有对应退款、金额相等 **When** `POST /api/batches/{id}/recheck` **Then** 按固定明细存档重核通过，`CONFIRMED` 并记账，不发 HTTP。**When** 对非 `HELD` 批次重核 **Then** 409 `BATCH_NOT_HELD` | TC | P4 |
+| AC-6.13 | 纠错进入模型测试 | 有状态模型加入四种纠错、待查收款退还、批次重核动作；每步核对余额、INV-1～INV-12、支付金额与状态、退款剩余额度、批次与流水状态 | MT | P4 |
+| AC-6.14 | 纠错可追溯 | **Given** AC-6.5 完成 **When** 打开 B6 的差异 **Then** 页面链接到纠错详情；纠错详情列出目标分录、生成的分录与 posting、原因、证据（可点到结算单行、原事件），以及支付金额的前后值 | PW | P4 |
 
 ## AC-7 提现
 

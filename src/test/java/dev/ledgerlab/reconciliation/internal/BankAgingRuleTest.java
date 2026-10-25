@@ -32,7 +32,7 @@ class BankAgingRuleTest {
                 manager,
                 f.clock,
                 ids,
-                new ReconProperties(java.time.Duration.ofSeconds(60), "p3-v2"),
+                new ReconProperties(java.time.Duration.ofSeconds(60), "p4-v2"),
                 List.of(
                         new ProcessorRule(f.jdbc, calendar, json, f.mapper, policy),
                         new BankRule(evidence, calendar, policy, json, f.jdbc),
@@ -58,7 +58,7 @@ class BankAgingRuleTest {
     }
 
     RunReport run(RunRequest.Kind kind, Instant cutoff, Instant evidence, boolean dry) {
-        return f.runs.run(new RunRequest(kind, cutoff, evidence, "p3-v2", List.of(), dry));
+        return f.runs.run(new RunRequest(kind, cutoff, evidence, "p4-v2", List.of(), dry));
     }
 
     String statement(String date, int version, long opening, long closing, String... rows) {
@@ -96,7 +96,7 @@ class BankAgingRuleTest {
         var rule = new AgingRule(f.jdbc, new BusinessCalendar(), policy, new BankEvidence(f.jdbc), json, f.mapper);
         java.util.function.Function<Instant, List<Finding>> inspect = asOf -> rule.evaluate(new ReconRule.Context(
                 new RunRequest(
-                        RunRequest.Kind.AGING, Instant.parse("2026-11-10T05:00:00Z"), asOf, "p3-v2", List.of(), true),
+                        RunRequest.Kind.AGING, Instant.parse("2026-11-10T05:00:00Z"), asOf, "p4-v2", List.of(), true),
                 java.util.Map.of()));
         assertThat(inspect.apply(known)).isEmpty();
         assertThat(inspect.apply(known.plusSeconds(1))).isEmpty();
@@ -381,7 +381,7 @@ class BankAgingRuleTest {
                 RunRequest.Kind.BANK,
                 ProcessorRuleTest.CUTOFF,
                 ProcessorRuleTest.AS_OF.plusSeconds(1),
-                "p3-v2",
+                "p4-v2",
                 List.of(pending),
                 true));
         assertThat(pinned.summary())

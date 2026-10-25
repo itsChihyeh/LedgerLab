@@ -43,7 +43,8 @@ class LedgerStatefulProperties {
     }
 
     @Property(tries = 40)
-    void ledgerMatchesTheReferenceModelAndKeepsItsInvariants(@ForAll("ledgerActions") ActionChain<State> chain) {
+    void ac_6_13_ledgerMatchesTheReferenceModelAndKeepsItsInvariants(
+            @ForAll("ledgerActions") ActionChain<State> chain) {
         chain.withInvariant("balances match the reference model", State::assertMatchesModel)
                 .withInvariant("INV-1..5, INV-8 hold", State::assertAuditClean)
                 .run();
@@ -59,6 +60,7 @@ class LedgerStatefulProperties {
                 .withAction(4, new PostRandomEntry())
                 .withAction(1, new RepostUsedSourceKey())
                 .withAction(1, new AppendToCommittedEntry())
+                .withAction(2, new ReverseRandomEntry())
                 .withMaxTransformations(20);
     }
 
@@ -68,6 +70,7 @@ class LedgerStatefulProperties {
         final ReferenceModel model = new ReferenceModel();
         final List<String> sourceKeys = new ArrayList<>();
         final List<String> entryIds = new ArrayList<>();
+        final Map<String, ModelEntry> reversible = new HashMap<>();
         int counter;
 
         State(LedgerFixture fixture) {
@@ -113,11 +116,59 @@ class LedgerStatefulProperties {
                         Throwable thrown = catchThrowable(() -> {
                             PostedEntry posted = state.fixture.post(request);
                             state.entryIds.add(posted.entryId());
+                            state.reversible.put(posted.entryId(), new ModelEntry(modelLines, amounts));
                         });
                         if (accepted) {
                             assertThat(thrown).as("model accepts this entry").isNull();
                             state.model.apply(modelLines, amounts);
                             state.sourceKeys.add(key);
+                        } else {
+                            assertThat(thrown).isInstanceOf(NegativeBalanceException.class);
+                        }
+                    }));
+        }
+    }
+
+    record ModelEntry(List<int[]> lines, List<Long> amounts) {
+        ModelEntry reverse() {
+            return new ModelEntry(
+                    lines.stream().map(line -> new int[] {line[0], 1 - line[1]}).toList(), amounts);
+        }
+    }
+
+    /** The reference model flips its own stored directions, without calling ledger code to compute effects. */
+    static final class ReverseRandomEntry implements Action.Dependent<State> {
+        @Override
+        public boolean precondition(State state) {
+            return !state.reversible.isEmpty();
+        }
+
+        @Override
+        public Arbitrary<Transformer<State>> transformer(State state) {
+            return Arbitraries.of(new ArrayList<>(state.reversible.keySet()))
+                    .map(id -> Transformer.mutate("reverse " + id, s -> {
+                        ModelEntry mirror =
+                                Objects.requireNonNull(s.reversible.get(id)).reverse();
+                        boolean accepted = s.model.wouldAccept(mirror.lines(), mirror.amounts());
+                        var request = new CorrectionRequest(
+                                CorrectionType.VOID_CAPTURE,
+                                CorrectionReason.OTHER,
+                                "Model reversal",
+                                "[{\"type\":\"inbox_event\",\"id\":\"evt_model\"}]",
+                                "{}",
+                                SubjectType.PAYMENT,
+                                "pay_model",
+                                "model",
+                                List.of(id),
+                                List.of(),
+                                List.of(),
+                                T0);
+                        Throwable thrown =
+                                catchThrowable(() -> s.fixture.inMoneyTransaction(l -> l.recordCorrection(request)));
+                        if (accepted) {
+                            assertThat(thrown).isNull();
+                            s.model.apply(mirror.lines(), mirror.amounts());
+                            s.reversible.remove(id);
                         } else {
                             assertThat(thrown).isInstanceOf(NegativeBalanceException.class);
                         }

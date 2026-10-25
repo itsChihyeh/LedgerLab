@@ -471,7 +471,8 @@ class RefundWebhookTest {
                 f.clock,
                 f.batches,
                 target,
-                new dev.ledgerlab.refunds.RefundSettlement(f.jdbc, f.ledger, f.payments, target));
+                new dev.ledgerlab.refunds.RefundSettlement(f.jdbc, f.ledger, f.payments, target),
+                f.rechecks);
     }
 
     private OutboundWorker outbound() {

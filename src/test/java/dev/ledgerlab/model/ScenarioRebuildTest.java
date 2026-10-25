@@ -10,6 +10,60 @@ import org.junit.jupiter.api.Test;
 
 class ScenarioRebuildTest {
     @Test
+    void ac_6_13_ac_4_13_operatorInputsRebuildCorrectionsTargetsAndResolvedIssues() {
+        try (var app = new ModelApplication()) {
+            var state = new PaymentModelProperties.State(1, app);
+            var held = state.p4.prepare(0);
+            state.p4.recheck(held);
+            state.check();
+            state.p4.capture(held.lines.getFirst().reference(), 5400L);
+            state.check();
+            var split = state.p4.prepare(1);
+            state.p4.bankCorrection(split, state.p4.credits(split), false);
+            state.check();
+            var failed = state.p4.prepare(2);
+            state.p4.bankCorrection(failed, state.p4.credits(failed), true);
+            state.check();
+            state.p4.prepare(4);
+            String payment = state.p4.captures(true).getFirst();
+            state.p4.capture(payment, 12000L);
+            state.check();
+            state.p4.capture(payment, null);
+            state.check();
+            var returned = state.p4.prepare(2);
+            state.p4.returnCash(state.p4.credits(returned).getFirst(), false);
+            state.check();
+            assertThat(app.log.inputs().stream()
+                            .filter(i -> i instanceof ScenarioLog.ApiCommand)
+                            .map(i -> ((ScenarioLog.ApiCommand) i).path()))
+                    .contains("/api/corrections", "/api/batches/" + held.id + "/recheck");
+            P3ScenarioTest.replay(state);
+        }
+    }
+
+    @Test
+    void ac_6_13_ac_4_13_correctionEvidenceAndTargetsParticipateInDiagnostics() {
+        var original = new RebuildSnapshot(
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Set.of(),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of("ledger.correction_target:1", Map.of("role", "APPLIED")));
+        var empty = new RebuildSnapshot(Map.of(), Map.of(), Map.of(), Map.of(), Set.of());
+        assertThatThrownBy(() -> original.assertMatches(empty))
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("corrections[ledger.correction_target:1]");
+    }
+
+    @Test
     void ac_4_13_failedShrinkCleanupCanCloseApplicationAgain() {
         var app = new ModelApplication();
         app.close();

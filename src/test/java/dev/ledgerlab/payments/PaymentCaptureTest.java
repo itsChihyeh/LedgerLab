@@ -402,7 +402,7 @@ class PaymentCaptureTest {
         CountDownLatch attempting = new CountDownLatch(1);
         AtomicInteger firstPid = new AtomicInteger();
         AtomicInteger secondPid = new AtomicInteger();
-        var paused = service(new Ledger() {
+        var paused = service(new dev.ledgerlab.testsupport.DelegatingLedger(ledger) {
             @Override
             public long balance(Account account) {
                 return ledger.balance(account);

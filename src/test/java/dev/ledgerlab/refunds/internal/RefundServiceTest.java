@@ -222,7 +222,7 @@ class RefundServiceTest {
         };
         // Only the test adapter acquires the ledger lock late, so journal integrity still holds.
         // Neither the guard's SELECT nor its stale UPDATE is protected by the funds or payment lock.
-        Ledger lateLock = new Ledger() {
+        Ledger lateLock = new dev.ledgerlab.testsupport.DelegatingLedger(f.ledger) {
             @Override
             public long balance(Account account) {
                 return f.ledger.balance(account);

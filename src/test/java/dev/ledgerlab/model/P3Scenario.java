@@ -199,6 +199,9 @@ final class P3Scenario {
         var response = app.api("/api/refunds", ref, body);
         if (amount > 99_999_999) {
             assertThat(response.status()).isEqualTo(400);
+        } else if (state.model.voided.contains(payment)) {
+            assertThat(response.status()).isEqualTo(409);
+            assertThat(response.body()).contains("PAYMENT_NOT_REFUNDABLE");
         } else if (amount > remaining) {
             assertThat(response.status()).as(response.body()).isEqualTo(409);
             assertThat(response.body()).contains("REFUND_EXCEEDS_REMAINING");

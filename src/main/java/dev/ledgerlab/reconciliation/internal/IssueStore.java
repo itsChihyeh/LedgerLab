@@ -33,7 +33,7 @@ public final class IssueStore implements IssueDisposition {
             @Nullable String fingerprint,
             int reopenCount) {}
 
-    private java.util.List<Issue> issues(String predicate, Object... parameters) {
+    private java.util.List<Issue> lockIssues(String predicate, Object... parameters) {
         return jdbc.sql(
                         "SELECT id, status, detected_by, (SELECT kind FROM recon.run WHERE id=first_run_id) AS run_kind, fingerprint, reopen_count FROM recon.issue WHERE "
                                 + predicate + " FOR UPDATE")
@@ -49,7 +49,7 @@ public final class IssueStore implements IssueDisposition {
     }
 
     String found(String runId, RunRequest.Kind kind, Finding finding, String fingerprint, OffsetDateTime now) {
-        var existing = issues(
+        var existing = lockIssues(
                 "category=? AND subject_type=? AND subject_id=?",
                 finding.category(),
                 finding.subjectType(),
@@ -139,7 +139,7 @@ public final class IssueStore implements IssueDisposition {
             Finding.Key key,
             ReconRule.Explanation explanation,
             OffsetDateTime now) {
-        var existing = issues("""
+        var existing = lockIssues("""
                 category=? AND subject_type=? AND subject_id=? AND detected_by <> 'INGESTION' AND status='OPEN'
                 AND first_run_id IN (SELECT id FROM recon.run WHERE kind=?)
                 """, key.category(), key.subjectType(), key.subjectId(), kind.name());
@@ -173,7 +173,7 @@ public final class IssueStore implements IssueDisposition {
         if (issueId.isBlank() || note.isBlank())
             throw new IllegalArgumentException("Issue and disposition explanation are required");
         transactions.executeWithoutResult(tx -> {
-            Issue issue = issues("id=?", issueId).stream()
+            Issue issue = lockIssues("id=?", issueId).stream()
                     .findFirst()
                     .orElseThrow(() -> new IllegalArgumentException("Unknown issue: " + issueId));
             if (!issue.status().equals("OPEN")) throw new IllegalStateException("Only OPEN issues can be disposed");
@@ -183,6 +183,26 @@ public final class IssueStore implements IssueDisposition {
                     .update();
             transition(issueId, "OPEN", target, null, "OPERATOR", note, "[]", now);
         });
+    }
+
+    @Override
+    public void resolveByCorrection(String issueId, String correctionId, String note) {
+        if (!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("Correction disposition requires the caller's transaction");
+        // Lock before checking OPEN; the caller visits issue IDs in order after business/account writes.
+        Issue issue = lockIssues("id=?", issueId).stream()
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Unknown issue: " + issueId));
+        if (!issue.status().equals("OPEN")) return;
+        var now = clock.instant().atOffset(ZoneOffset.UTC);
+        jdbc.sql(
+                        "UPDATE recon.issue SET status='RESOLVED', resolution_correction_id=?, explanation=?, updated_at=? WHERE id=?")
+                .params(correctionId, note, now, issueId)
+                .update();
+        String evidence = tools.jackson.databind.json.JsonMapper.builder()
+                .build()
+                .writeValueAsString(java.util.List.of(java.util.Map.of("type", "correction", "id", correctionId)));
+        transition(issueId, "OPEN", "RESOLVED", null, "OPERATOR", note, evidence, now);
     }
 
     private void transition(

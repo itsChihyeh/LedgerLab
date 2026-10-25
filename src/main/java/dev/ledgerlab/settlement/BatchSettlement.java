@@ -136,6 +136,26 @@ public final class BatchSettlement {
         return process(evidence, false);
     }
 
+    /** Reuses the original complete archive; caller owns the transaction and evidence loading. */
+    public Result recheckHeld(PayoutEvidence evidence) {
+        ledger.lockFunds();
+        String state =
+                status(evidence.batchId(), true).orElseThrow(() -> new BatchRecheckException(404, "BATCH_NOT_FOUND"));
+        if (!state.equals("HELD")) throw new BatchRecheckException(409, "BATCH_NOT_HELD");
+        String reason = jdbc.sql("SELECT hold_reason FROM core.settlement_batch WHERE batch_id=?")
+                .param(evidence.batchId())
+                .query(String.class)
+                .single();
+        if (reason.equals("UNSUPPORTED_PAYOUT")) throw new BatchRecheckException(409, "BATCH_NOT_RECHECKABLE");
+        long fetch = jdbc.sql("SELECT lines_fetch_id FROM core.settlement_batch WHERE batch_id=?")
+                .param(evidence.batchId())
+                .query(Long.class)
+                .single();
+        if (fetch != Objects.requireNonNull(evidence.lines()).fetchId())
+            throw new IllegalArgumentException("Recheck must use the fixed batch archive");
+        return process(evidence, true);
+    }
+
     private Result process(PayoutEvidence evidence, boolean recheck) {
         ledger.lockFunds();
         Instant now = clock.instant();
@@ -315,9 +335,11 @@ public final class BatchSettlement {
                 Payment fact = payment.get();
                 String mismatch = fact.batchId() != null
                         ? "LINE_IN_OTHER_BATCH"
-                        : !fact.status().equals("CAPTURED")
-                                ? "UNSUPPORTED_LINE"
-                                : fact.amount() != line.gross() ? "AMOUNT_MISMATCH" : null;
+                        : fact.status().equals("VOIDED")
+                                ? "PAYMENT_STATE_CONFLICT"
+                                : !fact.status().equals("CAPTURED")
+                                        ? "UNSUPPORTED_LINE"
+                                        : fact.amount() != line.gross() ? "AMOUNT_MISMATCH" : null;
                 if (mismatch != null) {
                     hold(
                             evidence,
@@ -542,6 +564,7 @@ public final class BatchSettlement {
             return;
         }
         String category = switch (reason) {
+            case "PAYMENT_STATE_CONFLICT" -> "BATCH_STATE_CONFLICT";
             case "FEE_EXCEEDS_GROSS", "AMOUNT_MISMATCH" -> "AMOUNT_MISMATCH";
             case "UNSUPPORTED_LINE" -> "UNSUPPORTED_BATCH_LINE";
             case "LINE_IN_OTHER_BATCH" -> "DUPLICATE_STATEMENT_LINE";
@@ -566,7 +589,11 @@ public final class BatchSettlement {
         var refs = new ArrayList<Map<String, Object>>();
         refs.add(Map.of(
                 "table",
-                evidence.evidenceType().equals("processor_fetch") ? "io.processor_fetch" : "io.inbox_event",
+                switch (evidence.evidenceType()) {
+                    case "processor_fetch" -> "io.processor_fetch";
+                    case "correction" -> "ledger.correction";
+                    default -> "io.inbox_event";
+                },
                 "id",
                 evidence.evidenceId()));
         if (evidence.lines() != null)

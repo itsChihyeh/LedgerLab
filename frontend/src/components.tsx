@@ -134,7 +134,8 @@ export function Postings({
           <td>
             {p.entryType}
             <small>
-              {p.entryId} · 行 {p.lineNo}
+              <a href={href("entries", p.entryId)}>{p.entryId}</a> · 行{" "}
+              {p.lineNo}
             </small>
           </td>
           <td>

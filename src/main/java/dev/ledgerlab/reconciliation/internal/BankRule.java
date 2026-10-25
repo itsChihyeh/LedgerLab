@@ -33,7 +33,7 @@ public final class BankRule implements ReconRule {
 
     @Override
     public String version() {
-        return "p3-v2";
+        return "p4-v2";
     }
 
     @Override
@@ -80,7 +80,7 @@ public final class BankRule implements ReconRule {
                     null,
                     "No unapplied cash remains for " + line.id());
             boolean unhandled = open != 0
-                    || line.direction().equals("DEBIT")
+                    || (line.direction().equals("DEBIT") && !snapshot.posted(line))
                     || !line.currency().equals("CAD");
             // The ingestion identity is immutable; dispositions are deliberately not used as evidence.
             var categories = jdbc.sql("""

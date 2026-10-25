@@ -10,6 +10,7 @@ final class BankAgingReference {
         IMPORT,
         ADVANCE_TO_DUE,
         EXPIRE_WAITING,
+        RETURN_UNAPPLIED,
         REPLAY
     }
 
@@ -18,12 +19,13 @@ final class BankAgingReference {
     boolean expired;
     boolean matched;
     boolean unapplied;
+    boolean returned;
 
     void apply(Operation operation) {
         switch (operation) {
             case CONFIRM -> {
                 confirmed = true;
-                if (imported && !unapplied) matched = true;
+                if (imported && !unapplied && !returned) matched = true;
             }
             case IMPORT -> {
                 if (!imported) {
@@ -34,7 +36,13 @@ final class BankAgingReference {
             }
             case ADVANCE_TO_DUE -> expired = true;
             case EXPIRE_WAITING -> {
-                if (expired && imported && !matched) unapplied = true;
+                if (expired && imported && !matched && !returned) unapplied = true;
+            }
+            case RETURN_UNAPPLIED -> {
+                if (unapplied) {
+                    unapplied = false;
+                    returned = true;
+                }
             }
             case REPLAY -> {}
         }
@@ -43,7 +51,7 @@ final class BankAgingReference {
     Set<String> bank() {
         var findings = new HashSet<String>();
         if (confirmed && !matched && !expired) findings.add("TIMING_DIFFERENCE:batch:po_model");
-        if (imported && !matched && !unapplied)
+        if (imported && !matched && !unapplied && !returned)
             findings.add("TIMING_DIFFERENCE:bank_statement:SIM-CAD-001:2026-11-10:2026-11-10");
         if (unapplied) {
             findings.add("UNAPPLIED_CASH_OPEN:bank_txn:bt_model");

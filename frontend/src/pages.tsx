@@ -3,6 +3,7 @@ import type {
   BankDetail,
   BatchDetail,
   BatchList,
+  EntryDetail,
   EventDetail,
   IssueDetail,
   IssueList,
@@ -25,6 +26,7 @@ import {
   Snapshot,
   Table,
 } from "./components";
+import { PaymentCorrectionHistory, ReversedNotice } from "./corrections";
 import { issueCategoryLabel, issueCategoryLabels } from "./issue-categories";
 import { RefundSection } from "./refunds";
 
@@ -195,6 +197,7 @@ export function PaymentPage({ id }: { id: string }) {
             </Field>
           </dl>
           <Postings postings={p.postings} />
+          <PaymentCorrectionHistory payment={p} />
           <Deliveries deliveries={p.deliveries} />
           <Snapshot asOf={p.asOf} />
           <RefundSection
@@ -287,7 +290,14 @@ export function BatchPage({ id }: { id: string }) {
                   <small>{h.holdReason}</small>
                 </td>
                 <td>
-                  {h.evidenceType} · {h.evidenceId}
+                  {h.evidenceType} ·{" "}
+                  {h.evidenceType === "correction" ? (
+                    <a href={href("corrections", h.evidenceId)}>
+                      {h.evidenceId}
+                    </a>
+                  ) : (
+                    h.evidenceId
+                  )}
                 </td>
                 <td>{h.occurredAt}</td>
                 <td>{h.recordedAt}</td>
@@ -301,7 +311,9 @@ export function BatchPage({ id }: { id: string }) {
           >
             {d.entries.map((e) => (
               <tr key={e.id}>
-                <td>{e.id}</td>
+                <td>
+                  <a href={href("entries", e.id)}>{e.id}</a>
+                </td>
                 <td>{e.entryType}</td>
                 <td>{e.sourceKey}</td>
                 <td>{e.postingCount}</td>
@@ -419,6 +431,15 @@ export function IssuePage({ id }: { id: string }) {
             <Field name="对象">{d.issue.subjectId}</Field>
             <Field name="状态">{d.issue.status}</Field>
             <Field name="处置说明">{d.issue.explanation}</Field>
+            <Field name="resolution_correction_id">
+              {d.issue.resolutionCorrectionId ? (
+                <a href={href("corrections", d.issue.resolutionCorrectionId)}>
+                  {d.issue.resolutionCorrectionId}
+                </a>
+              ) : (
+                "—"
+              )}
+            </Field>
           </dl>
           <Table
             caption="金额比较"
@@ -723,7 +744,7 @@ export function StatementPage({ file, seq }: { file: string; seq: string }) {
     </Resource>
   );
 }
-// No standalone entry endpoint: resolve the issue's explicit references through existing detail APIs.
+// Preserve issue-scoped links and their business source; use one entry snapshot for the audit data.
 async function loadEntry(path: string, signal?: AbortSignal) {
   const [issueId, entryId] = path.split("/");
   const issue = await get<IssueDetail>(`/api/recon/issues/${issueId}`, signal);
@@ -745,11 +766,11 @@ async function loadEntry(path: string, signal?: AbortSignal) {
     s.data.postings.some((p) => p.entryId === decodeURIComponent(entryId)),
   );
   if (!source) throw new Error("关联记录中未找到这条分录的 posting");
+  const entry = await get<EntryDetail>(`/api/entries/${entryId}`, signal);
   return {
-    postings: source.data.postings.filter(
-      (p) => p.entryId === decodeURIComponent(entryId),
-    ),
-    asOf: source.data.asOf,
+    reversedBy: entry.reversedBy,
+    postings: entry.postings,
+    asOf: entry.asOf,
     source: `#${source.url.slice(4)}`,
   };
 }
@@ -766,6 +787,7 @@ export function EntryPage({
         <>
           <h1>相关 posting</h1>
           <p>{entryId}</p>
+          <ReversedNotice id={d.reversedBy} />
           <p>
             <a href={href("recon", issueId)}>返回差异</a> ·{" "}
             <a href={d.source}>查看关联业务详情</a>

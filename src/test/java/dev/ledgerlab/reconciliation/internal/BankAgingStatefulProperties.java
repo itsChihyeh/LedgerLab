@@ -27,8 +27,8 @@ class BankAgingStatefulProperties {
     }
 
     @Property(seed = "2026102311")
-    void ac_5_9_bankAndAgingActionsMatchIndependentModel(@ForAll("operations") ActionChain<State> chain) {
-        chain.withInvariant("findings, replay and unchanged ledger", State::verify)
+    void ac_5_9_ac_6_9_bankAndReturnActionsMatchIndependentModel(@ForAll("operations") ActionChain<State> chain) {
+        chain.withInvariant("findings, replay, balances and INV-12", State::verify)
                 .run();
     }
 
@@ -79,6 +79,15 @@ class BankAgingStatefulProperties {
                     if (!model.expired) fixture.f.clock.set(Instant.parse("2026-11-14T12:00:00Z"));
                 }
                 case EXPIRE_WAITING -> fixture.bank.expireWaiting();
+                case RETURN_UNAPPLIED -> {
+                    if (model.unapplied)
+                        fixture.statement(
+                                "2026-11-14",
+                                1,
+                                9680,
+                                0,
+                                "D,bt_return,DEBIT,9680,CAD,BOOKED,bt_model,2026-11-14,2026-11-14,return");
+                }
                 case REPLAY -> {}
             }
             model.apply(operation);
@@ -102,6 +111,31 @@ class BankAgingStatefulProperties {
                 assertThat(fixture.run(kind, cutoff, evidence, true).findings()).isEqualTo(report.findings());
             }
             assertThat(fixture.f.money()).isEqualTo(money);
+            long unapplied = fixture.f
+                    .jdbc
+                    .sql("SELECT balance FROM ledger.account WHERE code=2105")
+                    .query(Long.class)
+                    .single();
+            assertThat(unapplied).isEqualTo(model.unapplied ? 9680 : 0);
+            assertThat(fixture.f.jdbc.sql("""
+                    SELECT coalesce(sum(amount),0) FROM (
+                        SELECT DISTINCT ON (bank_txn_id) * FROM recon.bank_line
+                        ORDER BY bank_txn_id, version DESC
+                    ) current_lines WHERE match_status='UNAPPLIED'
+                    """).query(Long.class).single()).isEqualTo(unapplied);
+            assertThat(fixture.f
+                            .jdbc
+                            .sql("SELECT balance FROM ledger.account WHERE code=1103")
+                            .query(Long.class)
+                            .single())
+                    .isEqualTo(model.matched || model.unapplied ? 9680 : 0);
+            if (model.returned)
+                assertThat(fixture.f
+                                .jdbc
+                                .sql("SELECT match_status FROM recon.bank_line ORDER BY bank_txn_id")
+                                .query(String.class)
+                                .list())
+                        .containsExactly("RETURNED", "RETURN_POSTED");
         }
     }
 }

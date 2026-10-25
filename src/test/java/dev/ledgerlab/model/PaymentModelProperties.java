@@ -24,7 +24,7 @@ import net.jqwik.api.state.ActionChain;
 import net.jqwik.api.state.Transformer;
 
 class PaymentModelProperties {
-    static final String SEED = "2026102201";
+    static final String SEED = "2026102504";
     private static ModelReport report = new ModelReport();
     private static long sequenceId;
     private static boolean rebuildFailed;
@@ -43,12 +43,12 @@ class PaymentModelProperties {
     }
 
     @Property(seed = SEED, shrinking = ShrinkingMode.BOUNDED, generation = GenerationMode.RANDOMIZED)
-    void ac_4_11_ac_4_13_p3ActionsMatchIndependentModelAndRebuild(@ForAll("actions") ActionChain<State> chain) {
+    void ac_6_13_ac_4_11_ac_4_13_p4ActionsMatchIndependentModelAndRebuild(@ForAll("actions") ActionChain<State> chain) {
         current = null;
         boolean passed = false;
         long violationsBefore = report.violations;
         try {
-            chain.withInvariant("P1/P2/P3 ledger, refunds, commands, batch, bank and inbox model", State::check)
+            chain.withInvariant("P1/P2/P3/P4 ledger, correction, refund, batch, bank and inbox model", State::check)
                     .run();
             current.drain("final-worker");
             current.p3.finish();
@@ -104,6 +104,14 @@ class PaymentModelProperties {
                     return current;
                 })
                 .withAction(5, new NewCharge())
+                .withAction(8, new P4Scenario.Operation(P4Scenario.Kind.PREPARE_CORRECTION))
+                .withAction(4, new P4Scenario.Operation(P4Scenario.Kind.VOID_CAPTURE))
+                .withAction(7, new P4Scenario.Operation(P4Scenario.Kind.RESTATE_CAPTURE_AMOUNT))
+                .withAction(5, new P4Scenario.Operation(P4Scenario.Kind.APPLY_UNAPPLIED_CASH))
+                .withAction(5, new P4Scenario.Operation(P4Scenario.Kind.RESTORE_FAILED_PAYOUT))
+                .withAction(3, new P4Scenario.Operation(P4Scenario.Kind.RETURN_UNAPPLIED_CASH))
+                .withAction(3, new P4Scenario.Operation(P4Scenario.Kind.RECHECK_HELD))
+                .withAction(2, new P4Scenario.Operation(P4Scenario.Kind.INVALID_CORRECTION))
                 .withAction(8, new P3Scenario.Operation(P3Scenario.Kind.ACCEPT_REFUND))
                 .withAction(3, new P3Scenario.Operation(P3Scenario.Kind.CANCEL_REFUND))
                 .withAction(6, new P3Scenario.Operation(P3Scenario.Kind.COMMAND))
@@ -247,6 +255,7 @@ class PaymentModelProperties {
         final long entriesBefore;
         final P2Scenario p2;
         final P3Scenario p3;
+        final P4Scenario p4;
         int counter;
         int length;
         boolean failed;
@@ -272,6 +281,7 @@ class PaymentModelProperties {
             prefix = "model" + sequence + "x";
             p2 = new P2Scenario(this);
             p3 = new P3Scenario(this);
+            p4 = new P4Scenario(this);
         }
 
         void rebuild() {
@@ -360,6 +370,7 @@ class PaymentModelProperties {
                 expectedBalances.merge(2101, model.balanceDelta(), Math::addExact);
                 model.settlement.deltas().forEach((code, delta) -> expectedBalances.merge(code, delta, Math::addExact));
                 p3.model.deltas().forEach((code, delta) -> expectedBalances.merge(code, delta, Math::addExact));
+                p4.model.journal.deltas().forEach((code, delta) -> expectedBalances.merge(code, delta, Math::addExact));
                 Map<Integer, Long> balances = app.balances();
                 assertThat(balances).as("snapshot + model deltas, all accounts").isEqualTo(expectedBalances);
 
@@ -385,7 +396,11 @@ class PaymentModelProperties {
                         .param("prefix", "ch_" + prefix + "%")
                         .query((rs, n) -> {
                             String batch = model.settlement.paymentBatches.get(rs.getString(1));
-                            assertThat(rs.getString(3)).isEqualTo(batch == null ? "CAPTURED" : "SETTLED");
+                            assertThat(rs.getString(3))
+                                    .isEqualTo(
+                                            model.voided.contains(rs.getString(1))
+                                                    ? "VOIDED"
+                                                    : batch == null ? "CAPTURED" : "SETTLED");
                             assertThat(rs.getString(4)).isEqualTo(batch);
                             assertThat(rs.getObject(5)).isEqualTo(model.settlement.actualFees.get(rs.getString(1)));
                             return Map.entry(rs.getString(1), rs.getLong(2));
@@ -396,7 +411,8 @@ class PaymentModelProperties {
                 assertThat(Math.subtractExact(balances.get(2101), baseline.get(2101)))
                         .as("INV-9 captured gross in this sequence")
                         .isEqualTo(payments.entrySet().stream()
-                                .filter(e -> !model.settlement.paymentBatches.containsKey(e.getKey()))
+                                .filter(e -> !model.voided.contains(e.getKey())
+                                        && !model.settlement.paymentBatches.containsKey(e.getKey()))
                                 .map(Map.Entry::getValue)
                                 .reduce(0L, Math::addExact));
 
@@ -420,13 +436,15 @@ class PaymentModelProperties {
                         .isEqualTo(entriesBefore
                                 + model.payments.size()
                                 + model.settlement.entries.size()
-                                + p3.model.entries.size());
+                                + p3.model.entries.size()
+                                + p4.model.journal.entries.size());
 
                 assertThat(groupCounts("recon.issue", "category", "subject_id")).isEqualTo(model.issueCounts());
                 assertThat(groupCounts("io.inbox_conflict", "event_id", "event_id"))
                         .isEqualTo(model.conflicts);
                 p2.check();
                 p3.check();
+                p4.check();
             } catch (AssertionError failure) {
                 report.violations++;
                 throw failure;

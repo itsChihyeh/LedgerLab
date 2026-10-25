@@ -5,12 +5,12 @@ import dev.ledgerlab.ingestion.StripeReader.FetchPurpose;
 import dev.ledgerlab.ingestion.StripeReader.Payout;
 import dev.ledgerlab.refunds.ProcessorRefundGateway;
 import dev.ledgerlab.refunds.RefundSettlement;
+import dev.ledgerlab.settlement.BatchRechecks;
 import dev.ledgerlab.settlement.BatchSettlement;
 import dev.ledgerlab.settlement.PayoutEvidence;
 import dev.ledgerlab.settlement.PayoutEvidence.Lines;
 import java.time.Clock;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,6 +29,7 @@ final class PayoutProcessing {
     private final Clock clock;
     private final ProcessorRefundGateway refundGateway;
     private final RefundSettlement refunds;
+    private final BatchRechecks rechecks;
 
     PayoutProcessing(
             StripeReader reader,
@@ -37,7 +38,8 @@ final class PayoutProcessing {
             ObjectMapper mapper,
             Clock clock,
             ProcessorRefundGateway refundGateway,
-            RefundSettlement refunds) {
+            RefundSettlement refunds,
+            BatchRechecks rechecks) {
         this.reader = reader;
         this.settlement = settlement;
         this.jdbc = jdbc;
@@ -45,6 +47,7 @@ final class PayoutProcessing {
         this.clock = clock;
         this.refundGateway = refundGateway;
         this.refunds = refunds;
+        this.rechecks = rechecks;
     }
 
     @Nullable
@@ -89,58 +92,16 @@ final class PayoutProcessing {
                     evidenceType,
                     evidenceId,
                     payout,
-                    new Lines(lines.fetchId(), lines.items(), refundIdentities(lines.items(), null)));
+                    new Lines(lines.fetchId(), lines.items(), refundIdentities(lines.items())));
         }
         return evidence;
     }
 
     void recheckByPayment(String paymentRef, String captureEventId) {
-        for (var batch : settlement.unknownPaymentBatches()) {
-            String raw = jdbc.sql("""
-                    SELECT response_body FROM io.processor_fetch
-                    WHERE id = :id AND complete AND purpose = 'BATCH_LINES'
-                      AND request->'query'->>'payout' = :batch
-                    """)
-                    .param("id", batch.fetchId())
-                    .param("batch", batch.batchId())
-                    .query(String.class)
-                    .single();
-            var items = new ArrayList<PayoutEvidence.Line>();
-            for (var page : mapper.readTree(raw)) {
-                for (var node : mapper.readTree(page.asString()).path("data")) {
-                    var line = StripeReadParser.balanceTransaction(node);
-                    items.add(new PayoutEvidence.Line(
-                            line.id(),
-                            line.type(),
-                            line.source(),
-                            line.amount(),
-                            line.fee(),
-                            line.net(),
-                            line.currency(),
-                            line.created()));
-                }
-            }
-            settlement.recheckByPayment(
-                    paymentRef,
-                    new PayoutEvidence(
-                            batch.sourceEventId(),
-                            "inbox_event",
-                            captureEventId,
-                            "payout.reconciliation_completed",
-                            batch.batchId(),
-                            batch.amount(),
-                            batch.currency(),
-                            batch.automatic(),
-                            batch.method(),
-                            "completed",
-                            batch.arrivalDate(),
-                            batch.created(),
-                            new Lines(batch.fetchId(), items, refundIdentities(items, batch.batchId()))));
-        }
+        rechecks.recheckUnknownPayment(paymentRef, captureEventId);
     }
 
-    private Map<String, PayoutEvidence.RefundIdentity> refundIdentities(
-            List<PayoutEvidence.Line> lines, @Nullable String archivedBatch) {
+    private Map<String, PayoutEvidence.RefundIdentity> refundIdentities(List<PayoutEvidence.Line> lines) {
         var identities = new HashMap<String, PayoutEvidence.RefundIdentity>();
         for (var line : lines) {
             String ref = line.source();
@@ -150,33 +111,6 @@ final class PayoutProcessing {
                     || line.gross() >= 0
                     || identities.containsKey(ref)
                     || refunds.find(ref, null).isPresent()) continue;
-            if (archivedBatch != null) {
-                // Capture rechecks run inside the funds transaction: replay the original archived identity only.
-                var body = jdbc.sql("""
-                        SELECT response_body FROM io.processor_fetch
-                        WHERE purpose='REFUND_QUERY' AND complete AND request->>'path'=:path
-                            AND fetched_at <= (SELECT min(recorded_at) FROM core.batch_transition
-                                WHERE subject_id=:batch AND to_status='HELD' AND hold_reason='UNKNOWN_PAYMENT')
-                        ORDER BY id DESC LIMIT 1
-                        """)
-                        .param("path", "/v1/refunds/" + ref)
-                        .param("batch", archivedBatch)
-                        .query(String.class)
-                        .optional();
-                if (body.isPresent()) {
-                    var node = mapper.readTree(body.orElseThrow());
-                    if (ref.equals(node.path("id").asString()))
-                        identities.put(
-                                ref,
-                                new PayoutEvidence.RefundIdentity(
-                                        node.path("metadata")
-                                                .path("ledgerlab_refund_id")
-                                                .asString(null),
-                                        StripeReadParser.integer(node, "amount"),
-                                        StripeReadParser.text(node, "charge")));
-                }
-                continue;
-            }
             var response = refundGateway.retrieve(ref);
             if (response.value() instanceof ProcessorRefundGateway.Incomplete incomplete)
                 throw new IllegalStateException("Incomplete refund identity fetch: " + incomplete.reason());

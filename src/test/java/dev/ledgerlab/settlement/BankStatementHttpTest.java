@@ -96,6 +96,49 @@ class BankStatementHttpTest {
     }
 
     @Test
+    void ac_6_9_overviewReflectsReturnedCashAndClosedIssues() throws Exception {
+        var before = overview();
+        long cash = before.path("bankCash").asLong();
+        long unapplied = before.path("unappliedCash").asLong();
+        long open =
+                before.path("openIssuesByCategory").path("UNMATCHED_BANK_LINE").asLong();
+        byte[] credit = ("H,BANK_STATEMENT,SIM-CAD-001,2026-10-24,2026-10-24,1,CAD\r\n"
+                        + "D,http_return_credit,CREDIT,9680,CAD,BOOKED,unknown,2026-10-24,2026-10-24,return\r\n"
+                        + "T,1,9680,0,0,9680\r\n")
+                .getBytes(StandardCharsets.UTF_8);
+        assertThat(post(credit, "text/csv").statusCode()).isEqualTo(200);
+        var received = overview();
+        assertThat(received.path("unappliedCash").asLong()).isEqualTo(unapplied + 9680);
+        assertThat(received.path("bankCash").asLong()).isEqualTo(cash + 9680);
+        assertThat(received.path("openIssuesByCategory")
+                        .path("UNMATCHED_BANK_LINE")
+                        .asLong())
+                .isEqualTo(open + 1);
+        byte[] debit = ("H,BANK_STATEMENT,SIM-CAD-001,2026-10-25,2026-10-25,1,CAD\r\n"
+                        + "D,http_return_debit,DEBIT,9680,CAD,BOOKED,http_return_credit,2026-10-25,2026-10-25,return\r\n"
+                        + "T,1,0,9680,9680,0\r\n")
+                .getBytes(StandardCharsets.UTF_8);
+        assertThat(post(debit, "text/csv").statusCode()).isEqualTo(200);
+        var returned = overview();
+        assertThat(returned.path("unappliedCash").asLong()).isEqualTo(unapplied);
+        assertThat(returned.path("bankCash").asLong()).isEqualTo(cash);
+        assertThat(returned.path("openIssuesByCategory")
+                        .path("UNMATCHED_BANK_LINE")
+                        .asLong())
+                .isEqualTo(open);
+    }
+
+    private tools.jackson.databind.JsonNode overview() throws Exception {
+        var response = HTTP.send(
+                HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/overview"))
+                        .GET()
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).isEqualTo(200);
+        return mapper.readTree(response.body());
+    }
+
+    @Test
     void ac_5_10_emptyAndMalformedFilesReturnArchivedRejection() throws Exception {
         for (byte[] content : new byte[][] {new byte[0], "invalid CSV".getBytes(StandardCharsets.UTF_8)}) {
             var response = post(content, "text/csv");
