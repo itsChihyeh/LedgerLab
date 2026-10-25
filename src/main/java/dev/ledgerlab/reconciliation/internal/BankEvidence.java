@@ -38,12 +38,15 @@ public final class BankEvidence {
 
     record Posting(String entry, String type, String subject, int account, String side, long amount) {}
 
+    record Application(String correction, String batch, String entry, String bankTxn, long amount) {}
+
     record Snapshot(
             List<Batch> batches,
             List<Line> lines,
             List<Line> allLines,
             List<Statement> statements,
-            List<Posting> postings) {
+            List<Posting> postings,
+            List<Application> applications) {
         boolean deposited(Line line) {
             return postings.stream()
                     .anyMatch(p -> p.subject().equals(line.id()) && p.type().equals("BANK_DEPOSIT_RECEIVED"));
@@ -62,6 +65,20 @@ public final class BankEvidence {
         }
 
         boolean matched(Batch batch) {
+            if (batch.status().equals("BANKED")) {
+                long applied = 0;
+                for (var application : applications) {
+                    if (application.batch().equals(batch.id())
+                            && lines.stream()
+                                    .anyMatch(l -> l.id().equals(application.bankTxn())
+                                            && l.reference().equals(batch.id())
+                                            && l.status().equals("BOOKED")
+                                            && l.direction().equals("CREDIT")
+                                            && l.currency().equals("CAD")))
+                        applied = Math.addExact(applied, application.amount());
+                }
+                if (applied == batch.net()) return true;
+            }
             return lines.stream()
                     .anyMatch(l -> l.reference().equals(batch.id())
                             && l.amount() == batch.net()
@@ -75,6 +92,7 @@ public final class BankEvidence {
             long total = 0;
             for (Posting p : postings)
                 if (p.account() == 2105
+                        && applications.stream().noneMatch(a -> a.entry().equals(p.entry()))
                         && (p.type().equals("UNAPPLIED_CASH_RETURNED")
                                 ? returnedTo(p, line)
                                 : p.subject().equals(line.id())))
@@ -116,6 +134,17 @@ public final class BankEvidence {
         List<Map<String, Object>> refs(Line line) {
             var refs = new java.util.ArrayList<Map<String, Object>>();
             refs.add(lineRef(line));
+            applications.stream()
+                    .filter(a -> a.bankTxn().equals(line.id()))
+                    .forEach(a -> refs.add(Map.of(
+                            "correction_id",
+                            a.correction(),
+                            "batch_id",
+                            a.batch(),
+                            "target_entry_id",
+                            a.entry(),
+                            "role",
+                            "APPLIED")));
             allLines.stream()
                     .filter(debit -> debit.reference().equals(line.id())
                             && postings.stream()
@@ -242,7 +271,23 @@ public final class BankEvidence {
                         rs.getString(5),
                         rs.getLong(6)))
                 .list();
-        return new Snapshot(batches, selected, all, statements, postings);
+        List<Application> applications = jdbc.sql("""
+                SELECT c.id, c.subject_id, e.id, e.subject_id, p.amount
+                FROM ledger.correction c
+                JOIN ledger.correction_target t ON t.correction_id=c.id AND t.role='APPLIED'
+                JOIN ledger.journal_entry e ON e.id=t.entry_id
+                JOIN ledger.posting p ON p.entry_id=e.id AND p.account_code=2105 AND p.side='C'
+                WHERE c.correction_type IN ('APPLY_UNAPPLIED_CASH','RESTORE_FAILED_PAYOUT')
+                  AND c.subject_type='batch' AND e.subject_type='bank_txn'
+                  AND e.entry_type='UNAPPLIED_CASH_RECEIVED'
+                  AND c.recorded_at < :asOf AND t.recorded_at < :asOf AND e.recorded_at < :asOf
+                ORDER BY c.id, t.entry_id, p.line_no
+                """)
+                .param("asOf", asOf)
+                .query((rs, n) -> new Application(
+                        rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getLong(5)))
+                .list();
+        return new Snapshot(batches, selected, all, statements, postings, applications);
     }
 
     static long bounded(long value) {

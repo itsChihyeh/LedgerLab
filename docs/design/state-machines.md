@@ -145,7 +145,7 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 - 两条路径均通过账本公开纠错入口记录 APPLIED 目标及一个借 2105 / 贷 1102 的 CORRECTION，subject 为 batch；恢复另将原 BATCH_PAYOUT_FAILED 登记为 REVERSED，由账本生成镜像 REVERSAL。纠错及批次历史使用注入 Clock 的纠错时刻，不回写原银行业务时间，不碰 1103、原入账分录或批次旧历史。
 - 业务更新后按差异号升序取行锁，只关闭 OPEN：归位自动关闭所选流水的全部差异及本批次 DEPOSIT_MISSING / DEPOSIT_NOT_RECEIVED / TIMING_DIFFERENCE；恢复自动关闭所选流水的全部差异及本批次 BATCH_STATE_CONFLICT。显式引用的非批次差异、本次已前进批次的差异同样关联纠错并追加 OPERATOR 历史；未前进的其他批次及非 OPEN 差异保持不变。读取纠错结果返回对应批次、流水及已关闭差异，不将批次误列为支付。
 - AC-6.10/6.11 定向真库测试核对 5000＋4680、S3 全账户余额、INV-9/12、原因与前置拒绝、当前流水版本、重复纠错、差异关闭清单和整事务回滚；BANK 规则在纠错前后均不报 BANK_BALANCE_MISMATCH。栅栏固定纠错与 T04 银行退还的两种先后顺序，只允许一方消费待查收款。纠错后再次入账沿用第二笔 UNAPPLIED / UNMATCHED_BANK_LINE；恢复后出现原失败打款退回行沿用 HELD(UNSUPPORTED_LINE)。无新迁移、依赖或权限变更。
-- 本任务的银行余额验证只涉及 INV-11 的现金口径。现有 BANK/AGING 历史匹配尚未消费 correction_target 的 APPLIED 证据；后续纠错对账接入需要按证据时点读取目标记录，才能避免已归位流水再次被发现为 UNAPPLIED_CASH_OPEN，以及已归位批次再次被发现为未到账。该规则内部变更不在 T05 可改范围内。
+- T05 的银行余额验证只涉及 INV-11 的现金口径；BANK/AGING 对 `correction_target` 的历史匹配由 T05b 补齐，见第 7 节实现备注。
 
 ### P2 T05 实现备注：批次确认与入站恢复
 
@@ -233,6 +233,13 @@ V15 已同步放宽 inbox_event 与 inbox_status_history 的 result CHECK，本�
 - T07 不提供 HTTP 实现；没有 ProcessorRefundGateway bean 时不注册退款处理器，命令保持 PENDING。T08 提供网关后共用同一 SPI；处理器不依赖 ingestion。
 
 ## 7. 对账差异 Reconciliation issue
+
+### P4 T05b 实现备注：银行纠错后的发现与解释
+
+- BANK／AGING 共用 `BankEvidence`，按证据时点读取 `APPLY_UNAPPLIED_CASH`／`RESTORE_FAILED_PAYOUT` 的纠错及 `APPLIED` 目标。已归位的原 `UNAPPLIED_CASH_RECEIVED` 分录不再计入该流水的未清款；不读取当前可变 `match_status` 或差异处置来推断历史。
+- 批次历史为 BANKED，且本次选定输入包含其归位目标的 BOOKED/CAD/CREDIT 流水、归位金额合计等于 net，才视为已到账；拆分行分别匹配，不要求某一行独自等于 net。未选入的文件不能解释批次。解释证据包含纠错号、APPLIED 目标分录号、批次号及流水／文件引用。
+- 已归位、已退还的流水不再产生待查发现；相同规则范围内剩余 OPEN 差异按 7.1 转 EXPLAINED，已由纠错或退还转 RESOLVED 的不动，INGESTION 处置仍由业务入口负责。退还继续使用 `UNAPPLIED_CASH_RETURNED` 及出入账流水关联。`DEPOSIT_MISSING` 仍为保留类别，不新增发现；缺失沿用 AGING 的 `DEPOSIT_NOT_RECEIVED`。
+- INV-11 的现金汇总不变：归位纠错不碰 1103。测试覆盖拆分归位、失败恢复、归位与退还组合、dry run 无写入、旧时点发现与旧报告保持、规则归属和真实现金差额仍被发现。PROCESSOR 不依赖银行匹配状态，本次不改其算法或版本。
 
 ### P3 T11 实现备注
 

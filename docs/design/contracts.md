@@ -59,6 +59,12 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 - 处理方退款号绑定后沿用 T07 的不覆盖语义；匹配时还要求当时已有 SUBMITTED／SUCCEEDED／FAILED 处理方结果历史，避免把后来才关联的 re_ 借给旧时点仍 READY／UNKNOWN、尚无处理方结果的退款。命令和历史证据引用同样限制在 evidence_as_of 之前。
 - 已放行、完成的退款仍纳入对应老化检查范围，后续运行能解释旧 OPEN 差异；已执行缺行到期时，PROCESSOR 同次运行将旧时间差解释为“已升级为 REFUND_NOT_IN_STATEMENT”，新缺行差异为 OPEN。后续快照出现时解释缺行，旧 finding 保留。
 
+### P4 T05b 实现备注：银行纠错证据时点
+
+- 沿用 1.2 的严格边界：纠错、目标记录及原待查收款分录都必须满足 `recorded_at < evidence_as_of`，等于时点也不可见；银行行／文件、批次历史继续使用既有时点过滤。T05b 任务范围第 2 条写作 `≤`，实现按本设计正本的 `<` 执行。
+- BANK／AGING 及默认规则版本从 `p4-v1` 升为 `p4-v2`，标明新增 APPLIED 纠错证据匹配；PROCESSOR 保持 `processor-v2`。旧运行报告直接按已保存 finding 读取；新版本支持按纠错前的证据时点恢复原待查发现，但不提供旧算法版本的执行器。
+- 纠错可以晚于业务 cutoff，只要早于 evidence_as_of 就能解释范围内的批次与流水。dry run 与正式运行使用相同的历史证据；仅正式运行写 finding／差异处置，原运行报告不受影响。
+
 ### P3 T01 实现备注：PARKED 老化
 
 - 从 `io.inbox_status_history` 取 `recorded_at < evidence_as_of` 的最后一行（同刻按 id 排序），当时为 PARKED 且 `received_at + parked-event ≤ evidence_as_of` 时产生 `EVENT_PARKED_AGED`。这是接收时间的小时阈值，不按业务 cutoff 或工作日计算；起点不会因重复投递、重试、唤醒而重置。配置为正 Duration，默认 `PT1H`。

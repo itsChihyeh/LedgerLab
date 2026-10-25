@@ -46,7 +46,7 @@ public final class AgingRule implements ReconRule {
 
     @Override
     public String version() {
-        return "p4-v1";
+        return "p4-v2";
     }
 
     @Override
