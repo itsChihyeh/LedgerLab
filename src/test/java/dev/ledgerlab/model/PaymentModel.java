@@ -41,7 +41,9 @@ final class PaymentModel {
     final Map<String, Long> payments = new HashMap<>();
     final Map<String, Set<String>> issues = new HashMap<>();
     final Map<String, Long> conflicts = new HashMap<>();
-    final SettlementModel settlement = new SettlementModel();
+    final Map<String, Long> originalAmounts = new HashMap<>();
+    final Set<String> voided = new HashSet<>();
+    final SettlementModel settlement = new SettlementModel(this);
 
     void receive(Input input, Instant at) {
         Received original = events.putIfAbsent(input.id(), new Received(input, at));
@@ -74,6 +76,7 @@ final class PaymentModel {
                 long amount = Long.parseLong(input.amount());
                 Long previous = payments.putIfAbsent(input.charge(), amount);
                 if (previous == null) {
+                    originalAmounts.put(input.charge(), amount);
                     outcomes.put(input.id(), new Outcome("PROCESSED", "APPLIED"));
                 } else if (previous == amount) {
                     outcomes.put(input.id(), new Outcome("PROCESSED", "DUPLICATE_FACT"));
@@ -127,6 +130,6 @@ final class PaymentModel {
     }
 
     long balanceDelta() {
-        return payments.values().stream().reduce(0L, Math::addExact);
+        return originalAmounts.values().stream().reduce(0L, Math::addExact);
     }
 }

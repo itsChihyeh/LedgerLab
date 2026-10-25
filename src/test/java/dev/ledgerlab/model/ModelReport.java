@@ -40,6 +40,7 @@ final class ModelReport {
         }
         for (P2Scenario.Kind kind : P2Scenario.Kind.values()) actions.put(kind.name(), 0L);
         for (P3Scenario.Kind kind : P3Scenario.Kind.values()) actions.put(kind.name(), 0L);
+        for (P4Scenario.Kind kind : P4Scenario.Kind.values()) actions.put(kind.name(), 0L);
         for (int i = 0; i <= 7; i++) features.put("COMMAND_RESULT_" + i, 0L);
         for (String name : new String[] {
             "QUERY_INCOMPLETE",
@@ -66,7 +67,7 @@ final class ModelReport {
     }
 
     void write(String seed) throws IOException {
-        StringBuilder text = new StringBuilder("# P1/P2/P3 model test report (AC-4.11, AC-4.13)\n\n");
+        StringBuilder text = new StringBuilder("# P1/P2/P3/P4 model test report (AC-6.13, AC-4.11, AC-4.13)\n\n");
         text.append("- Seed: ")
                 .append(seed)
                 .append("\n- Sequence executions: ")
@@ -103,15 +104,19 @@ final class ModelReport {
                 .append("| Action | Executions |\n|---|---:|\n");
         actions.forEach((name, count) ->
                 text.append('|').append(name).append('|').append(count).append("|\n"));
-        text.append("\n| P2/P3 feature | Occurrences |\n|---|---:|\n");
+        text.append("\n| P2/P3/P4 feature | Occurrences |\n|---|---:|\n");
         features.forEach((name, count) ->
                 text.append('|').append(name).append('|').append(count).append("|\n"));
         text.append(
-                        "\nChecks: global LedgerAudit INV-1..5/8; all account balance deltas; per-event outcomes; payment amounts/status/fees/batches; batch totals/states; P2 posting multisets; all bank versions/matches/deadlines; issue identities; conflict copies; whole-database INV-9 (2101/1102) and INV-11 (unique BOOKED credits minus WAITING); INV-10 captured source keys.\n")
+                        "\nP4 preconditions: VOID active unsettled capture with zero reserved refunds; RESTATE active unsettled capture, new amount 50..99999999, different and >= reserved; APPLY confirmed batch plus exact same-reference unapplied credits; RESTORE failed batch plus exact unapplied credit and no failure return; RETURN exact currently unapplied credit; RECHECK held batch. PREPARE supplies held, split, failed, expired-early or unassigned inputs. INVALID has weight 2 against 35 valid P4 weights; 4xx compares complete business/audit rows. Bank nonmatches are accepted input plus an unmatched issue, per ADR-0011.\n")
                 .append(
-                        "\nP3: INV-7 refund limits and reserved cache; INV-9 2103; INV-10 unique refund effects; AC-3.14 no refund cash posting. P5 withdrawals remain outside this generator; bank inputs are CAD CREDIT.\n")
+                        "\nP4 checks: INV-6 independent available balance, INV-9 current captured amount and empty P5 obligations, INV-12 current unapplied credits; correction/target identities, roles and counts, exact posting multisets, payment current fee/remaining refund amount, issue status/resolution.\n");
+        text.append(
+                        "\nChecks: global LedgerAudit INV-1..5/8; all account balance deltas; per-event outcomes; payment amounts/status/fees/batches; batch totals/states; P2 posting multisets; all bank versions/matches/deadlines; issue identities; conflict copies; whole-database INV-9 (2101/1102) and INV-11 (unique BOOKED credits/debits, WAITING and explained unmatched debits); INV-10 captured source keys.\n")
                 .append(
-                        "\nThis only covers generated actions understood by the independent model. It is not a concurrency test; controlled interleavings/barriers remain separate. AC-4.13 replays raw signed webhooks, local processor REST pages, bank files, scans, API requests/results, outbound receipts/timeouts and clock changes; compares all balances, payments, batches, batch lines, bank versions, inbox outcomes, source-key entry/posting multisets, issue identities/statuses, refunds/history, command outcomes and idempotency results on separate freshly migrated databases.\n")
+                        "\nP3: INV-7 refund limits and reserved cache; INV-9 2103; INV-10 unique refund effects; AC-3.14 no refund cash posting. P5 withdrawals remain outside this generator; bank inputs are CAD CREDIT and DEBIT returns.\n")
+                .append(
+                        "\nThis only covers generated actions understood by the independent model. It is not a concurrency test; controlled interleavings/barriers remain separate. AC-4.13 replays raw signed webhooks, local processor REST pages, bank files, scans, API requests/results, outbound receipts/timeouts and clock changes; compares all balances, payments, batches, batch lines, bank versions, inbox outcomes, source-key entry/posting multisets, issue identities/statuses, refunds/history, command outcomes, idempotency results, corrections, targets, evidence and business/issue histories on separate freshly migrated databases.\n")
                 .append(
                         "\nLast failing execution (jqwik console/Surefire output has the minimized chain):\n\n```text\n")
                 .append(lastFailure)

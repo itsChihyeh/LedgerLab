@@ -68,7 +68,7 @@ final class P2Scenario {
         Set<String> assigned = new HashSet<>();
         model.batches.values().forEach(b -> b.lines.forEach(l -> assigned.add(l.reference())));
         return state.model.payments.keySet().stream()
-                .filter(p -> !assigned.contains(p))
+                .filter(p -> !assigned.contains(p) && !state.model.voided.contains(p))
                 .sorted()
                 .toList();
     }
@@ -269,22 +269,24 @@ final class P2Scenario {
                         "PROCESSED", model.event(batch, "payout.reconciliation_completed", app.clock.instant())));
     }
 
-    private void bank(SettlementModel.BankInput line) {
+    void bank(SettlementModel.BankInput line) {
         long booked = line.status().equals("BOOKED") ? line.amount() : 0;
         byte[] raw = ("H,BANK_STATEMENT,SIM-CAD-001,%s,%s,%d,CAD\r\n"
-                        + "D,%s,CREDIT,%d,CAD,%s,%s,%s,%s,model\r\nT,1,%d,0,0,%d\r\n")
+                        + "D,%s,%s,%d,CAD,%s,%s,%s,%s,model\r\nT,1,%d,%d,0,%d\r\n")
                 .formatted(
                         line.date(),
                         line.date(),
                         files.size() + 1,
                         line.id(),
+                        line.direction(),
                         line.amount(),
                         line.status(),
                         line.reference(),
                         line.date(),
                         line.date(),
-                        booked,
-                        booked)
+                        line.direction().equals("CREDIT") ? booked : 0,
+                        line.direction().equals("DEBIT") ? booked : 0,
+                        line.direction().equals("CREDIT") ? booked : Math.negateExact(booked))
                 .getBytes(StandardCharsets.UTF_8);
         files.add(raw);
         app.bank(raw);
@@ -302,13 +304,14 @@ final class P2Scenario {
         var jdbc = app.jdbc;
         Map<String, String> actualBatches = new HashMap<>();
         jdbc.sql(
-                        "SELECT batch_id, status, payout_amount, gross, fees, refunds, payout_failures_returned, net FROM core.settlement_batch WHERE batch_id LIKE :prefix")
+                        "SELECT batch_id, status, payout_amount, gross, fees, refunds, payout_failures_returned, net, hold_reason FROM core.settlement_batch WHERE batch_id LIKE :prefix")
                 .param("prefix", "po_" + state.prefix + "%")
                 .query((rs, n) -> {
                     String id = rs.getString(1);
                     SettlementModel.Batch batch = model.batches.get(id);
                     assertThat(batch).as("model batch %s", id).isNotNull();
                     assertThat(rs.getLong(3)).isEqualTo(batch.net);
+                    assertThat(rs.getString(9)).isEqualTo(batch.hold);
                     if (List.of("CONFIRMED", "BANKED", "PAYOUT_FAILED").contains(batch.status)) {
                         assertThat(rs.getLong(4)).isEqualTo(batch.gross);
                         assertThat(rs.getLong(5)).isEqualTo(batch.fees);
@@ -420,9 +423,9 @@ final class P2Scenario {
                 .isEqualTo(total(
                         "SELECT coalesce(sum(net),0)::bigint FROM core.settlement_batch WHERE status='CONFIRMED'"));
         assertThat(balances.get(1103))
-                .as("INV-11 unique BOOKED credits minus WAITING, including unapplied cash")
+                .as("INV-11 posted BOOKED credits minus WAITING and exact returns")
                 .isEqualTo(total("""
-                        SELECT coalesce(sum(CASE WHEN match_status='WAITING' THEN 0 ELSE amount END),0)::bigint
+                        SELECT coalesce(sum(CASE WHEN match_status='WAITING' THEN 0 WHEN direction='DEBIT' AND match_status='RETURN_POSTED' THEN -amount WHEN direction='DEBIT' THEN 0 ELSE amount END),0)::bigint
                         FROM (SELECT DISTINCT ON (bank_txn_id) * FROM recon.bank_line
                               ORDER BY bank_txn_id, version DESC) b WHERE status='BOOKED'
                         """));

@@ -36,6 +36,7 @@ final class SettlementModel {
         final long refunds;
         final long net;
         String status = "ABSENT";
+        String hold;
 
         Batch(String id, List<Line> lines, Instant created) {
             this.id = id;
@@ -64,9 +65,13 @@ final class SettlementModel {
 
     record Issue(String category, String subjectType, String subjectId) {}
 
-    record BankInput(String id, String reference, long amount, String status, LocalDate date) {
+    record BankInput(String id, String reference, long amount, String status, LocalDate date, String direction) {
+        BankInput(String id, String reference, long amount, String status, LocalDate date) {
+            this(id, reference, amount, status, date, "CREDIT");
+        }
+
         BankInput booked() {
-            return new BankInput(id, reference, amount, "BOOKED", date);
+            return new BankInput(id, reference, amount, "BOOKED", date, direction);
         }
     }
 
@@ -81,6 +86,13 @@ final class SettlementModel {
             this.input = input;
             this.version = version;
         }
+    }
+
+    final PaymentModel payments;
+    final Map<Issue, String> resolutions = new LinkedHashMap<>();
+
+    SettlementModel(PaymentModel payments) {
+        this.payments = payments;
     }
 
     final Map<String, Batch> batches = new LinkedHashMap<>();
@@ -125,6 +137,27 @@ final class SettlementModel {
             return "APPLIED";
         }
         if (!List.of("ABSENT", "ANNOUNCED").contains(batch.status)) return "DUPLICATE_FACT";
+        return confirm(batch, now);
+    }
+
+    String confirm(Batch batch, Instant now) {
+        batch.hold = null;
+        for (Line line : batch.lines) {
+            if (line.type().equals("charge")) {
+                if (payments.voided.contains(line.reference())) batch.hold = "PAYMENT_STATE_CONFLICT";
+                else if (!java.util.Objects.equals(payments.payments.get(line.reference()), line.gross()))
+                    batch.hold = "AMOUNT_MISMATCH";
+                if (batch.hold != null) break;
+            }
+        }
+        if (batch.hold != null) {
+            batch.status = "HELD";
+            issues.add(new Issue(
+                    batch.hold.equals("PAYMENT_STATE_CONFLICT") ? "BATCH_STATE_CONFLICT" : batch.hold,
+                    "batch",
+                    batch.id));
+            return "APPLIED";
+        }
         batch.status = "CONFIRMED";
         for (Line line : batch.lines) {
             if (line.type().equals("charge")) {
@@ -145,6 +178,16 @@ final class SettlementModel {
                 .filter(b -> "WAITING".equals(b.match) && b.input.reference().equals(batch.id))
                 .forEach(b -> match(b, now));
         return "APPLIED";
+    }
+
+    void resolve(String subject, String correction) {
+        issues.stream().filter(i -> i.subjectId().equals(subject)).forEach(i -> resolutions.putIfAbsent(i, correction));
+    }
+
+    void recheck(Batch batch, Instant now, String correction) {
+        if (!batch.status.equals("HELD")) throw new AssertionError("Recheck requires HELD");
+        confirm(batch, now);
+        if (!batch.status.equals("HELD")) resolve(batch.id, correction);
     }
 
     void post(String key, String type, Posting... postings) {
@@ -179,6 +222,23 @@ final class SettlementModel {
             bank.match = "IGNORED_PENDING";
             return;
         }
+        if (line.direction().equals("DEBIT")) {
+            Bank credit = banks.get(line.reference());
+            if (credit != null && "UNAPPLIED".equals(credit.match) && credit.input.amount() == line.amount()) {
+                credit.match = "RETURNED";
+                bank.match = "RETURN_POSTED";
+                post(
+                        "bank_txn:" + line.id(),
+                        "UNAPPLIED_CASH_RETURNED",
+                        new Posting(2105, "D", line.amount()),
+                        new Posting(1103, "C", line.amount()));
+                resolve(credit.input.id(), "");
+            } else {
+                bank.match = "UNMATCHED_NO_POSTING";
+                issues.add(new Issue("UNMATCHED_BANK_LINE", "bank_txn", line.id()));
+            }
+            return;
+        }
         Batch batch = batches.get(line.reference());
         String status = batch == null ? "ABSENT" : batch.status;
         String category = "UNMATCHED_BANK_LINE";
@@ -196,7 +256,7 @@ final class SettlementModel {
             }
             category = "DEPOSIT_AMOUNT_MISMATCH";
         } else if (status.equals("PAYOUT_FAILED")) category = "BATCH_STATE_CONFLICT";
-        else if (List.of("ABSENT", "ANNOUNCED").contains(status)) {
+        else if (List.of("ABSENT", "ANNOUNCED", "HELD").contains(status)) {
             Instant deadline = due(line.date());
             if (now.isBefore(deadline)) {
                 bank.match = "WAITING";
