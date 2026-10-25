@@ -35,7 +35,7 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 | `recon.issue` | INSERT；UPDATE(`status`, `last_run_id`, `explanation`, `resolution_correction_id`, `updated_at`, `fingerprint`, `reopen_count`, `expected`, `actual`, `evidence_refs`)；内容三列只能由对账运行按最新发现刷新 | — | 改 `category`、`subject_type`、`subject_id` 42501 |
 | 只读视图 | — | `readonly` 只能 SELECT 视图，底表、`io`、`sim_*` 不可见 | 以 `readonly` 读底表、`io`、`sim_*` 被拒；读视图成功；任何写入被拒 |
 
-纠错（P4）会改到支付金额等目前不在授权里的列：怎么改由 P4 开工前补的纠错类型定义决定（ADR-0011 补充），到时新增迁移扩授权，并同步本表。
+纠错（P4）的表结构与扩权已定在 ADR-0011 补充第 7 节（2026-10-25）：`core.payment` 增加 UPDATE(`amount`, `expected_fee`)，新增 `ledger.correction`、`ledger.correction_target`，银行行增加 `APPLIED`/`RETURNED`/`RETURN_POSTED`。P4 迁移落地后在本表补行。
 
 ---
 
@@ -110,7 +110,7 @@ P3 T04b 实现备注：退款队列通过 `Ledger.balance(Account.MERCHANT_AVAIL
 
 | 字段 | 说明 |
 |---|---|
-| `id` `cor_…`、`original_entry_id`、`reason`（枚举＋自由文本）、`evidence_refs`（差异编号、结算单行、流水编号）、`requested_by`、`recorded_at` | 一次受限纠错 = 一条 correction ＋ 一个 `REVERSAL` ＋ 零或一个 `CORRECTION` 分录，同一事务 |
+| `id` `cor_…`、`correction_type`、`reason_code`、`reason_note`、`evidence_refs`（非空）、`params`、`subject_type`、`subject_id`、`requested_by`、`recorded_at`；目标分录在 `ledger.correction_target`（`entry_id` UNIQUE、`role` = `REVERSED`/`APPLIED`），取代原 `original_entry_id` | 一次受限纠错 = 一条 correction ＋ 0～n 个 `REVERSAL` ＋ 0～1 个 `CORRECTION`（至少一个分录），形状由类型决定，同一事务（ADR-0011 补充） |
 
 ---
 

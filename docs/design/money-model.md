@@ -53,9 +53,9 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 | `PAYOUT_FAILED` | 银行**确认**拒绝或取消，且没有任何出账流水 | 借 2104 P / 贷 2102 P | `payout:{payout_id}:failed` |
 | `PAYOUT_RETURNED` | 银行流水退回行，关联原提现 | 借 1103 P / 贷 2102 P | `bank_txn:{bank_txn_id}` |
 | `UNAPPLIED_CASH_RECEIVED` | 银行流水入账行精确匹配失败（引用不认识、金额不等、同一批次第二笔入账） | 借 1103 X / 贷 2105 X | `bank_txn:{bank_txn_id}` |
-| `UNAPPLIED_CASH_RETURNED` | 银行流水出账行，明确引用一笔待查收款的流水编号（例如把重复打款退还处理方） | 借 2105 X / 贷 1103 X | `bank_txn:{bank_txn_id}` |
+| `UNAPPLIED_CASH_RETURNED` | 银行流水出账行（BOOKED、CAD），`reference` 等于一笔当前 `UNAPPLIED` 入账流水的编号且金额相等（例如把重复打款退还处理方；ADR-0011 补充第 3 节） | 借 2105 X / 贷 1103 X | `bank_txn:{bank_txn_id}` |
 | `REVERSAL` | 受限纠错（ADR-0011） | 原分录每条 posting 方向取反 | `reversal:{original_entry_id}` |
-| `CORRECTION` | 受限纠错，紧跟一条 `REVERSAL` | 正确的 postings | `correction:{correction_id}` |
+| `CORRECTION` | 受限纠错（ADR-0011 补充：改金额紧跟 `REVERSAL`；待查收款归位单独出现） | 由纠错类型决定：改金额 借 1101 新 / 贷 2101 新；归位 借 2105 N / 贷 1102 N | `correction:{correction_id}` |
 
 说明：
 
@@ -67,7 +67,7 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
   - **银行证据早到**：`reference` 形如 `po_…`，但对应批次还不存在、或还在 `ANNOUNCED`/`RECEIVED`/`HELD`：行进入 `WAITING`，不记账。批次进入 `CONFIRMED` 的同一事务里重新匹配所有引用它的 `WAITING` 行（就像 inbox 的 `PARKED` 被唤醒）；后台也按导入顺序定期重扫。等待从 `booking_date` 起最多 2 个工作日（`ledgerlab.bank.wait-business-days`），到期仍匹配不上就按“精确匹配失败”记待查收款。等待期间账上现金比银行少，银行余额核对把恰好等于全部 `WAITING` 行合计的差额报为 `TIMING_DIFFERENCE`，不是 `BANK_BALANCE_MISMATCH`。
   - CAD 入账行精确匹配失败（引用不认识且不是 `po_…`、批次已 `CONFIRMED` 但金额不等、批次已 `BANKED` 又来一笔、批次已 `PAYOUT_FAILED`、等待到期）：记 `UNAPPLIED_CASH_RECEIVED`，让账上现金继续等于银行；开差异：金额不等是 `DEPOSIT_AMOUNT_MISMATCH`，批次已 `PAYOUT_FAILED` 是 `BATCH_STATE_CONFLICT`，其余是 `UNMATCHED_BANK_LINE`；能看出相关批次的都把它列为候选。
   - P2 没有提现：BOOKED 出账行（`DEBIT`）和非 CAD 行一律不记账，`match_status = UNMATCHED_NO_POSTING`，开 `UNMATCHED_BANK_LINE`；非 CAD 金额不能作为 CAD 分记入账户，差额由 T11 银行余额核对暴露。`PAYOUT_PAID`、`PAYOUT_RETURNED`、`UNAPPLIED_CASH_RETURNED` 在 P5 实现。
-- 待查收款只能通过受限纠错（ADR-0011）清出：例如确认是处理方重复打款并已退回，或确认是某批次的拆分到账。首版不自动应用，任何未结的 2105 余额都是一条对账差异。
+- 待查收款只有两条出路（2026-10-25 定，ADR-0011 补充）：银行出账行明确退还（`UNAPPLIED_CASH_RETURNED`，自动、精确匹配），或运营纠错归位到批次（`APPLY_UNAPPLIED_CASH` 拆分到账、`RESTORE_FAILED_PAYOUT` 冲突证据恢复）。不自动应用、不部分应用；任何未结的 2105 余额都是一条对账差异。
 - 银行流水出账行匹配不到提现时**不记账**，只开差异 `UNMATCHED_BANK_LINE`；这时账上现金和银行余额不等，会被 INV-11 抓到。
 - 提现失败和退款失败都是**业务事件**，用各自的 entry_type，不用 `REVERSAL`。`REVERSAL` 只用于纠正记错的账。
 - 处理方说打款失败（Stripe `payout.failed`）时，钱回到处理方余额：记 `BATCH_PAYOUT_FAILED`（借 1101 N / 贷 1102 N）。退回的钱会作为一行 `PAYOUT_FAILURE` 出现在之后的某个批次里。
@@ -134,6 +134,7 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 | INV-8 | 同一 `source_key` 最多一个分录 | 唯一约束 |
 | INV-9 | 业务状态与过渡账户一致：2103 余额 = Σ 处于 `AWAITING_FUNDS`/`READY`/`SUBMITTED`/`UNKNOWN` 的退款金额；2104 余额 = Σ 处于 `RESERVED`/`SUBMITTED`/`UNKNOWN`/`ACCEPTED` 的提现金额；2101 余额 = Σ 状态为 `CAPTURED` 的支付毛额（已撤销的 `VOIDED` 不算）；1102 余额 = Σ `CONFIRMED` 批次净额 | 模型测试每一步检查；对账老化检查逐笔核对 |
 | INV-10 | 资金效果唯一：每个退款、提现最多被预留一次，并且最多被结清或释放一次（执行/失败/取消三选一；出账/失败二选一）；结果未知时不释放 | 状态机＋`source_key`；模型测试 |
+| INV-12 | 2105 余额 = Σ 当前版本 `match_status = UNAPPLIED` 的入账流水金额；2101 按支付的当前金额（纠错改金额后用新值） | 模型测试每一步检查（ADR-0011 补充第 6 节） |
 | INV-11 | 银行侧核对：每份银行流水 期初 + Σ入账 − Σ出账 = 期末；截至流水期末，账上 1103 = 银行期末余额，否则差额必须作为差异显示 | 对账运行 |
 
 ### P2 T15 实现备注：应用级独立模型

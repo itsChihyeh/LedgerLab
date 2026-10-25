@@ -20,7 +20,8 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。分录名见 [
 |---|---|---|---|
 | — | `CAPTURED` | webhook `charge.succeeded`，通过请款准入检查（stripe-integration 第 2 节） | `PAYMENT_CAPTURED` |
 | `CAPTURED` | `SETTLED` | 所在批次 `BATCH_SETTLED` 记账 | （包含在批次分录里） |
-| `CAPTURED` | `VOIDED` | 受限纠错撤销误记的请款（只限未结算） | `REVERSAL` |
+| `CAPTURED` | `VOIDED` | 受限纠错 `VOID_CAPTURE` 撤销误记的请款（只限未结算、无退款） | `REVERSAL` |
+| `CAPTURED` | `CAPTURED` | 受限纠错 `RESTATE_CAPTURE_AMOUNT` 修正金额（只记历史，金额与预期手续费改为新值） | `REVERSAL` ＋ `CORRECTION` |
 
 退款进度不作为支付状态，而是派生字段：`refund_state ∈ {NONE, PARTIAL, FULL}`，按未失败、未取消的退款合计计算。
 
@@ -100,6 +101,9 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 | `CONFIRMED` | `PAYOUT_FAILED` | webhook `payout.failed`／`payout.canceled`，且银行没有对应入账 | `BATCH_PAYOUT_FAILED` |
 | `HELD` | `RECEIVED` | 引用的对象到齐或纠错完成后重新核对 | — |
 | `CONFIRMED` | `BANKED` | 银行流水入账行按批次号精确匹配，金额相等 | `BANK_DEPOSIT_RECEIVED` |
+| `CONFIRMED` | `BANKED` | 受限纠错 `APPLY_UNAPPLIED_CASH`：多笔待查收款合计等于 net（拆分到账） | `CORRECTION` |
+| `PAYOUT_FAILED` | `BANKED` | 受限纠错 `RESTORE_FAILED_PAYOUT`：银行确实收到，失败通知被推翻 | `REVERSAL` ＋ `CORRECTION` |
+| `HELD` | `RECEIVED` | 运营重核 `POST /api/batches/{id}/recheck`，或改金额纠错同事务重核（ADR-0011 补充第 2、4 节） | — |
 
 - Stripe `payout.paid` 只是处理方说“应该到了”，记进状态历史作为证据，不改状态、不记账；现金只认银行流水。
 - `PAYOUT_FAILED` 之后银行又出现入账：开 `BATCH_STATE_CONFLICT`，按精确匹配失败记 `UNAPPLIED_CASH_RECEIVED`（2026-10-23 改：让账上现金等于银行，钱归属留给受限纠错），批次状态不变。
