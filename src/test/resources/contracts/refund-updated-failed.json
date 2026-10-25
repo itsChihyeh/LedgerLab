@@ -1,0 +1,25 @@
+{
+  "id": "evt_contract_refund_failed",
+  "object": "event",
+  "api_version": "2026-09-30.endive",
+  "created": 1792764000,
+  "livemode": false,
+  "type": "refund.updated",
+  "data": {
+    "object": {
+      "object": "refund",
+      "id": "re_contract_refund",
+      "charge": "ch_contract_payment",
+      "status": "failed",
+      "currency": "cad",
+      "payment_intent": "pi_contract_payment",
+      "failure_reason": "lost_or_stolen_card",
+      "balance_transaction": null,
+      "amount": 2000,
+      "created": 1792763900,
+      "metadata": {
+        "ledgerlab_refund_id": "rfd_01K8BPR0000000000000000000"
+      }
+    }
+  }
+}

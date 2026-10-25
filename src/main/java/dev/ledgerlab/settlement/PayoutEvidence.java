@@ -2,6 +2,7 @@ package dev.ledgerlab.settlement;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import org.jspecify.annotations.Nullable;
 
 /** Processor facts mapped by ingestion; no HTTP client or inbox dependency. */
@@ -31,11 +32,19 @@ public record PayoutEvidence(
         return reconciliationStatus.equals("completed");
     }
 
-    public record Lines(long fetchId, List<Line> items) {
+    public record Lines(long fetchId, List<Line> items, Map<String, RefundIdentity> refunds) {
+        public Lines(long fetchId, List<Line> items) {
+            this(fetchId, items, Map.of());
+        }
+
         public Lines {
             items = List.copyOf(items);
+            refunds = Map.copyOf(refunds);
         }
     }
+
+    /** Identity from an archived retrieve, not a separate execution observation. */
+    public record RefundIdentity(@Nullable String refundId, long amount, String chargeRef) {}
 
     public record Line(
             String id,

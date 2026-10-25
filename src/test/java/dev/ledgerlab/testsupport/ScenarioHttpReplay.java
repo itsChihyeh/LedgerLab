@@ -25,6 +25,16 @@ public final class ScenarioHttpReplay implements AutoCloseable {
     private final List<String> failures = new ArrayList<>();
     private final Path directory;
     private final JsonMapper json = JsonMapper.builder().build();
+    private final Map<String, String> localIds = new TreeMap<>();
+
+    public synchronized void bind(String token, String id) {
+        assertThat(localIds.putIfAbsent(token, id)).isNull();
+    }
+
+    public synchronized String substitute(String raw) {
+        for (var entry : localIds.entrySet()) raw = raw.replace(entry.getKey(), entry.getValue());
+        return raw;
+    }
 
     public ScenarioHttpReplay(Path directory) throws IOException {
         this.directory = directory;
@@ -54,6 +64,7 @@ public final class ScenarioHttpReplay implements AutoCloseable {
                     .as("Unexpected request %s", exchange.getRequestURI())
                     .isNotNull();
             if (expected == null) throw new AssertionError("No exported response");
+            expected = json.readTree(substitute(expected.toString()));
             assertThat(exchange.getRequestMethod())
                     .isEqualTo(expected.path("method").asText());
             assertThat(exchange.getRequestURI().getPath())
@@ -68,9 +79,23 @@ public final class ScenarioHttpReplay implements AutoCloseable {
                             URLDecoder.decode(parts[1], StandardCharsets.UTF_8));
                 }
             assertThat((JsonNode) json.valueToTree(query)).isEqualTo(expected.path("query"));
+            if (expected.has("form")) {
+                Map<String, String> form = new TreeMap<>();
+                for (String parameter :
+                        new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8).split("&")) {
+                    String[] parts = parameter.split("=", 2);
+                    form.put(
+                            URLDecoder.decode(parts[0], StandardCharsets.UTF_8),
+                            URLDecoder.decode(parts[1], StandardCharsets.UTF_8));
+                }
+                assertThat((JsonNode) json.valueToTree(form)).isEqualTo(expected.path("form"));
+                assertThat(exchange.getRequestHeaders().getFirst("Idempotency-Key"))
+                        .isEqualTo(expected.path("idempotency_key").asString());
+            }
             assertThat(exchange.getRequestHeaders().getFirst("Stripe-Version")).isEqualTo("2026-09-30.endive");
-            byte[] body =
-                    Files.readAllBytes(directory.resolve(expected.path("body").asText()));
+            byte[] body = substitute(Files.readString(
+                            directory.resolve(expected.path("body").asText())))
+                    .getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             exchange.sendResponseHeaders(expected.path("status").asInt(), body.length);
             exchange.getResponseBody().write(body);

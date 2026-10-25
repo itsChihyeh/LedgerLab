@@ -2,8 +2,11 @@ package dev.ledgerlab.sim.scenario;
 
 import dev.ledgerlab.sim.bank.Bank;
 import dev.ledgerlab.sim.processor.BalanceTransactions;
+import dev.ledgerlab.sim.processor.EventDelivery;
 import dev.ledgerlab.sim.processor.Payouts;
 import dev.ledgerlab.sim.processor.Processor;
+import dev.ledgerlab.sim.processor.RefundFaults;
+import dev.ledgerlab.sim.processor.Refunds;
 import dev.ledgerlab.sim.processor.SeededIds;
 import dev.ledgerlab.sim.processor.SimulationClock;
 import java.io.IOException;
@@ -51,10 +54,10 @@ public final class ScenarioRunner {
         return Objects.requireNonNull(new TransactionTemplate(manager).execute(status -> {
             // Refuse a populated simulator; never erase interactive work. Locks also exclude its writers.
             jdbc.sql(
-                            "lock table sim_processor.charge, sim_processor.balance_transaction, sim_processor.payout, sim_processor.fault_plan, sim_bank.account, sim_bank.fault_plan in exclusive mode")
+                            "lock table sim_processor.balance_transaction, sim_processor.charge, sim_processor.payout, sim_processor.fault_plan, sim_processor.refunds, sim_processor.idempotency_keys, sim_processor.refund_faults, sim_bank.account, sim_bank.fault_plan in exclusive mode")
                     .update();
             if (jdbc.sql(
-                                    "select (select count(*) from sim_processor.charge)+(select count(*) from sim_processor.payout)+(select count(*) from sim_bank.account)+(select count(*) from sim_bank.fault_plan)+(select count(*) from sim_processor.fault_plan)")
+                                    "select (select count(*) from sim_processor.charge)+(select count(*) from sim_processor.payout)+(select count(*) from sim_bank.account)+(select count(*) from sim_bank.fault_plan)+(select count(*) from sim_processor.fault_plan)+(select count(*) from sim_processor.refund_faults)+(select count(*) from sim_processor.idempotency_keys)")
                             .query(Long.class)
                             .single()
                     != 0)
@@ -71,6 +74,8 @@ public final class ScenarioRunner {
         private final Bank bank;
         private final Processor processor;
         private final Payouts payouts;
+        private final Refunds refunds;
+        private final RefundFaults refundFaults;
         private final Map<String, String> aliases = new LinkedHashMap<>();
         private final Map<String, String> files = new LinkedHashMap<>();
         private final ArrayNode steps = JSON.createArrayNode();
@@ -96,28 +101,62 @@ public final class ScenarioRunner {
             ids = new SeededIds(scenario.path("seed").longValue());
             bank = new Bank(jdbc, manager, clock);
             var balances = new BalanceTransactions(jdbc, clock, clock, ids, Duration.ZERO);
-            processor = new Processor(
-                    jdbc,
-                    manager,
-                    clock,
-                    clock,
-                    ids,
-                    (id, payload) -> {
-                        String file = "events/%03d.json".formatted(++eventNumber);
-                        files.put(file, payload);
-                        step("event").put("body", file).putArray("responses");
-                    },
-                    balances);
+            EventDelivery delivery = (id, payload) -> {
+                String file = "events/%03d.json".formatted(++eventNumber);
+                files.put(file, payload);
+                step("event").put("body", file).putArray("responses");
+            };
+            processor = new Processor(jdbc, manager, clock, clock, ids, delivery, balances);
+            refundFaults = new RefundFaults(jdbc, clock, balances, manager);
+            refunds = new Refunds(jdbc, manager, balances, processor, delivery, clock, clock, ids, refundFaults);
             payouts = new Payouts(jdbc, manager, balances, processor, clock, clock, ids, bank);
         }
 
         Map<String, String> run() {
             for (JsonNode action : scenario.path("actions")) {
                 switch (required(action, "action")) {
-                    case "advance" -> {
-                        clock.advance(Duration.between(clock.instant(), Instant.parse(required(action, "to"))));
+                    case "advance", "advance_clock" -> {
+                        Duration delta = action.has("to")
+                                ? Duration.between(clock.instant(), Instant.parse(required(action, "to")))
+                                : Duration.ofSeconds(seconds(action));
+                        clock.advance(delta);
                         bank.advance();
                     }
+                    case "refund_fault" -> refundFaults.configure(resolve(action.path("request")));
+                    case "refund_accept" -> {
+                        String token = required(action, "local_ref");
+                        alias(required(action, "alias"), token);
+                        var api = step("refund_api").put("local_ref", token).put("key", required(action, "key"));
+                        api.set("request", resolve(action.path("request")));
+                    }
+                    case "refund_submit" -> {
+                        JsonNode request = resolve(action.path("request"));
+                        Map<String, String> parameters = new java.util.TreeMap<>(Map.of(
+                                "charge",
+                                required(request, "charge"),
+                                "amount",
+                                Long.toString(request.path("amount").longValue()),
+                                "metadata[ledgerlab_refund_id]",
+                                required(request, "refund_id")));
+                        var responses = step("outbound").putArray("responses");
+                        var submission = refunds.create(parameters, required(request, "refund_id"));
+                        if (submission.hang()) throw invalid("scenario refund submission timed out");
+                        alias(
+                                required(action, "alias"),
+                                submission.refund().path("id").asText());
+                        String file = "rest/%03d.json".formatted(++responseNumber);
+                        files.put(file, JSON.writeValueAsString(submission.refund()));
+                        var response = responses
+                                .addObject()
+                                .put("method", "POST")
+                                .put("path", "/v1/refunds")
+                                .put("status", 200)
+                                .put("body", file)
+                                .put("idempotency_key", required(request, "refund_id"));
+                        response.set("query", JSON.createObjectNode());
+                        response.set("form", JSON.valueToTree(parameters));
+                    }
+                    case "process_refunds" -> refunds.process();
                     case "charge" -> {
                         var created = processor.create(resolve(action.path("request")));
                         JsonNode charge = (JsonNode) Objects.requireNonNull(created.get("charge"));
@@ -254,6 +293,12 @@ public final class ScenarioRunner {
     private static String required(JsonNode node, String field) {
         if (!node.path(field).isString() || node.path(field).asText().isBlank()) throw invalid(field);
         return node.path(field).asText();
+    }
+
+    private static long seconds(JsonNode action) {
+        JsonNode value = action.path("seconds");
+        if (!value.isIntegralNumber() || !value.canConvertToLong() || value.asLong() < 0) throw invalid("seconds");
+        return value.asLong();
     }
 
     private static String pretty(JsonNode node) {

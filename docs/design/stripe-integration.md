@@ -38,7 +38,7 @@ P2 T03 fake Stripe 增加 charge 的 balance transaction、payout 生命周期�
 
 webhook 端点只订阅下表的事件类型。
 
-**当前实现（P2 T05）**：`charge.succeeded` 调用请款服务；`payout.created`、`payout.reconciliation_completed`、`payout.paid` 经 ingestion 映射后调用 settlement。`APPLIED`、`DUPLICATE_FACT` 对应 inbox `PROCESSED`，其他请款结果对应 `REJECTED`；paid 的依赖未到时为 `PARKED`。`charge.dispute.*` 为 `REJECTED / UNSUPPORTED_TYPE` 并开 `UNSUPPORTED_EVENT`；其余类型暂为 `IGNORED`、`result=NULL`，包括 refund 和 `payout.failed/canceled`。后两类由 T06 接入，refund 由 P3 接入；下表保留相应阶段的目标行为。所有类型的 `livemode=true` 优先拒绝为 `LIVEMODE` 并开一条 `LIVEMODE_EVENT`；charge 交给请款服务判定（事件或 Charge 任一为 live 即拒绝），其他类型在分流前判定，避免重复开差异。
+**当前实现（P3 T09）**：`charge.succeeded` 调用请款服务；`payout.created`、`payout.reconciliation_completed`、`payout.paid`、`payout.failed`、`payout.canceled` 经 ingestion 调用 settlement；订阅列表同时启用 `refund.created`、`refund.updated`、`refund.failed`，经 `RefundEvidence.apply` 处理。`APPLIED`、`DUPLICATE_FACT` 对应 inbox `PROCESSED`，退款 `CONFLICT` 映射 `REJECTED / BUSINESS_CONFLICT`，不重复开差异。payout 的依赖未到可以 `PARKED`，退款不走停放路径。`charge.dispute.*` 为 `REJECTED / UNSUPPORTED_TYPE` 并开 `UNSUPPORTED_EVENT`；未订阅的其他类型为 `IGNORED`、`result=NULL`。所有类型的 `livemode=true` 优先拒绝为 `LIVEMODE` 并开一条 `LIVEMODE_EVENT`；charge 交给请款服务判定，其他类型在分流前判定；退款对象自身若带 live 标志，也优先拒绝。
 
 Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 整数；小数、字符串、非数字或缺失映射为 `null`，交由请款准入判定。其余字段按 Charge 取值，`receivedAt` 使用 inbox 接收时间。worker 默认租约 30 秒、每 1 秒轮询最多 20 条、失败从 1 秒开始倍增并封顶 5 分钟，超过 5 次进入 `DEAD`（第 6 次失败）；配置与三个事务的恢复规则见 state-machines 第 5 节。
 
@@ -65,6 +65,28 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 
 拉取批次行是 HTTP 调用，在数据库事务**之外**做：worker 先拉取并把原始 JSON 存进 `io.processor_fetch`，再开事务核对和记账。拉取失败按 inbox 的重试规则退避。
 
+### P3 T09 实现备注：退款 webhook
+
+- `RefundParser` 只接受 1～99999999 分、可表示为 long 的 JSON 整数；缺失、null、小数、指数、字符串、非数字及溢出为 `INVALID_AMOUNT`。币种忽略大小写，仅 CAD；缺失／其他币种为 `UNSUPPORTED_CURRENCY`。缺失或非法 `re_`、`ch_`、status、非字符串且非 null 的 failure_reason 为 `UNSUPPORTED_TYPE`。failure_reason 可缺省／null。上述准入失败均以事件为主体开 `UNSUPPORTED_EVENT`；live 优先于所有其他检查。
+- metadata 缺失、类型不符、不是本地编号或找不到对应退款时，`REJECTED / UNKNOWN_REFUND` 并开 `MISSING_IN_LEDGER`（subject `refund`、处理方 `re_`；actual 保留 charge、整数金额和 metadata 编号）。即使 `re_` 已知也不回退匹配，以免接纳处理方后台发起的退款。
+- `ProcessorRefundFact` 增加可选 amount／chargeRef，保留原七参数构造器供已核对身份的命令／查询调用者使用；webhook 总是传入两字段。统一入口取资金锁、支付锁、退款锁之后，先核对金额和 charge，再判状态和幂等；不一致只开一条 `REFUND_STATE_CONFLICT`，不更新退款、不记账。复用既有 `PaymentRefunds.processorRef`，未新增跨模块数据库写入或依赖。
+- pending 按 T07 入口让 READY／UNKNOWN → SUBMITTED，只写退款历史，不记分录；重复 pending／终态后的迟到 pending 为 DUPLICATE_FACT。三种事件名都由对象 status 决定结果。WEBHOOK 的证据编号为原 evt_，历史与执行／失败分录 occurred_at 均取事件 created，绝不取退款对象 created；记录时间取注入 Clock。
+- 本地退款及命令在发送前已提交，所以不存在等待退款落库的 PARKED 路径。重投同 event_id 只新增投递记录，不重新运行已拒绝的业务；同内容新 event_id 会按处理时的本地事实重新判断，原拒绝与差异保留。空库重放须先恢复退款受理／命令，再输入这些 webhook，不能依赖停放补齐顺序。
+- 固定合成夹具 `src/test/resources/contracts/refund-updated-failed.json` 与模拟器同名夹具逐字节一致。主应用验证全部映射字段和事件时间，模拟器生成失败退款事件后仅规范化生成的编号与时间，逐字段比较完整 JSON。夹具不是实际 Stripe 录制，P6 验证范围不变。
+
+### P3 T14 实现备注：三进程冒烟
+
+- `scripts/smoke-p3.sh` 先复用 P2 的 S3 与全部对账断言，再按样例 A 退 P1 2000：应用出站 worker 实际调用 fake Stripe，`refund.created` 经 relay DUPLICATE 两次送达；等待命令 DONE 和 inbox PROCESSED 后验证一次执行、API 同键原结果重放，以及 B2 可用 12505／在途 2825。
+- 第二笔对 P2 退 3000，选任务允许的 `force_pending` 路径；补充处理方资金后清故障并 process，验证 SUBMITTED → SUCCEEDED。未引入提现或改动商户 FIFO 门槛。随后补齐 B2／B3 的银行流水和处理方快照，ALL 对账断言零发现、零差异且账本不变；R2 的成功 webhook 业务时刻必须早于 cutoff，避免退款检查被空范围掩盖。
+- 业务时钟沿用 P2 的历史日期，P3 截止固定为 2026-10-24 多伦多 00:00，应用时钟与默认 60 秒证据宽限不改。R1 的命令响应与 webhook 仍正常竞争，首个成功证据决定 occurred_at；R2 的执行固定由 process 后的历史 webhook 驱动。
+- 冒烟观察端只用 simulator 角色 SELECT 退款事件编号，再通过现有 HTTP 查询核对两端投递与状态；不读取 sim_truth，不把模拟器库访问加入主应用。共享起停、HTTP 和有界条件等待，smoke-p2 的场景与断言保持原样；两个脚本各用独立 Compose 项目并在退出时删除其卷。
+
+### P3 T10 实现备注：批次行关联退款
+
+- 完整拉取 balance transactions 后，refund 行 source 为 re_、金额为负。已知 re_ 直接交批次核对；未知 re_ 在业务事务外调用 T08 `ProcessorRefundGateway.retrieve`，该网关沿用 REFUND_QUERY 独立存档，再把 metadata.ledgerlab_refund_id、退款本金和 charge 身份交给核对事务复查。查询对象的当前状态不替代批次行成功证据，退款执行时间仍取行 created。
+- HTTP／解析失败（包括 T08 现有的直接 retrieve 404 不确定语义）走 inbox 重试；成功取回但无本地 metadata／本地退款不存在则 HELD(UNKNOWN_REFUND)。成功查询的 metadata、charge、amount 与本地身份冲突时不能绑到另一笔退款。
+- UNKNOWN_PAYMENT 批次因请款到达而重核时，不在资金事务内发 HTTP：使用首次 UNKNOWN_PAYMENT 历史时点之前的完整 REFUND_QUERY 存档恢复身份；已有 re_ 仍优先按本地关联核对。原明细仍固定使用 lines_fetch_id。其他 HELD 原因不自动重核。
+
 ### P2 T05 实现备注：就绪拉取与兜底轮询
 
 - `PayoutProcessing` 复用 T04 的 Payout 解析与 `StripeReader`，传给 settlement 的证据类型不依赖 ingestion。created 已带 `completed` 时也拉取；`in_progress` 不拉；不支持的 payout 直接隔离，不拉明细。`type=payout` 的转出行跳过，charge 和已知失败打款退回行参加核对，其余行暂隔离。拉取未完成只保留 `complete=false` 存档，worker 重试，不形成批次版本。
@@ -89,6 +111,22 @@ Charge 的 `amount` 和 `amount_captured` 只接受可表示为 `long` 的 JSON 
 3. 重发只能由持有当前租约的 worker 做；租约过期后旧 worker 的回执不能覆盖新结果（[state-machines.md](state-machines.md) 第 6 节）。
 
 否则幂等键过期后的重发可能变成第二笔退款（例如原退款在列表第二页，只查第一页就会以为不存在）。
+
+### P3 T07 实现备注：退款网关契约
+
+- `refunds.ProcessorRefundGateway` 声明 create(requestId, chargeRef, amount, refundId)、retrieve(reRef)、findByRefundId(chargeRef, refundId)，返回 Found／NotFound／Incomplete／Rejected 及 HTTP 状态、原文、安全错误码。findByRefundId 的 NotFound 必须意味着全部分页查询完整成功；任何分页中断返回 Incomplete。Rejected 仅用于明确证明退款未创建的拒绝，5xx／断线／超时不能映射为 Rejected。实际 HTTP／分页解析由 T08 实现，T07 以独立内存网关验证调用顺序和恢复规则。
+- 首次且未被接管的命令直接 create；有 first_sent_at 或重试／接管标记时先查询。优先取退款行已知的 re_，其次取命令 external_ref，否则完整列表查询 metadata。Found 作为 COMMAND_QUERY 统一应用并完成命令，Incomplete 保持 UNKNOWN；仅 NotFound 允许同 request_id 重发，发送前重新检查当前租约。阈值 `ledgerlab.outbound.refund-resend-after` 默认 20h；尝试摘要分别记录 FIRST_SEND、COMPLETE_NOT_FOUND_WITHIN_THRESHOLD、COMPLETE_NOT_FOUND_AFTER_THRESHOLD，恰好 20h 属于阈值内。
+- create 的退款对象作为 COMMAND_RESPONSE 统一应用，pending 也使命令 DONE（后续退款状态靠 webhook／查询／批次证据）；明确拒绝以无 re_ 的失败事实释放，原因保存处理方错误码。调用或查询得到状态时以注入 Clock 的接收时刻为 occurred_at，不使用对象 created。命令证据引用 `{command_id}:lease:{epoch}`，可关联同租约下查询与创建的只追加尝试。
+- first_sent_at 在首次网关操作前短事务写入；如果原 worker 在发送前崩溃，接管者的第一次查询也是首次外部调用。该时刻此后不变，退款 submitted_at 优先沿用它；初次查询后若确认不存在，重发仍使用原 request_id。短事务提交与 HTTP 发送之间的进程崩溃无法原子化，接管者始终先查。
+
+### P3 T08 实现备注：退款 HTTP 与过期恢复
+
+- `ingestion.internal.StripeRefundAdapter` 实现消费者定义的 `ProcessorRefundGateway`；与 `RestStripeReader` 共用 RestClient bean、JDK HTTP 配置、`StripeHttpTransport` 和 `StripeFetchArchive`。ingestion 显式声明对 refunds 及其返回类型所在 outbound 公开 SPI 的依赖，不访问两者 internal 包；既有模块校验继续执行。
+- create 用 form 的 charge、amount、`metadata[ledgerlab_refund_id]`，固定 request_id 作为 Idempotency-Key。解析 id、status、正 long 整数 amount、charge、metadata 和可空 failure_reason；金额、charge、metadata 与本地命令不符时保持 UNKNOWN，不应用金额事实。HTTP Found 增加 Details，Rejected 增加 receivedAt，保留旧构造方式供既有内存网关使用。状态证据取对应响应正文读完时的 Clock（列表取匹配对象所在页的接收时刻），不取对象 created 或后续存档／写回时刻。
+- 列表始终带 limit=100 并翻到 has_more=false，首屏找到也继续。任一页失败、非法形状、空页仍有后页或重复游标／对象编号均为 Incomplete；不同处理方编号的多笔匹配时 Incomplete 并通过 reconciliation 公开入口独立记录 REFUND_STATE_CONFLICT，证据引用本次 processor_fetch。GET 的 4xx（包括 404）也视为 Incomplete，只有完整列表无匹配才返回 NotFound。
+- 2xx 非法 JSON／金额／不支持状态、超时、断线、5xx、重定向保持不确定；POST 的结构化 Stripe 4xx 明确拒绝保存安全错误码。上游正文只保留在受限证据字段，不拼入异常、错误码或日志；不合规或带密钥的错误码降为 PROCESSOR_ERROR。无密钥不发 HTTP，仍追加失败存档。
+- HTTP 在 NOT_SUPPORTED 内执行，processor_fetch 以 REQUIRES_NEW 提交；每次网关调用一行，分页原文沿用 T04 的 JSON 字符串数组，request.attempts 留存各页查询和状态。POST 存 form 与 Idempotency-Key，不存 Authorization。V17 仅扩展 purpose CHECK；完整拒绝也记 complete=true，complete 不代表已记账。
+- `RefundHttpOutboundTest` 用 JDK HttpServer + 真实 PostgreSQL 覆盖 AC-8.7 三段（12 笔、第二页、25h 后清键、第二页超时、查询后发送前租约接管），以及 AC-3.10 的十次 HTTP 超时、AC-3.11 断线并写回前崩溃、AC-3.17 调用成功和 AC-3.18 调用 pending。超时按 T06 的九次创建前故障加一次创建后丢回执注入，随后查询恢复且处理方只有一笔；老化差异与 webhook 路径不属于 T08。适配器专项测试另覆盖存档、分页拒绝、解析和凭据安全；全部只连 loopback 替身。
 
 ### P2 T04 实现备注：只读客户端与拉取存档
 
@@ -135,6 +173,19 @@ P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at`
 - Stripe 账号由用户本人注册，必须是加拿大账号（结算币种 CAD）。
 
 ## 6. 契约测试：fake Stripe 和真实 Stripe 不能漂移
+
+### P3 T06：fake 退款子集与差异
+
+- `POST /v1/refunds` 接受 form 编码的 `charge`、正整数分 `amount`、可选 `metadata[ledgerlab_refund_id]`，强制测试 Bearer 密钥、固定 `Stripe-Version: 2026-09-30.endive` 和 `Idempotency-Key`。退款 GET 同样验证密钥与版本；P2 既有只读接口的版本行为未改。字段与错误外层形状对照 [创建退款](https://docs.stripe.com/api/refunds/create)、[退款分页](https://docs.stripe.com/api/refunds/list)、[幂等请求](https://docs.stripe.com/api/idempotent_requests)。本任务不连接真实 Stripe。
+- 支持 captured/succeeded、非 live、CAD charge；未失败的 pending/succeeded 占用原 charge 的可退额度。余额只汇总未分配且 `available_on ≤ 模拟时间` 的 CAD net；执行新增立即可用的 `type=refund, amount=net=−A, fee=0, source=re_…` 行，payout 原有归集直接包含这行。不能再额外扣一次退款。资金不足 pending，不建余额行；charge 创建提交后、模拟时钟推进后、`POST /sim/refunds/process` 均按创建顺序扫描，执行有足够余额的项。真实 Stripe 的 pending 执行时间不可控，此扫描次序不是对真实调度的保证，也不是主应用的商户 FIFO 前缀规则。
+- `GET /v1/refunds/{id}` 返回当前对象；列表支持 charge、limit（默认 10，1～100）、starting_after，按 created/创建序号倒序，返回真正的 has_more；同一模拟秒的先后由创建序号固定。metadata 不唯一，跨幂等键或键清理后的重复业务操作确实能产生第二笔退款。
+- 创建事件使用当时对象快照；正常直接成功只有 `refund.created(status=succeeded)`；pending 执行后发 `refund.updated`。`fail_next` 先保存 pending 创建快照，再变 failed，发 `refund.updated` 和 `refund.failed`，不先扣款再返还。手动 fail 仅允许 pending；终态重复操作幂等、冲突操作 409，成功后再失败的撤销流程不在此子集。事件签名、redeliver/reissue、relay 均复用 P1/P2 路径。
+- 故障计划通过 `POST /sim/refunds/faults` 替换全局或 charge 范围的计划。支持 timeout_before_create、timeout_after_create 计数，fail_next 原因，force_pending、suppress_events、event_before_response 布尔值，以及 list_page_timeout 页号。charge 明确指定的字段覆盖全局，其余继承；空对象清除对应范围。fault plan 和剩余计数持久化；更新原控制请求另存入 fault_plan。
+- 创建前超时和指定列表页超时返回 504；创建后超时在已提交、已尝试投递后挂起响应，让客户端真正超时。Servlet 30 秒超时只用于回收挂起连接（最终 504），不推进业务时间、不靠 sleep 注入。沿用模拟器默认的同步 webhook 投递，因此 event_before_response=true 保证 relay HTTP 尝试完成才返回；若 relay 配置 DROP/DELAY/HOLD，它的完成只表示 relay 已接收，故障组合不保证主应用此时已收到事件。suppress_events 不创建或投递任何退款事件。
+- `POST /sim/idempotency/purge {"before":"ISO-8601"}`（默认模拟 now）只标记 created 早于 before 且已满 24 小时的键；不自动定时清理。同键同参数重放仍返回第一次响应原文对应对象，故对象后来 succeeded 时首次 pending 响应也不改变。参数校验失败不缓存。模拟器串行处理同键竞争，不复刻 Stripe 所有并发错误与 500 缓存行为。
+- 已知子集限制：不支持 PaymentIntent 发起、amount 省略、其他 metadata 键、其他币种/支付方式、完整 Refund 扩展字段、Stripe 自动重试与真实退款失败撤销。以上故障与可控清理是 fake 专用接口；P6 仍须用真实录制夹具核对所用字段，不能把这些测试当成真实沙箱验收。
+
+### 真实夹具验证（P6）
 
 - 在测试模式下跑一组固定场景，把收到的 webhook 和 API 响应录下来（脱敏后进仓库）。
 - CI 里用这些录制夹具驱动适配器，检查映射结果（不需要密钥、不联网）。

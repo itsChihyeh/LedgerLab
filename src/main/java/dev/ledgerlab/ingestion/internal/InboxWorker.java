@@ -32,6 +32,7 @@ public final class InboxWorker {
     private final WorkerProperties properties;
     private final WorkerHooks hooks;
     private final PayoutProcessing payouts;
+    private final RefundProcessing refunds;
 
     InboxWorker(
             JdbcClient jdbc,
@@ -43,7 +44,8 @@ public final class InboxWorker {
             Clock clock,
             WorkerProperties properties,
             WorkerHooks hooks,
-            PayoutProcessing payouts) {
+            PayoutProcessing payouts,
+            RefundProcessing refunds) {
         this.jdbc = jdbc;
         this.transactions = new TransactionTemplate(manager);
         this.transactions.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -55,6 +57,7 @@ public final class InboxWorker {
         this.properties = properties;
         this.hooks = hooks;
         this.payouts = payouts;
+        this.refunds = refunds;
     }
 
     public int processAvailable() {
@@ -116,6 +119,7 @@ public final class InboxWorker {
                         ? "IGNORED"
                         : (result.equals("APPLIED") || result.equals("DUPLICATE_FACT") ? "PROCESSED" : "REJECTED");
         hooks.afterBusiness(claim.id());
+        OffsetDateTime now = utc(clock.instant());
         int updated = jdbc.sql("""
                 UPDATE io.inbox_event SET status = :status, result = :result, processed_at = :now,
                     lease_owner = NULL, lease_until = NULL, parked_on = :dependency
@@ -123,7 +127,7 @@ public final class InboxWorker {
                 """)
                 .param("status", status)
                 .param("result", result)
-                .param("now", parked ? null : utc(clock.instant()))
+                .param("now", parked ? null : now)
                 .param(
                         "dependency",
                         parked ? "batch:" + Objects.requireNonNull(prepared).batchId() : null)
@@ -133,6 +137,7 @@ public final class InboxWorker {
         if (updated != 1) {
             throw new IllegalStateException("Inbox lease was superseded");
         }
+        InboxStatusHistory.append(jdbc, claim.id(), "RECEIVED", now);
     }
 
     private @Nullable String route(Claim claim) {
@@ -152,7 +157,11 @@ public final class InboxWorker {
             openIssue(claim, "UNSUPPORTED_EVENT", "UNSUPPORTED_TYPE");
             return "UNSUPPORTED_TYPE";
         }
-        // Refunds arrive in P3.
+        if (claim.type().equals("refund.created")
+                || claim.type().equals("refund.updated")
+                || claim.type().equals("refund.failed")) {
+            return refunds.apply(claim.id(), claim.payload());
+        }
         return null;
     }
 
@@ -169,17 +178,21 @@ public final class InboxWorker {
     private void recordFailure(Claim claim, RuntimeException failure) {
         int attempts = claim.attempts() + 1;
         String error = failure.toString();
-        jdbc.sql("""
+        Instant now = clock.instant();
+        int updated = jdbc.sql("""
                 UPDATE io.inbox_event SET attempts = attempts + 1, last_error = :error,
                     next_attempt_at = :next, status = :status, lease_owner = NULL, lease_until = NULL
                 WHERE event_id = :id AND lease_epoch = :epoch AND status = 'RECEIVED'
                 """)
                 .param("error", error.substring(0, Math.min(error.length(), 2000)))
-                .param("next", utc(clock.instant().plus(properties.backoff(attempts))))
+                .param("next", utc(now.plus(properties.backoff(attempts))))
                 .param("status", attempts > properties.maxAttempts() ? "DEAD" : "RECEIVED")
                 .param("id", claim.id())
                 .param("epoch", claim.epoch())
                 .update();
+        if (updated == 1 && attempts > properties.maxAttempts()) {
+            InboxStatusHistory.append(jdbc, claim.id(), "RECEIVED", utc(now));
+        }
     }
 
     private static OffsetDateTime utc(Instant time) {

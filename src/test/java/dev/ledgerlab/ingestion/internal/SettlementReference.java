@@ -131,7 +131,7 @@ final class SettlementReference {
         }
         switch (action) {
             case UNSUPPORTED -> hold("UNSUPPORTED_PAYOUT", "UNSUPPORTED_PAYOUT");
-            case UNSUPPORTED_LINE -> hold("UNSUPPORTED_LINE", "UNSUPPORTED_EVENT");
+            case UNSUPPORTED_LINE -> hold("UNSUPPORTED_LINE", "UNSUPPORTED_BATCH_LINE");
             case FEE_EXCEEDS_GROSS -> hold("FEE_EXCEEDS_GROSS", "AMOUNT_MISMATCH");
             case CREATED_READY, READY, CHANGED_VERSION -> {
                 changedArchive = action == Action.CHANGED_VERSION;

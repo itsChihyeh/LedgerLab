@@ -10,7 +10,10 @@ import dev.ledgerlab.testsupport.TestDatabase;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,15 +30,21 @@ import tools.jackson.databind.json.JsonMapper;
 public class TestLedgerLabApplication {
     private static Path scenarioDirectory() {
         String scenario = System.getenv().getOrDefault("LEDGERLAB_E2E_SCENARIO", "sample-a-1-3");
+        if (scenario.equals("refund-concurrent-6000")
+                || scenario.equals("refund-concurrent-5000")
+                || scenario.equals("refund-retry")) scenario = "sample-a-1-3";
         if (!scenario.equals("sample-a-1-3") && !scenario.equals("ac-5-3"))
             throw new IllegalArgumentException("Unsupported E2E scenario");
         return Path.of("src/test/resources/scenarios", scenario);
     }
 
     public static void main(String[] args) throws Exception {
+        // Conditions on configuration classes are evaluated before DynamicPropertyRegistrar beans run.
+        String[] testArgs = java.util.Arrays.copyOf(args, args.length + 1);
+        testArgs[args.length] = "--ledgerlab.outbound.scheduling-enabled=false";
         var app = SpringApplication.from(LedgerLabApplication::main)
                 .with(E2eConfiguration.class)
-                .run(args)
+                .run(testArgs)
                 .getApplicationContext();
         var clock = app.getBean(MutableClock.class);
         var processor = app.getBean(ScenarioHttpReplay.class);
@@ -58,7 +67,24 @@ public class TestLedgerLabApplication {
                 String path = exchange.getRequestURI().getPath();
                 String method = exchange.getRequestMethod();
                 String body;
-                if (method.equals("GET") && (path.equals("/ready") || path.equals("/clock"))) {
+                if (method.equals("POST") && path.equals("/refund-response-loss")) {
+                    // Forward the real API request and wait for its committed 201, then close without a response.
+                    // Neither this proxy nor its route exists in main/ or a production artifact.
+                    String key = exchange.getRequestHeaders().getFirst("Idempotency-Key");
+                    if (key == null) throw new IllegalArgumentException("Missing key");
+                    try (var client = HttpClient.newHttpClient()) {
+                        var response = client.send(
+                                HttpRequest.newBuilder(URI.create("http://localhost:8080/api/refunds"))
+                                        .header("Content-Type", "application/json")
+                                        .header("Idempotency-Key", key)
+                                        .POST(HttpRequest.BodyPublishers.ofByteArray(
+                                                exchange.getRequestBody().readAllBytes()))
+                                        .build(),
+                                HttpResponse.BodyHandlers.ofString());
+                        if (response.statusCode() != 201) throw new IllegalStateException("Refund did not commit");
+                    }
+                    return;
+                } else if (method.equals("GET") && (path.equals("/ready") || path.equals("/clock"))) {
                     body = Long.toString(clock.instant().getEpochSecond());
                 } else if (method.equals("POST") && path.equals("/drain")) {
                     int attempts = 0;
@@ -67,6 +93,12 @@ public class TestLedgerLabApplication {
                     }
                     processor.assertConsumed();
                     body = "ok";
+                } else if (method.equals("POST") && path.equals("/advance-clock")) {
+                    long seconds = Long.parseLong(
+                            new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+                    if (seconds < 0 || seconds > 7200) throw new IllegalArgumentException("Invalid clock advance");
+                    clock.set(clock.instant().plusSeconds(seconds));
+                    body = Long.toString(clock.instant().getEpochSecond());
                 } else if (method.equals("POST")
                         && path.equals("/prepare-b1-replay")
                         && scenarioDirectory().endsWith("sample-a-1-3")) {

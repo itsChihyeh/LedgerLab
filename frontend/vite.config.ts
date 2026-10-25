@@ -7,7 +7,17 @@ export default defineConfig({
     host: "localhost",
     port: 5173,
     strictPort: true,
-    proxy: { "/api": "http://localhost:8080" },
+    proxy: {
+      "/api": "http://localhost:8080",
+      ...(process.env.VITE_E2E_REFUNDS === "true"
+        ? {
+            "/__e2e__": {
+              target: "http://localhost:8090",
+              rewrite: (path: string) => path.replace(/^\/__e2e__/, ""),
+            },
+          }
+        : {}),
+    },
   },
-  test: { include: ["src/**/*.test.ts"] },
+  test: { include: ["src/**/*.test.ts", "src/**/*.test.tsx"] },
 });

@@ -16,6 +16,12 @@ spring:
     schemas: flyway
 
 ledgerlab:
+  api:
+    client-id: demo-merchant
+    idempotency-lock-timeout: 5s
+    idempotency-cleanup-batch-size: 500
+    idempotency-cleanup-interval: 1m
+    idempotency-cleanup-enabled: ${ledgerlab.inbox.scheduling-enabled:true}
   readonly-datasource:
     url: ${spring.datasource.url}
     username: readonly
@@ -34,6 +40,16 @@ ledgerlab:
     initial-backoff: 1m
     max-backoff: 30m
     poll-interval: 1m
+    scheduling-enabled: ${ledgerlab.inbox.scheduling-enabled:true}
+  outbound:
+    owner: ${LEDGERLAB_WORKER_ID:outbound-1}
+    batch-size: 10
+    lease-duration: 60s
+    base: 5s
+    cap: 15m
+    max-attempts: 20
+    refund-resend-after: 20h
+    poll-interval: 1s
     scheduling-enabled: ${ledgerlab.inbox.scheduling-enabled:true}
   stripe:
     webhook-secret: ${STRIPE_WEBHOOK_SECRET:}

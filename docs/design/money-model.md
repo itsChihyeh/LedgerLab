@@ -97,6 +97,20 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 
 只用 `merchant_available` 作覆盖来源，不算 `merchant_pending`，是保守取舍：待结算款的手续费还没确定。代价是“刚收款就退款”的情况要等到批次结算才执行（ADR-0005）。
 
+### P3 T04 实现备注：受理、FIFO 与取消
+
+- T04 的 `refunds` 模块依赖 `ledger`、`payments`、`shared`；T07 增加 outbound SPI 与 reconciliation 的公开差异入口。受理先取资金锁，再通过 `PaymentRefunds` 锁支付行并检查剩余可退额；支付额度增加、退款插入、历史、`REFUND_ACCEPTED`、队列放行与命令落库同事务完成。CAPTURED 和 SETTLED 均可受理，VOIDED 拒绝；金额允许 1～99999999 分。
+- 新退款先作为 AWAITING_FUNDS 加入集合；`RefundQueue.release()` 只检查调用事务已持有资金锁，不主动取锁。等待退款先按 id 锁行，再按 `queue_seq` 求最长可覆盖前缀，合计用 `Math.addExact`，遇到第一个不能覆盖的退款即停止。READY 与 SUBMIT_REFUND 命令同事务创建，重复调用不会重复建命令。
+- `BatchSettlement` 在 BATCH_SETTLED 之后同步调用 release，然后唤醒银行等待行（P3 T10 调整顺序）；取消只允许 AWAITING_FUNDS 且必须有原因，恢复支付额度、记 REFUND_CANCELLED 后同步放行。同事务回滚也撤销队列状态与命令。退款失败的接线由 T07 的 RefundEvidence 完成，提现失败／退回留 P5。
+- 公开接口只新增 `Ledger.assertFundsLocked()`（复用事务持锁标记）和 `payments.PaymentRefunds` 的窄支付行接口。settlement 模块允许依赖列表仅增加 refunds；不改变其他模块边界。
+- AC-3.13 通过包内可替换的额度协作者验证丢失更新：故障实现只存在于测试，生产没有去锁开关。真实 PostgreSQL 的资金分录与退款额度不变量检查见 [T04 测试说明](../testing/refund-acceptance.md)。
+
+### P3 T10 实现备注：批次退款行
+
+- 先核对全批明细，再对 READY／SUBMITTED／UNKNOWN 的退款通过统一 `RefundEvidence` 入口应用成功证据；来源 BATCH_LINE，证据号为 balance transaction 的 txn_，occurred_at 取该行 created。已 SUCCEEDED 不重复执行。退款执行、批次确认与分录、退款 batch_id、FIFO 放行、银行 WAITING 唤醒同事务提交或回滚；外部拉取存档独立保留。
+- 每笔退款按 re_ 匹配；退款行 gross 为负，refunds 合计取其相反数。BATCH_SETTLED 仍贷 1101 的 N+F，不再次扣退款；普通支付加退款的批次仍为五条 posting。fee 沿用数据字典的非负整数范围；退款行若有非零 fee，也计入本批 F，不改变退款本金或原支付手续费；本批总手续费超过支付毛额时 HELD(FEE_EXCEEDS_GROSS)，避免产生负的 G−F posting。
+- 定向测试覆盖样例 A 第 7、19 步（第 9～11 步提现只用账本夹具建立前置余额，不实现 P5）、两笔部分退款、失败／等待／取消／金额冲突、跨批次复用、HTTP 重试、并发去重和事务回滚。每例检查 INV-1～5、INV-9 的 2101／1102／2103 及 INV-10。退款 jqwik 模型增加 REFUND_BATCH 动作，独立计算执行额、入批额和净在途金额，保留种子 2026102407 与最多 12 步、本地 100／CI 1000 条序列。
+
 ### 4.2 提现门槛（S3）
 
 同一事务里，按账户代码升序锁住 1101、1103、2102、2104、2105，然后要求：
@@ -125,6 +139,12 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 ### P2 T15 实现备注：应用级独立模型
 
 `PaymentModelProperties` 已在原 P1 动作链中加入批次、分页中断、失败重打、银行文件及 WAITING 到期。`PaymentModel`／`SettlementModel` 只用 JDK 独立计算，逐步比较全部账户增量、批次 posting 多重集合（省略 0 元）、状态和流水匹配，并检查全库 INV-9 的 2101／1102 与 INV-11 的“唯一 BOOKED 入账合计减 WAITING”。生成银行证据限定为 CAD CREDIT，包含待查收款；外币、出账及完整期间对账仍由专项测试负责。批次生成净额不超过单行银行／退回行的 99999999 上限，这是测试生成域，不改变汇总金额契约。每条场景独立设置起始 Clock，场景内只向前推进，避免共享测试库的 1000 条序列累计超出日历年份。日志重放原始处理方 HTTP 分页和银行文件，空库比较扩展到批次、明细、流水版本和差异状态。动作、边界、收缩演示与实测见 [model-tests.md](../testing/model-tests.md)。
+
+### P3 T13 实现备注：应用级模型与手算样例
+
+`PaymentModelProperties` 在既有动作链中加入退款 API、取消、出站回执、退款 webhook、过期恢复及带退款行批次；`RefundModel` 仅依赖 JDK 和其他独立模型，逐步核对额度、FIFO、2102/2103/1101、一次性退款资金效果和不触碰 1103。完整输入日志保存 API、回执（含超时）、时钟和早到 webhook，空库比较扩展到退款历史、命令终态和幂等结果。动作边界和实测见 [model-tests.md](../testing/model-tests.md)。
+
+样例 A 第 1–8 步及 D 通过真实应用入口逐格核对余额与 posting。D 未指定初始资产分布，测试用请款 5180、手续费 180、批次与银行入账建立 CASH=MA=5000 的前置；不新增设计账户或直接 SQL 造账。两例同时提供独立模拟器场景与真值，见 [scenario-fixtures.md](../testing/scenario-fixtures.md)。
 
 ## 6. 手算样例
 

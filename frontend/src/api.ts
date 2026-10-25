@@ -15,6 +15,8 @@ export interface PaymentList {
   asOf: AsOf;
 }
 export interface PaymentDetail extends Payment {
+  refunds: Refund[];
+  refundable_remaining: number;
   actualFee: number | null;
   net: number | null;
   batch: PaymentBatch | null;
@@ -245,6 +247,10 @@ export interface Account {
   balance: number;
 }
 export interface Overview {
+  refund_payable: number;
+  awaiting_funds_count: number;
+  awaiting_funds_amount: number;
+  merchant_debt: number;
   accounts: Account[];
   inTransit: number;
   bankCash: number;
@@ -292,6 +298,7 @@ export interface AmountComparison {
   difference: number;
 }
 export interface IssueReferences {
+  refundIds: string[];
   batchIds: string[];
   statementLines: {
     fileId: string;
@@ -320,4 +327,65 @@ export interface AcceptIssueRequest {
 }
 export interface ResolveIssueRequest {
   note: string;
+}
+
+export interface Refund {
+  refund_id: string;
+  payment_ref: string;
+  merchant_refund_ref: string;
+  amount: number;
+  status: string;
+  accepted_at: string;
+  queue_seq: number;
+  queue_position: number | null;
+  processor_refund_ref: string | null;
+  command_status: string | null;
+  command_attempts: number | null;
+  submitted_at: string | null;
+  resolved_at: string | null;
+  cancel_reason: string | null;
+  failure_reason: string | null;
+}
+export interface RefundDetail {
+  refund: Refund;
+  history: {
+    id: number;
+    from_status: string | null;
+    to_status: string;
+    evidence_source: string;
+    evidence_ref: string;
+    occurred_at: string;
+    recorded_at: string;
+  }[];
+  commands: {
+    command_id: string;
+    status: string;
+    attempts: number;
+    next_attempt_at: string;
+    first_sent_at: string | null;
+    created_at: string;
+    recorded_at: string;
+    last_outcome: string | null;
+  }[];
+  attempts: {
+    command_id: string;
+    attempt_no: number;
+    sent_at: string;
+    finished_at: string;
+    recorded_at: string;
+    response_status: number | null;
+    result_code: string;
+  }[];
+  entries: Entry[];
+  postings: PaymentDetail["postings"];
+  asOf: AsOf;
+}
+export interface RefundRequest {
+  key: string;
+  body: { payment_ref: string; merchant_refund_ref: string; amount: number };
+}
+export interface RefundResponse {
+  refund_id: string;
+  status: string;
+  amount: number;
 }

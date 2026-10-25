@@ -19,6 +19,7 @@ final class IssueReferences {
     private final Set<String> batches = new TreeSet<>();
     private final Set<String> banks = new TreeSet<>();
     private final Set<String> payments = new TreeSet<>();
+    private final Set<String> refunds = new TreeSet<>();
     private final Set<String> processorRefs = new TreeSet<>();
     private final Set<String> statements = new TreeSet<>();
     private final Set<String> events = new TreeSet<>();
@@ -37,7 +38,8 @@ final class IssueReferences {
             List<String> eventIds,
             List<String> entryIds,
             List<String> bankTxnIds,
-            List<String> paymentIds) {}
+            List<String> paymentIds,
+            List<String> refundIds) {}
 
     References resolve(Issue issue, List<Finding> findings, List<IssueTransition> history) {
         switch (issue.subjectType()) {
@@ -50,6 +52,8 @@ final class IssueReferences {
             case "statement_line" -> statements.add(issue.subjectId());
             case "processor_payment" -> processorRefs.add(issue.subjectId());
             case "event" -> events.add(issue.subjectId());
+            case "refund" -> refunds.add(issue.subjectId());
+            case "processor_refund" -> processorRefs.add(issue.subjectId());
             default -> {
                 /* Other subjects can still have explicit evidence references. */
             }
@@ -63,6 +67,7 @@ final class IssueReferences {
             collect(f.evidenceRefs());
         });
         history.forEach(t -> collect(t.evidenceRefs()));
+        refundLinks();
         paymentLinks();
         var lines = jdbc.sql("""
                 SELECT * FROM recon.v_statement_line
@@ -78,6 +83,7 @@ final class IssueReferences {
             batches.add(l.batchId());
             processorRefs.add(l.processorRef());
         });
+        refundLinks();
         paymentLinks();
         jdbc.sql("""
                 SELECT batch_id, source_event_id FROM core.v_settlement_batch WHERE batch_id IN (:ids)
@@ -99,10 +105,12 @@ final class IssueReferences {
         jdbc.sql("""
                 SELECT id FROM ledger.v_journal_entry WHERE
                   (subject_type='payment' AND subject_id IN (:payments)) OR
+                  (subject_type='refund' AND subject_id IN (:refunds)) OR
                   (subject_type='batch' AND subject_id IN (:batches)) OR
                   (subject_type='bank_txn' AND subject_id IN (:banks))
                 """)
                 .param("payments", bound(payments))
+                .param("refunds", bound(refunds))
                 .param("batches", bound(batches))
                 .param("banks", bound(banks))
                 .query(String.class)
@@ -116,7 +124,29 @@ final class IssueReferences {
                 List.copyOf(events),
                 List.copyOf(entries),
                 List.copyOf(banks),
-                List.copyOf(payments));
+                List.copyOf(payments),
+                List.copyOf(refunds));
+    }
+
+    private void refundLinks() {
+        jdbc.sql("""
+                SELECT id, payment_id, processor_refund_ref FROM core.v_refund
+                WHERE id IN (:ids) OR processor_refund_ref IN (:refs)
+                """)
+                .param("ids", bound(refunds))
+                .param("refs", bound(processorRefs))
+                .query((rs, row) -> {
+                    refunds.add(rs.getString("id"));
+                    payments.add(rs.getString("payment_id"));
+                    String ref = rs.getString("processor_refund_ref");
+                    if (ref != null) processorRefs.add(ref);
+                    return rs.getString("id");
+                })
+                .list();
+        jdbc.sql("""
+                SELECT evidence_ref FROM core.v_refund_transition
+                WHERE subject_id IN (:ids) AND evidence_source='WEBHOOK'
+                """).param("ids", bound(refunds)).query(String.class).list().forEach(events::add);
     }
 
     private void paymentLinks() {
@@ -149,6 +179,7 @@ final class IssueReferences {
             switch (node.path("table").asString("")) {
                 case "core.settlement_batch" -> batches.add(id);
                 case "core.payment" -> payments.add(id);
+                case "core.refund" -> refunds.add(id);
                 case "io.inbox_event" -> events.add(id);
                 case "ledger.journal_entry" -> entries.add(id);
                 default -> {}
@@ -159,7 +190,8 @@ final class IssueReferences {
                 case "batch_id", "candidate_batch_id" -> batches;
                 case "bank_txn_id" -> banks;
                 case "payment_id" -> payments;
-                case "processor_ref", "processor_payment_ref" -> processorRefs;
+                case "refund_id" -> refunds;
+                case "processor_ref", "processor_payment_ref", "processor_refund_ref" -> processorRefs;
                 case "statement_line_id" -> statements;
                 case "event_id", "source_event_id" -> events;
                 case "entry_id", "entry_ids" -> entries;

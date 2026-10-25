@@ -71,6 +71,27 @@ public class JdbcLedger implements Ledger {
     }
 
     @Override
+    public void assertFundsLocked() {
+        requireTransaction();
+        if (!TransactionSynchronizationManager.hasResource(fundsLockKey)) {
+            throw new IllegalStateException("The caller must already hold the funds lock");
+        }
+    }
+
+    @Override
+    public long balance(Account account) {
+        assertFundsLocked();
+        long balance = jdbc.sql("SELECT balance FROM ledger.account WHERE code = :code")
+                .param("code", account.code())
+                .query(Long.class)
+                .single();
+        if (balance <= -9007199254740992L || balance >= 9007199254740992L) {
+            throw new ArithmeticException("Account balance exceeds JSON safe integer range");
+        }
+        return balance;
+    }
+
+    @Override
     public PostedEntry post(EntryRequest request) {
         requireTransaction();
         if (!TransactionSynchronizationManager.hasResource(fundsLockKey)) {

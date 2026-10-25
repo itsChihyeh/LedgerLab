@@ -1,0 +1,154 @@
+{
+  "format_version": 1,
+  "start_clock": "2026-11-10T16:00:00Z",
+  "seed": 513,
+  "actions": [
+    {
+      "action": "charge",
+      "alias": "P1",
+      "line_alias": "L1",
+      "request": {
+        "amount": 10000
+      }
+    },
+    {
+      "action": "payout",
+      "alias": "B1",
+      "request": {}
+    },
+    {
+      "action": "reconcile",
+      "payout": "B1",
+      "request": {}
+    },
+    {
+      "action": "bank_fault",
+      "request": {
+        "payout_ref": "$B1",
+        "scenario": "sample-a-1-8",
+        "fault": "NONE"
+      }
+    },
+    {
+      "action": "paid",
+      "payout": "B1",
+      "request": {}
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-11T08:00:00Z"
+    },
+    {
+      "action": "snapshot",
+      "business_date": "2026-11-10"
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-12T12:00:00Z"
+    },
+    {
+      "action": "bank_export",
+      "date": "2026-11-12"
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-13T13:02:00Z"
+    },
+    {
+      "action": "charge",
+      "alias": "P2",
+      "request": {
+        "amount": 5000
+      }
+    },
+    {
+      "action": "refund_accept",
+      "alias": "LOCAL_R1",
+      "local_ref": "rfd_00000000000000000000000001",
+      "key": "sample-a-1-8-refund",
+      "request": {
+        "payment_ref": "$P1",
+        "merchant_refund_ref": "R1",
+        "amount": 2000
+      }
+    },
+    {
+      "action": "refund_submit",
+      "alias": "R1",
+      "request": {
+        "charge": "$P1",
+        "refund_id": "$LOCAL_R1",
+        "amount": 2000
+      }
+    },
+    {
+      "action": "payout",
+      "alias": "B2",
+      "request": {}
+    },
+    {
+      "action": "reconcile",
+      "payout": "B2",
+      "request": {}
+    },
+    {
+      "action": "paid",
+      "payout": "B2",
+      "request": {}
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-14T12:00:00Z"
+    },
+    {
+      "action": "snapshot",
+      "business_date": "2026-11-13"
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-16T12:00:00Z"
+    },
+    {
+      "action": "bank_export",
+      "date": "2026-11-16"
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-17T13:02:00Z"
+    },
+    {
+      "action": "checkpoint",
+      "name": "final"
+    }
+  ],
+  "checkpoints": [
+    {
+      "name": "final",
+      "cutoff_at": "2026-11-17T05:00:00Z",
+      "evidence_as_of": "2026-11-17T13:00:00Z",
+      "expected_findings": [],
+      "expected_balances": {
+        "1101": 0,
+        "1102": 0,
+        "1103": 12505,
+        "2101": 0,
+        "2102": 12505,
+        "2103": 0,
+        "2104": 0,
+        "2105": 0
+      },
+      "expected_entries": [
+        {
+          "subject_id": "$LOCAL_R1",
+          "entry_type": "REFUND_ACCEPTED",
+          "posting_count": 2
+        },
+        {
+          "subject_id": "$LOCAL_R1",
+          "entry_type": "REFUND_EXECUTED",
+          "posting_count": 2
+        }
+      ]
+    }
+  ]
+}

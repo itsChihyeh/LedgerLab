@@ -143,6 +143,7 @@ class InboxWorkerTest {
     @AfterEach
     void invariants() {
         assertThat(audit.check()).isEmpty();
+        dev.ledgerlab.testsupport.InboxHistoryAssertions.assertConsistent(jdbc);
     }
 
     private InboxWorker worker(String owner, WorkerHooks hooks) {
@@ -156,7 +157,8 @@ class InboxWorkerTest {
                 clock,
                 new WorkerProperties(owner, 1, Duration.ofSeconds(30), Duration.ofSeconds(1), Duration.ofSeconds(4), 2),
                 hooks,
-                payouts);
+                payouts,
+                context.getBean(RefundProcessing.class));
     }
 
     private InboxWorker worker() {
@@ -332,7 +334,7 @@ class InboxWorkerTest {
     @ParameterizedTest
     @CsvSource({
         "customer.created,false,IGNORED,",
-        "refund.updated,false,IGNORED,",
+        "refund.updated,false,REJECTED,UNSUPPORTED_TYPE",
         "payout.failed,true,REJECTED,LIVEMODE",
         "payout.canceled,true,REJECTED,LIVEMODE",
         "charge.dispute.created,false,REJECTED,UNSUPPORTED_TYPE",
@@ -594,7 +596,8 @@ class InboxWorkerTest {
                 new WorkerProperties(
                         "faulty", 1, Duration.ofSeconds(30), Duration.ofSeconds(1), Duration.ofSeconds(3), 5),
                 fail,
-                payouts);
+                payouts,
+                context.getBean(RefundProcessing.class));
         for (int attempts = 1; attempts <= 6; attempts++) {
             Instant failedAt = clock.instant();
             assertThat(faulty.processAvailable()).isEqualTo(1);
@@ -606,12 +609,115 @@ class InboxWorkerTest {
                     .containsEntry("lease_owner", null)
                     .containsEntry("lease_until", null);
             assertThat((String) row(event).get("last_error")).hasSize(2000);
+            assertThat(jdbc.sql("SELECT to_status FROM io.inbox_status_history WHERE event_id=? ORDER BY id")
+                            .param(id(event))
+                            .query(String.class)
+                            .list())
+                    .containsExactlyElementsOf(attempts > 5 ? List.of("RECEIVED", "DEAD") : List.of("RECEIVED"));
             assertThat(faulty.processAvailable()).isZero();
             money(0);
             clock.set(failedAt.plusSeconds(delay));
         }
         assertThat(worker().processAvailable()).isZero();
         assertThat(count("recon.issue")).isEqualTo(issuesBefore);
+    }
+
+    @Test
+    void ac_1_4a_historyFailureRollsBackBusinessAndInboxStateTogether() throws Exception {
+        ObjectNode event = event();
+        deliver(event);
+        JdbcClient owner = JdbcClient.create(DB.migrator());
+        owner.sql("""
+                CREATE FUNCTION io.fail_history_test() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    IF NEW.to_status='PROCESSED' THEN RAISE EXCEPTION 'injected history failure'; END IF;
+                    RETURN NEW;
+                END; $$
+                """).update();
+        owner.sql("""
+                CREATE TRIGGER fail_history_test BEFORE INSERT ON io.inbox_status_history
+                FOR EACH ROW EXECUTE FUNCTION io.fail_history_test()
+                """).update();
+        try {
+            worker().processAvailable();
+            assertThat(row(event)).containsEntry("status", "RECEIVED").containsEntry("attempts", 1);
+            assertThat(jdbc.sql("SELECT to_status FROM io.inbox_status_history WHERE event_id=? ORDER BY id")
+                            .param(id(event))
+                            .query(String.class)
+                            .list())
+                    .containsExactly("RECEIVED");
+            money(0);
+        } finally {
+            owner.sql("DROP TRIGGER fail_history_test ON io.inbox_status_history")
+                    .update();
+            owner.sql("DROP FUNCTION io.fail_history_test()").update();
+        }
+        clock.set(NOW.plusSeconds(1));
+        worker().processAvailable();
+        outcome(event, "PROCESSED", "APPLIED");
+    }
+
+    @Test
+    void ac_4_10_ac_5_9_parkedAgingUsesHistoricalStateAndExactHour() throws Exception {
+        ObjectNode paid = event();
+        paid.put("type", "payout.paid");
+        String batch = "po_" + id(paid);
+        paid.withObject("data").set("object", mapper.readTree("""
+                {"id":"%s","amount":9680,"currency":"cad","automatic":true,"method":"standard",
+                 "status":"paid","reconciliation_status":"in_progress","arrival_date":1792677600,"created":1792591200}
+                """.formatted(batch)));
+        deliver(paid);
+        worker().processAvailable();
+        assertThat(row(paid)).containsEntry("status", "PARKED");
+        var runs = context.getBean(dev.ledgerlab.reconciliation.internal.ReconRuns.class);
+        Instant cutoff = Instant.parse("2026-10-21T04:00:00Z");
+        Instant due = NOW.plusSeconds(3600);
+        clock.set(due.plusSeconds(61));
+        var before = runs.runAll(cutoff, NOW.plusSeconds(59 * 60), false).get(2);
+        assertThat(before.findings()).noneMatch(f -> f.finding().subjectId().equals(id(paid)));
+        var first = runs.runAll(cutoff, due, false).get(2);
+        var observed = first.findings().stream()
+                .filter(f -> f.finding().subjectId().equals(id(paid)))
+                .toList();
+        assertThat(observed).singleElement().satisfies(f -> {
+            assertThat(f.finding().category()).isEqualTo("EVENT_PARKED_AGED");
+            assertThat(f.finding().subjectType()).isEqualTo("event");
+            assertThat(f.finding().expected()).contains(NOW.toString(), due.toString(), "PT1H", "batch:" + batch);
+        });
+        var response = HTTP.send(
+                HttpRequest.newBuilder(URI.create("http://localhost:" + port
+                                + "/api/recon/issues?category=EVENT_PARKED_AGED&status=OPEN"))
+                        .GET()
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body()).contains(id(paid), "EVENT_PARKED_AGED", "OPEN");
+
+        ObjectNode created = paid.deepCopy();
+        created.put("id", id(paid) + "_created").put("type", "payout.created");
+        deliver(created);
+        worker().processAvailable();
+        assertThat(row(paid)).containsEntry("status", "RECEIVED").containsEntry("parked_on", null);
+        worker().processAvailable();
+        assertThat(row(paid)).containsEntry("status", "PROCESSED");
+        assertThat(jdbc.sql("SELECT to_status FROM io.inbox_status_history WHERE event_id=? ORDER BY id")
+                        .param(id(paid))
+                        .query(String.class)
+                        .list())
+                .containsExactly("RECEIVED", "PARKED", "RECEIVED", "PROCESSED");
+        clock.set(due.plusSeconds(180));
+        assertThat(runs.runAll(cutoff, due, false).get(2).findings()).isEqualTo(first.findings());
+        // The wake-up was recorded exactly at this boundary, so it is still excluded.
+        assertThat(runs.runAll(cutoff, due.plusSeconds(61), true).get(2).findings())
+                .isEqualTo(first.findings());
+        assertThat(runs.runAll(cutoff, due.plusSeconds(62), false).get(2).findings())
+                .noneMatch(f -> f.finding().subjectId().equals(id(paid)));
+        assertThat(jdbc.sql("SELECT status FROM recon.issue WHERE category='EVENT_PARKED_AGED' AND subject_id=?")
+                        .param(id(paid))
+                        .query(String.class)
+                        .single())
+                .isEqualTo("EXPLAINED");
+        assertThat(runs.get(java.util.Objects.requireNonNull(first.id()))).contains(first);
     }
 
     private static void await(CountDownLatch latch) {

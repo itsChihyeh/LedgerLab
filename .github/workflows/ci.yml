@@ -49,9 +49,9 @@ jobs:
       - run: ./mvnw -B verify
 
   model:
-    name: P1 model (1000 sequences)
+    name: Payment and refund models (1000 sequences each)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
@@ -59,7 +59,7 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
-      - run: ./mvnw -B -Pmodel test -Dtest=PaymentModelProperties
+      - run: ./mvnw -B -Pmodel test -Dtest=PaymentModelProperties,RefundStatefulProperties
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
@@ -84,7 +84,7 @@ jobs:
       - run: ./mvnw -B -f simulator/pom.xml verify
 
   smoke:
-    name: P2 three-process smoke
+    name: P2 and P3 three-process smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -98,11 +98,14 @@ jobs:
             pom.xml
             simulator/pom.xml
       - run: sh scripts/smoke-p2.sh
+      - run: sh scripts/smoke-p3.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: p2-smoke-evidence
-          path: target/smoke-p2/
+          name: p2-p3-smoke-evidence
+          path: |
+            target/smoke-p2/
+            target/smoke-p3/
           if-no-files-found: error
           retention-days: 7
 

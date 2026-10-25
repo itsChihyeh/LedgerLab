@@ -58,6 +58,7 @@ final class InboxIntake {
                     .param("now", now)
                     .update();
             if (inserted == 1) {
+                InboxStatusHistory.append(jdbc, event.id(), null, now);
                 recordDelivery(event.id(), "NEW", hash, signedAt, now);
                 return;
             }

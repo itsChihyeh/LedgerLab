@@ -41,12 +41,29 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 | 支付请款后还没进入已确认批次 | 支付 `occurred_at` | 2 个工作日 | `PAYMENT_NOT_SETTLED` |
 | 批次已确认、银行还没入账 | 批次 `occurred_at` | 2 个工作日 | `DEPOSIT_NOT_RECEIVED` |
 | 批次 `HELD(UNKNOWN_PAYMENT)` | 批次 `occurred_at`（payout created） | 2 个工作日，`ledgerlab.recon.aging.held-batch-business-days` | `MISSING_IN_LEDGER`，subject 为本地缺失的支付号 |
+| 退款已执行、尚未进入处理方快照 | 成功历史的执行 `occurred_at` | 2 个工作日，`ledgerlab.recon.aging.refund-statement-business-days` | `REFUND_NOT_IN_STATEMENT`（到期前为 `TIMING_DIFFERENCE`） |
 | 退款等待资金 | 受理时刻 | 5 个工作日 | `REFUND_AWAITING_FUNDS_AGED` |
 | 退款已提交、还没执行 | 提交时刻 | 3 个工作日 | `REFUND_NOT_EXECUTED` |
 | 提现结果未知或已受理还没出账 | 提交时刻 | 1 个工作日 | `PAYOUT_UNRESOLVED` |
-| 入站事件停在 `PARKED` | `received_at` | 1 小时 | `EVENT_PARKED_AGED` |
+| 入站事件停在 `PARKED` | `received_at` | 1 小时，`ledgerlab.recon.aging.parked-event` | `EVENT_PARKED_AGED` |
 
 老化逐笔检查每一笔未了结的义务，而不是看账户总额（修订 R1）。
+
+### P3 T11 实现备注：退款对账与老化
+
+- PROCESSOR 升级为 `processor-v2`；BANK／AGING 沿用共用版本配置，升级为 `p3-v2`（BANK 算法不变）。ALL 顺序执行三种规则，自动包含退款检查。读取既有运行无需重新计算；重跑须保持版本、阈值配置、截止及证据时点一致。
+- 已执行退款按 `core.refund_transition` 在 `recorded_at < evidence_as_of` 的最后一条历史恢复状态，同刻按 id 降序。SUCCEEDED 的执行 `occurred_at < cutoff_at` 才产生缺行义务；缺行的到期判定用 cutoff，和支付／批次的外部证据缺失一致。退款按 `re_` 逐笔匹配，金额比较负 gross 与本金相反数；部分退款不按支付号合并。混合批次总额包含退款的负 net。
+- AWAITING_FUNDS 的起点为不可变 accepted_at，阈值 `ledgerlab.recon.aging.refund-awaiting-funds-business-days` 默认 5；SUBMITTED／UNKNOWN 及已发送的 READY 的阈值 `ledgerlab.recon.aging.refund-execution-business-days` 默认 3。三个退款工作日阈值必须为正。
+- 退款等待和未执行是本地未完成操作，和 PARKED 一样用 evidence_as_of 判断当时状态与是否到期，不借用支付／批次的业务 cutoff；未到期不产生老化发现。expected 保存 start_at、threshold_business_days、due_at、status 和已结束工作日数。到期只报告差异，不改变退款状态、额度、命令或账本。
+- 提交起点优先使用命令不可变 first_sent_at（命令 recorded_at 和 first_sent_at 都严格早于 evidence_as_of）；无发送记录时使用该时点前首次 SUBMITTED 历史的 occurred_at，重建 T07 外部证据回退起点。不会读取当前可变 submitted_at／resolved_at 来判断旧运行。READY 没有当时可见的 first_sent_at 不报未执行。
+- 处理方退款号绑定后沿用 T07 的不覆盖语义；匹配时还要求当时已有 SUBMITTED／SUCCEEDED／FAILED 处理方结果历史，避免把后来才关联的 re_ 借给旧时点仍 READY／UNKNOWN、尚无处理方结果的退款。命令和历史证据引用同样限制在 evidence_as_of 之前。
+- 已放行、完成的退款仍纳入对应老化检查范围，后续运行能解释旧 OPEN 差异；已执行缺行到期时，PROCESSOR 同次运行将旧时间差解释为“已升级为 REFUND_NOT_IN_STATEMENT”，新缺行差异为 OPEN。后续快照出现时解释缺行，旧 finding 保留。
+
+### P3 T01 实现备注：PARKED 老化
+
+- 从 `io.inbox_status_history` 取 `recorded_at < evidence_as_of` 的最后一行（同刻按 id 排序），当时为 PARKED 且 `received_at + parked-event ≤ evidence_as_of` 时产生 `EVENT_PARKED_AGED`。这是接收时间的小时阈值，不按业务 cutoff 或工作日计算；起点不会因重复投递、重试、唤醒而重置。配置为正 Duration，默认 `PT1H`。
+- subject 为 `(event, evt_…)`；expected 保存 `start_at`、ISO-8601 Duration `threshold`、`due_at` 和当时 `parked_on`；证据引用事件和选中的历史行。未到期不产生时间差。已恢复事件仍在检查范围，沿用已有 OPEN → EXPLAINED／人工处置语义；旧证据时点重跑保留相同发现。
+- 延续 BANK／AGING 共用规则版本配置的实现，两者版本升级为 `p3-v1`（BANK 算法未改），PROCESSOR 仍为 `processor-v1`；旧运行报告仍可直接读取。重跑仍须使用相同版本及阈值配置。limitations 删除 P2 未检查 PARKED 的说明，改为回填时刻之前无法还原 inbox 状态。
 
 ### P2 T11 实现备注：银行、老化与全套运行
 
@@ -55,7 +72,7 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 - 批次、支付状态取 evidence_as_of 前最后一条只追加历史。银行匹配结果从该时点前的分录还原：`BANK_DEPOSIT_RECEIVED` 为已应用，2105 的逐笔 posting 净额为未清款；BOOKED/CAD/CREDIT、有不可变 wait_until 且尚无分录为 WAITING。不会用当前 match_status、支付状态、批次状态或账户缓存余额重放。到期但 worker 尚未处理的 WAITING 仍按当时真实状态报告，不虚构应用分录。
 - BANK 重报范围内的 `DEPOSIT_AMOUNT_MISMATCH` / `UNMATCHED_BANK_LINE` 时采用入口相同 `(category, bank_txn, bank_txn_id)`。发现照常插入、关联原 INGESTION issue，不新建 issue、不覆盖其内容与人工处置、不自动 EXPLAINED。2105 未清项另以每笔 bank_txn 报 `UNAPPLIED_CASH_OPEN`。
 - AGING 只对 `HELD(UNKNOWN_PAYMENT)` 的缺失支付逐笔检查，起点为批次 occurred_at；同一支付出现在多个 HELD 批次时合并为同一识别键，取仍在等待的最早批次计算到期，保留各批次和 fetch 引用。新历史固定原因和明细 fetch；旧历史缺字段不回填、不猜当前值。相关完整 fetch 的编号（`processor_fetch:<id>`）和哈希也存入运行输入。
-- AGING `summary.limitations` 固定说明“老化只能发现有开始记录、没有结束记录的义务”“其他 HELD 原因由入口差异负责，等 P4 纠错后重核”“P2 未检查 PARKED 老化”，并说明旧 HELD 历史缺字段的覆盖边界。退款、提现分别留给 P3/P5。
+- AGING `summary.limitations` 固定说明“老化只能发现有开始记录、没有结束记录的义务”“其他 HELD 原因由入口差异负责，等 P4 纠错后重核”，并说明旧 HELD 历史缺字段的覆盖边界。PARKED 的 P3 T01 覆盖及回填限制见上节；退款、提现分别留给 P3/P5。
 - `POST /api/recon/runs` 接受 `kind=ALL`：在同一 REPEATABLE READ 事务内顺序建立 PROCESSOR、BANK、AGING 三个运行，两个时点相同，全部成功才提交。返回 `{runIds:[处理方运行号,银行运行号,老化运行号],runs:[三个报告]}`；dry run 的 runIds 为空、报告 id 为 null，完全不写库。单种类响应保持单个报告。
 - T11 的独立纯 Java 参考模型用 jqwik 状态动作组合确认、银行导入（含重复）、推进到期、WAITING 扫描、重跑；种子 2026102311，每序列最多 12 步，本地 100 条、CI 1000 条。每步比较逐笔发现集合、重放和账本不变；不替代并发测试。
 
@@ -118,6 +135,34 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 | 分录 `source_key` | 见 money-model 第 3 节 | 永久 | 同一业务事实被不同证据各记一次（例如 webhook 和批次行都说退款已执行） | 不再记账，事务里其余部分照常 |
 
 “返回原操作的结果”指：第一次受理退款时返回的是 `AWAITING_FUNDS`，三天后同一个 `merchant_refund_ref` 再来，返回的仍是那一次受理的结果和退款号，客户端再用退款号查当前状态。
+
+### P3 T05 实现备注：退款 HTTP 与单事务幂等
+
+- `POST /api/refunds` 接收 `payment_ref`（`ch_` 加非空 ASCII 字母／数字／下划线）、`amount`（1～99999999 的 JSON 整数）、`merchant_refund_ref`（非空白、最多 64 个 Unicode 码点）；成功 201。响应为 `refund_id/status/amount/payment_ref/merchant_refund_ref/accepted_at`。按数据字典 T04 约定，响应 `payment_ref` 是本地 `pay_…`，原样复用 INSERT 时已永久保存的 `initial_result`，不尝试 UPDATE 此列。
+- `POST /api/refunds/{rfd_id}/cancel` 接收非空白 `reason`，成功 200，响应为 `refund_id/status/amount`；必须是合法 `rfd_` 加 ULID。重复取消用同一幂等键返回首次取消结果；新键取消已取消或 READY 之后的退款返回 409。不存在的退款返回 404 `REFUND_NOT_FOUND`。
+- 两个写接口均要求 `Idempotency-Key` 为 1～255 个可见 ASCII 字符（0x21～0x7e，不含空格）。P3 无认证：`client_id` 只取配置 `ledgerlab.api.client-id`（默认 `demo-merchant`），不读客户端身份请求头；P7 部署时换为认证主体。
+- JSON 必须为单一对象，拒绝未知／重复键、缺失或类型不符字段、字符串中的 NUL、尾随 JSON。金额检查 JSON token，仅整数 token 才直接读取 long；小数、指数、字符串、null、缺失及溢出均为 INVALID_AMOUNT，不先转换成 double。指纹为 UTF-8 的 `SHA-256("POST" + 规范路由路径 + 规范 JSON)`；JSON 键排序、无空白，字段值不 trim、不改大小写，整数与字符串转义按解析值规范化。
+- **单事务**：设置事务局部 lock_timeout → `lockFunds()` → INSERT IN_PROGRESS（冲突不插入）→ 相同键比较指纹／读取原结果 → 检查永久业务编号 → T04 受理／取消 → 保存 COMPLETED 及响应 → 提交。受理的 `initial_result` 已由 T04 在 INSERT 写入；API 首次与重放均按键排序序列化保存的 body，状态码与响应文本一致。业务编号同金额直接返回原受理结果，不重跑当前状态／额度检查；不同金额 BUSINESS_REF_CONFLICT。
+- 业务 4xx 及任何异常均回滚本事务，不留下幂等记录、退款、posting 或命令；与 Stripe 缓存部分 4xx 的策略不同。失败后同键请求重新判断。IN_PROGRESS 不以已提交状态出现，列保留给 P5 长调用；防御性读取到它时返回 409，不接管／覆盖。
+- 同键并发后到者等待资金锁／唯一索引；先到者提交后返回已完成原结果，仍在处理且等待超时返回 409（AC-2.12 允许两者）。`ledgerlab.api.idempotency-lock-timeout` 默认 5s，至少 1ms、至多 PostgreSQL 支持的 2147483647ms；55P03 锁超时映射为 IDEMPOTENCY_REQUEST_IN_PROGRESS，其他数据库故障仍向外抛出并回滚。
+- `expires_at` 按数据字典在 INSERT 时设为注入 Clock +24h，不 UPDATE 未授权列。定时每分钟清一批 `expires_at ≤ Clock.instant()` 的缓存；配置 `idempotency-cleanup-interval`、`idempotency-cleanup-batch-size`（默认 500，正数）、`idempotency-cleanup-enabled`（默认跟随 inbox 调度开关），均在 `ledgerlab.api` 下。清理同样先取资金锁，避免在 API 冲突判断与读取之间删除缓存；随后按到期时间／联合主键排序，FOR UPDATE SKIP LOCKED 批量删除。未清理的到期行仍可返回缓存结果，永久业务编号不被清理。
+- `GET /api/refunds/{id}` 通过 investigation readonly 数据源在单个 REPEATABLE READ 快照返回 `{refund, history, commands, asOf}`：当前退款、按历史 id 排序的状态变化、脱敏命令摘要。GET 不改变业务或缓存；找不到退款返回 404。命令视图与字段见数据字典 V16 备注。
+- 退款业务错误使用 Spring HTTP 错误状态和 ProblemDetail JSON（`type/title/status/detail/instance`），额外包含稳定的 `code`；不返回底层 SQL／异常正文。错误码如下：
+
+| HTTP | code | 条件 |
+|---|---|---|
+| 400 | IDEMPOTENCY_KEY_REQUIRED | 缺少或非法幂等键 |
+| 400 | INVALID_AMOUNT | 金额缺失、不是 JSON 整数或不在范围 |
+| 400 | INVALID_REQUEST | 其他字段／JSON／退款编号格式错误 |
+| 404 | PAYMENT_NOT_FOUND / REFUND_NOT_FOUND | 支付／待取消退款不存在 |
+| 409 | REFUND_EXCEEDS_REMAINING | 超过支付剩余可退额 |
+| 409 | PAYMENT_NOT_REFUNDABLE | 支付已 VOIDED |
+| 409 | REFUND_NOT_CANCELLABLE | 退款不在 AWAITING_FUNDS |
+| 409 | BUSINESS_REF_CONFLICT | 永久业务编号相同、金额不同 |
+| 409 | IDEMPOTENCY_REQUEST_IN_PROGRESS | 锁等待超时或读取到预留的 IN_PROGRESS 状态 |
+| 422 | IDEMPOTENCY_KEY_REUSED | 同一客户端的幂等键对应不同方法／路径／规范请求体 |
+
+- 测试以真实 PostgreSQL 和 MockMvc 覆盖全部写接口场景，另以随机端口 Spring Boot 与 JDK HTTP 客户端验证配置绑定、受理／重放、只读查询和取消的完整装配。包内构造器钩子分别在退款插入后、幂等记录完成但提交前、提交成功且 HTTP 响应写出前抛异常；生产装配为无操作，没有运行时故障开关。最后一种用新连接确认提交可见后抛异常，再同键重试，验证 AC-4.7；不将此测试称为真实网络断线测试。
 
 ---
 

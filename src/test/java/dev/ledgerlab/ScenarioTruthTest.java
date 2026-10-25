@@ -35,7 +35,7 @@ class ScenarioTruthTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"ac-5-3", "sample-a-1-3", "sample-h"})
+    @ValueSource(strings = {"ac-5-3", "sample-a-1-3", "sample-h", "sample-a-1-8", "sample-d"})
     void ac_5_7_ac_5_13_externalScenarioTruthHasNoFalsePositivesOrNegatives(String name) throws Exception {
         var db = TestDatabase.freshBlank();
         Path directory = Path.of("src/test/resources/scenarios", name);
@@ -63,7 +63,9 @@ class ScenarioTruthTest {
                             "http://127.0.0.1:" + port,
                             app.getBean(MutableClock.class),
                             app.getBean(InboxWorker.class),
-                            app.getBean(JdbcClient.class))
+                            app.getBean(JdbcClient.class),
+                            () -> app.getBean(dev.ledgerlab.outbound.internal.OutboundWorker.class)
+                                    .processAvailable())
                     .run();
             assertThat(app.getBean(LedgerAudit.class).check()).isEmpty();
         } finally {

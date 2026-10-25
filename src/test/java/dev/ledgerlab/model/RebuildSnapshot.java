@@ -19,7 +19,35 @@ record RebuildSnapshot(
         Set<Issue> issues,
         Map<String, Map<String, Object>> batches,
         Map<String, Map<String, Object>> batchLines,
-        Map<String, Map<String, Object>> bankLines) {
+        Map<String, Map<String, Object>> bankLines,
+        Map<String, Map<String, Object>> refunds,
+        Map<String, Map<String, Object>> refundHistory,
+        Map<String, Map<String, Object>> commands,
+        Map<String, Map<String, Object>> idempotency) {
+    RebuildSnapshot(
+            Map<Integer, Long> balances,
+            Map<String, Payment> payments,
+            Map<String, Outcome> inbox,
+            Map<String, List<Entry>> entries,
+            Set<Issue> issues,
+            Map<String, Map<String, Object>> batches,
+            Map<String, Map<String, Object>> batchLines,
+            Map<String, Map<String, Object>> bankLines) {
+        this(
+                balances,
+                payments,
+                inbox,
+                entries,
+                issues,
+                batches,
+                batchLines,
+                bankLines,
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of());
+    }
+
     RebuildSnapshot(
             Map<Integer, Long> balances,
             Map<String, Payment> payments,
@@ -78,17 +106,49 @@ record RebuildSnapshot(
                 .query((rs, n) -> new Issue(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4)))
                 .list());
         return new RebuildSnapshot(
-                app.balances(), payments, inbox, entries, issues, rows(jdbc, """
+                app.balances(),
+                payments,
+                inbox,
+                entries,
+                issues,
+                rows(jdbc, """
                         SELECT batch_id AS external_key, status, hold_reason, payout_amount, gross, fees, refunds,
                         payout_failures_returned, net, currency, automatic, method, settlement_date, arrival_date
                         FROM core.settlement_batch
-                        """), rows(jdbc, """
+                        """),
+                rows(jdbc, """
                         SELECT balance_txn_id AS external_key, batch_id, line_type, processor_ref, gross, fee, net
                         FROM core.settlement_batch_line
-                        """), rows(jdbc, """
+                        """),
+                rows(jdbc, """
                         SELECT bank_txn_id || ':' || version AS external_key, direction, currency, status, amount,
                         reference, booking_date, value_date, memo, match_status, matched_batch_id, wait_until
                         FROM recon.bank_line
+                        """),
+                rows(jdbc, """
+                        SELECT p.processor_payment_ref || ':' || r.merchant_refund_ref AS external_key,
+                            r.amount, r.status, r.processor_refund_ref, r.batch_id, r.failure_reason,
+                            r.cancel_reason, r.initial_result::text, r.accepted_at, r.submitted_at, r.resolved_at,
+                            p.refunded_amount
+                        FROM core.refund r JOIN core.payment p ON p.id=r.payment_id
+                        """),
+                rows(jdbc, """
+                        SELECT p.processor_payment_ref || ':' || r.merchant_refund_ref || ':' ||
+                            row_number() OVER (PARTITION BY r.id ORDER BY t.id) AS external_key,
+                            t.from_status,t.to_status,t.evidence_source,t.evidence_ref,t.occurred_at
+                        FROM core.refund_transition t JOIN core.refund r ON r.id=t.subject_id
+                            JOIN core.payment p ON p.id=r.payment_id
+                        """),
+                rows(jdbc, """
+                        SELECT p.processor_payment_ref || ':' || r.merchant_refund_ref AS external_key,
+                            c.status,c.kind,c.external_ref,c.first_sent_at,c.last_outcome
+                        FROM io.outbound_command c JOIN core.refund r ON r.id=c.subject_id
+                            JOIN core.payment p ON p.id=r.payment_id
+                        """),
+                rows(jdbc, """
+                        SELECT client_id || ':' || idem_key AS external_key, request_fingerprint,state,
+                            response_status,response_body::text,created_at,expires_at
+                        FROM io.idempotency_record
                         """));
     }
 
@@ -110,6 +170,10 @@ record RebuildSnapshot(
         compare("batches", batches, replay.batches, differences);
         compare("batchLines", batchLines, replay.batchLines, differences);
         compare("bankLines", bankLines, replay.bankLines, differences);
+        compare("refunds", refunds, replay.refunds, differences);
+        compare("refundHistory", refundHistory, replay.refundHistory, differences);
+        compare("commands", commands, replay.commands, differences);
+        compare("idempotency", idempotency, replay.idempotency, differences);
         // Entry order and posting order are irrelevant; multiplicity is retained at both levels.
         compare("entries", entryBags(entries), entryBags(replay.entries), differences);
         Set<Issue> missing = new HashSet<>(issues);

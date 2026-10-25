@@ -1,22 +1,16 @@
 package dev.ledgerlab.ingestion.internal;
 
 import dev.ledgerlab.ingestion.StripeReader;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
 import org.jspecify.annotations.Nullable;
-import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -28,14 +22,12 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 final class RestStripeReader implements StripeReader {
-    private static final String VERSION = "2026-09-30.endive";
-    private final RestClient client;
-    private final StripeProperties credentials;
-    private final JdbcClient jdbc;
+    private static final String VERSION = StripeHttpTransport.VERSION;
+    private final StripeHttpTransport transport;
     private final ObjectMapper mapper;
     private final Clock clock;
     private final TransactionTemplate outsideTransaction;
-    private final TransactionTemplate archiveTransaction;
+    private final StripeFetchArchive archive;
 
     RestStripeReader(
             RestClient client,
@@ -44,15 +36,12 @@ final class RestStripeReader implements StripeReader {
             PlatformTransactionManager manager,
             ObjectMapper mapper,
             Clock clock) {
-        this.client = client;
-        this.credentials = credentials;
-        this.jdbc = jdbc;
+        transport = new StripeHttpTransport(client, credentials, clock);
+        archive = new StripeFetchArchive(jdbc, manager, clock);
         this.mapper = mapper;
         this.clock = clock;
         outsideTransaction = new TransactionTemplate(manager);
         outsideTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
-        archiveTransaction = new TransactionTemplate(manager);
-        archiveTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     @Override
@@ -107,7 +96,7 @@ final class RestStripeReader implements StripeReader {
                     inputFailure == null ? read(path, query, paginated, parse, bodies, attempts, items) : inputFailure;
             Instant fetchedAt = clock.instant();
             String body = paginated ? mapper.writeValueAsString(bodies) : bodies.isEmpty() ? "" : bodies.getFirst();
-            String hash = sha256(body);
+            String hash = StripeFetchArchive.sha256(body);
             String request = mapper.writeValueAsString(Map.of(
                     "method",
                     "GET",
@@ -123,7 +112,7 @@ final class RestStripeReader implements StripeReader {
                     attempts,
                     "outcome",
                     failure == null ? "COMPLETE" : failure));
-            long id = archive(purpose, eventId, request, body, hash, failure == null, fetchedAt);
+            long id = archive.archive(purpose.name(), eventId, request, body, hash, failure == null, fetchedAt);
             return new FetchResult<>(id, hash, fetchedAt, items, failure);
         }));
     }
@@ -136,8 +125,7 @@ final class RestStripeReader implements StripeReader {
             List<String> bodies,
             List<Map<String, Object>> attempts,
             List<T> items) {
-        String key = credentials.apiKey();
-        if (key == null || key.isEmpty()) {
+        if (!transport.hasKey()) {
             return "ledgerlab.stripe.api-key is required for Stripe reads";
         }
         Map<String, String> query = new LinkedHashMap<>(originalQuery);
@@ -150,20 +138,12 @@ final class RestStripeReader implements StripeReader {
                 Map<String, Object> attempt = new LinkedHashMap<>();
                 attempt.put("query", Map.copyOf(query));
                 attempts.add(attempt);
-                Response response = Objects.requireNonNull(client.get()
-                        .uri(builder -> {
-                            builder.path(path);
-                            query.forEach(builder::queryParam);
-                            return builder.build();
-                        })
-                        .header("Authorization", "Bearer " + key)
-                        .header("Stripe-Version", VERSION)
-                        .exchange((request, reply) -> new Response(
-                                reply.getStatusCode().value(),
-                                new String(reply.getBody().readAllBytes(), StandardCharsets.UTF_8))));
+                var response = transport.send("GET", path, query, Map.of(), null);
+                if (response.failure() != null) return response.failure();
                 bodies.add(response.body());
-                attempt.put("status", response.status());
-                if (response.status() < 200 || response.status() >= 300) {
+                int status = Objects.requireNonNull(response.status());
+                attempt.put("status", status);
+                if (status < 200 || status >= 300) {
                     return "HTTP_STATUS_" + response.status();
                 }
                 JsonNode root = mapper.reader()
@@ -200,45 +180,4 @@ final class RestStripeReader implements StripeReader {
             return "INVALID_RESPONSE";
         }
     }
-
-    private long archive(
-            FetchPurpose purpose,
-            @Nullable String eventId,
-            String request,
-            String body,
-            String hash,
-            boolean complete,
-            Instant fetchedAt) {
-        try {
-            return Objects.requireNonNull(archiveTransaction.execute(ignored -> jdbc.sql("""
-                    INSERT INTO io.processor_fetch
-                        (event_id, purpose, request, response_body, response_sha256, complete, fetched_at, recorded_at)
-                    VALUES (:event, :purpose, CAST(:request AS jsonb), :body, :hash, :complete, :fetched, :recorded)
-                    RETURNING id
-                    """)
-                    .param("event", eventId)
-                    .param("purpose", purpose.name())
-                    .param("request", request)
-                    .param("body", body)
-                    .param("hash", hash)
-                    .param("complete", complete)
-                    .param("fetched", fetchedAt.atOffset(ZoneOffset.UTC))
-                    .param("recorded", clock.instant().atOffset(ZoneOffset.UTC))
-                    .query(Long.class)
-                    .single()));
-        } catch (DataAccessException e) {
-            throw new IllegalStateException("Stripe fetch archive failed");
-        }
-    }
-
-    private static String sha256(String body) {
-        try {
-            return HexFormat.of()
-                    .formatHex(MessageDigest.getInstance("SHA-256").digest(body.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 unavailable", e);
-        }
-    }
-
-    private record Response(int status, String body) {}
 }

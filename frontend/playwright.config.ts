@@ -4,8 +4,9 @@ import { defineConfig, devices } from "@playwright/test";
 const scenario = process.env.LEDGERLAB_E2E_SCENARIO ?? "sample-a-1-3";
 
 export default defineConfig({
-  testMatch:
-    scenario === "ac-5-3"
+  testMatch: scenario.startsWith("refund-")
+    ? "refunds.spec.ts"
+    : scenario === "ac-5-3"
       ? "recon.spec.ts"
       : ["payments.spec.ts", "settlement.spec.ts"],
   outputDir: `test-results/${scenario}`,

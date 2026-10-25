@@ -59,6 +59,8 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 
 约束：CHECK `allow_negative OR balance >= 0`（INV-5 在数据库层兜底）；CHECK `abs(balance) < 9007199254740992`（汇总值上限，contracts 第 3 节）。`code`、`kind`、`normal_side`、`allow_negative` 不在 `app` 的授权里，另由触发器禁止任何角色修改（复核 S4 的“修改账户属性”攻击）。
 
+P3 T04b 实现备注：退款队列通过 `Ledger.balance(Account.MERCHANT_AVAILABLE)` 读取 2102 当前余额；该接口先调用 `assertFundsLocked()` 确认当前事务已持资金锁，再读账户行并检查返回值严格位于 ±2^53 以内。
+
 ### `ledger.journal_entry`（不可改）
 
 | 字段 | 类型 | 说明 |
@@ -122,6 +124,36 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 
 `id rfd_…`、`payment_id` FK、`merchant_refund_ref`（与 payment_id 联合 UNIQUE，永久）、`amount` > 0、`status`、`queue_seq`（受理顺序，资金队列用）、`processor_refund_ref` UNIQUE NULL、`failure_reason` NULL、`initial_result`（第一次受理时返回的状态码和响应体，永久保存，用于业务编号重放）、`request_fingerprint`、`accepted_at`、`submitted_at`、`resolved_at`。
 
+### P3 T03 实现备注（V15：退款、命令与 API 幂等）
+
+- `core.refund.id` 为 `rfd_` 加 26 位 ULID；`payment_id` 非空外键指向支付，`batch_id` 可空外键指向已确认批次所属表 `core.settlement_batch`（是否确认由后续业务核对）。`amount` 为 1～99999999 分；`merchant_refund_ref` 非空白且最多 64 字符，与 payment_id 联合永久唯一；`processor_refund_ref` 可空、唯一，CHECK `LIKE 're\_%'`。`queue_seq bigint GENERATED ALWAYS AS IDENTITY UNIQUE` 记录受理顺序，序列空洞不影响 FIFO。
+- 持久化状态仅为 `AWAITING_FUNDS`、`READY`、`SUBMITTED`、`UNKNOWN`、`SUCCEEDED`、`FAILED`、`CANCELLED`，不含瞬时 `REQUESTED`。终态当且仅当 `resolved_at` 非空；`CANCELLED` 必须有非空白 `cancel_reason`。`failure_reason`、`cancel_reason`、`submitted_at`、`resolved_at` 可空；`accepted_at`、`recorded_at` 非空且由应用传入。`initial_result jsonb NOT NULL` 永久保留首次响应状态码与响应体，`request_fingerprint text NOT NULL` 永久保存请求指纹，不在表上限定 JSON 内部形状。
+- `core.refund_transition` 沿用 payment/batch 历史的 `id bigint identity`、退款外键 `subject_id`、可空 `from_status`、非空 `to_status/evidence_type/evidence_id/occurred_at/recorded_at`，两个状态列均检查上述退款状态；另外非空 `evidence_source` 限于 `API/QUEUE/COMMAND_RESPONSE/COMMAND_QUERY/WEBHOOK/BATCH_LINE/OPERATOR`，`evidence_ref text NOT NULL` 保存该来源的证据引用。UPDATE/DELETE/TRUNCATE 触发器拒绝包括属主在内的重写（`LL004`）。
+- T03 仅新增显式列出全部字段的 `core.v_refund`、`core.v_refund_transition` 给 readonly 读取；三个 io 新表不向 readonly 开放。T05 的命令摘要脱敏视图见下方 V16 备注。
+
+| 表 | `app` 可写（均可 SELECT） | `readonly` | `migrator` |
+|---|---|---|---|
+| `core.refund` | INSERT；UPDATE(`status`, `processor_refund_ref`, `failure_reason`, `cancel_reason`, `submitted_at`, `resolved_at`, `batch_id`) | 仅 SELECT `core.v_refund` | 属主 |
+| `core.refund_transition` | INSERT | 仅 SELECT `core.v_refund_transition` | 属主；重写触发器同样适用 |
+| `io.outbound_command` | INSERT；UPDATE(`status`, `attempts`, `next_attempt_at`, `lease_owner`, `lease_until`, `lease_epoch`, `first_sent_at`, `external_ref`, `last_outcome`) | 无 | 属主；首次发送时刻触发器同样适用 |
+| `io.outbound_attempt` | INSERT | 无 | 属主；重写触发器同样适用 |
+| `io.idempotency_record` | INSERT、DELETE；UPDATE(`state`, `response_status`, `response_body`, `locked_until`) | 无 | 属主 |
+
+退款身份、金额、受理顺序、首次结果、指纹及受理／记录时间均不授 UPDATE。所有新表对 app 均不授 TRUNCATE；除可过期的 API 幂等记录外均不授 DELETE。
+
+### P3 T05 实现备注：退款 HTTP 查询与幂等
+
+- V16 新增 `core.v_refund_command_summary`，仅公开 `command_id`、`refund_id` 关联编号以及 `status`、`attempts`、`next_attempt_at`、`first_sent_at`、`created_at`、`recorded_at`、`last_outcome` 结果码；不含请求／响应原文、租约持有人或外部凭据。migrator 为视图属主；readonly 仅 SELECT 此视图，app 沿用底表授权、不另授视图权限；io schema 仍不向 readonly 开放。
+- T05 沿用 T04 的不可修改首次结果：请求 `payment_ref` 为处理方 `ch_…`，返回的 `payment_ref` 为解析后的本地 `pay_…`。API 在受理后读取已插入的 initial_result，不 UPDATE 它。过期时间在幂等记录 INSERT 时固定为 Clock 时刻 +24h，不 UPDATE expires_at。
+- GET 退款详情通过 readonly 的 `core.v_refund`、`core.v_refund_transition`、`core.v_refund_command_summary` 在一个 REPEATABLE READ 快照中读取。
+
+### P3 T04 实现备注：退款受理写入
+
+- `Refunds.accept` 接收本地支付号 `pay_…`、业务退款编号、整数分金额和调用方提供的请求指纹。T04 对联合唯一约束冲突返回 `DUPLICATE_REFUND_REFERENCE`；业务编号重放与 HTTP/API 幂等仍由 T05 实现。
+- 退款插入省略 identity 列，以 `INSERT … RETURNING queue_seq` 取得排队号；不直接调用序列、不覆盖 identity、不增加迁移或授权。排队号只用于领域返回值与 FIFO，不放入首次 API 响应。
+- `initial_result` 在 INSERT 时写为 `{status: 201, body: {...}}`，body 字段为 `refund_id`、`status`、`amount`、`payment_ref`（本次受理的本地支付号）、`merchant_refund_ref`、`accepted_at`（UTC ISO 时刻）。新退款位于队尾，扣除本次金额后的 2102 非负当且仅当整条等待队列可放行，因此可在插入前计算首次响应状态；事务结束前再核对实际放行结果。后续状态变化不改首次结果。
+- `accepted_at`、`recorded_at` 和受理历史取注入 Clock；放行命令的 `request_id = subject_id = refund_id`，`next_attempt_at = created_at = recorded_at`，初态 `PENDING`，次数与租约代数沿用数据库默认 0。取消保存原因和 Clock 提供的 `resolved_at`。
+
 ### `core.payout`
 
 `id mpo_…`（同时是 `bank_request_id`）、`merchant_payout_ref` UNIQUE、`amount` > 0、`status`、`initial_result`、`request_fingerprint`、`bank_ack_ref` NULL、`bank_txn_id` NULL（出账流水）、`return_bank_txn_id` NULL、`failure_reason` NULL、各状态时刻。
@@ -131,6 +163,11 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 批次：`batch_id`（Stripe payout 编号 `po_…`）PK、`payout_amount`（payout 对象上的金额）、`settlement_date`、`gross`、`fees`、`refunds`、`payout_failures_returned`、`net`（> 0，且 = `payout_amount`）、`status`（`ANNOUNCED`/`RECEIVED`/`CONFIRMED`/`HELD`/`PAYOUT_FAILED`/`BANKED`）、`hold_reason` NULL（`UNKNOWN_PAYMENT`、`AMOUNT_MISMATCH`、`UNSUPPORTED_LINE`、`UNSUPPORTED_PAYOUT`、`FEE_EXCEEDS_GROSS` 等）、`source_event_id`、`lines_fetch_id` NULL（就绪且拉完的那次 `io.processor_fetch`）、`arrival_date`（处理方预计到账日）。CHECK `net = gross − fees − refunds + payout_failures_returned`。
 
 批次行：`(batch_id, line_no)` PK、`line_type`（`PAYMENT`/`REFUND`/`PAYOUT_FAILURE`；其他 Stripe 类型如 `adjustment`、`dispute` 不支持 → 批次 `HELD`）、`processor_ref`、`balance_txn_id`（Stripe `txn_…`，UNIQUE）、`gross`、`fee`、`net`。
+
+### P3 T10 实现备注（V18：退款批次 hold reason）
+
+- V18 只替换 `core.settlement_batch.hold_reason` 的枚举 CHECK，新增 `UNKNOWN_REFUND`、`REFUND_STATE_CONFLICT`，保留原有原因；`core.batch_transition.hold_reason` 没有枚举 CHECK，沿用 V11 的 HELD 非空约束。无新增表、列或授权，migrator 属主、app 按列更新、readonly 仅读视图的权限不变。
+- 退款批次行保留负 `gross`，`refunds` 合计保存其相反数；退款成功证据与批次分录同事务提交，最后将 `core.refund.batch_id` 关联本批。退款金额、状态、处理方编号和批次归属逐笔核对，不能按支付号合并部分退款。
 
 ### P2 T11 实现备注（V11 迁移）
 
@@ -170,6 +207,13 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 P1b-4 入口自行按 Stripe 协议验证原始字节的 HMAC-SHA256，检查签名时间 ±300 秒；配置为 `ledgerlab.stripe.webhook-secret`（`STRIPE_WEBHOOK_SECRET`，必填）及 `ledgerlab.stripe.api-key`（`STRIPE_API_KEY`，P1b 可空、仅允许测试密钥）。签名有效但 JSON 不合法或缺必需的事件元数据时返回 400、不入库，因为无法构成有效的 inbox 记录。
 
 `event_id` PK（处理方给的）、`event_type`、`api_version`、`livemode`、`payload`（原始请求体，`bytea`）、`payload_sha256`、`signed_at`、`occurred_at`、`received_at`、`status`（`RECEIVED`/`PARKED`/`PROCESSED`/`REJECTED`/`IGNORED`/`DEAD`）、`result` NULL（`APPLIED`/`DUPLICATE_FACT`/`BUSINESS_CONFLICT`/`INVALID_AMOUNT`/`UNSUPPORTED_CURRENCY`/`UNSUPPORTED_CAPTURE`/`UNSUPPORTED_TYPE`/`LIVEMODE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`lease_epoch`（每次抢占 +1，写回时作条件，见 state-machines 第 5 节）、`parked_on`（等待的对象键）、`last_error`、`processed_at`。永久保留。
+
+### P3 T01 实现备注：`io.inbox_status_history`
+
+- V13 新增只追加历史：`id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY`、`event_id text NOT NULL`（inbox 外键）、`from_status text`（初次插入／回填为空）、`to_status text NOT NULL`、可空 `result text`／`parked_on text`、`lease_epoch bigint NOT NULL`、`recorded_at timestamptz NOT NULL`、`backfilled boolean NOT NULL DEFAULT false`。状态、结果与依赖组合沿用 inbox 约束，租约世代非负；索引 `(event_id, recorded_at DESC, id DESC)` 用于还原快照，同一时刻按 id 取最后一行。
+- 接收、完成／DEAD、解除 PARKED 在原事务内追加历史，时刻来自注入 Clock；只改变重试次数或租约不写历史。原有状态更新条件、顺序及四事务边界不变。
+- 升级为每个既有事件回填一行当前状态，`recorded_at = COALESCE(processed_at, recorded_at)`，`backfilled=true`。**回填行之前的历史不可还原**；老化规则将其视为自该时刻起处于该状态，不推断更早状态。
+- migrator 为属主；UPDATE/DELETE/TRUNCATE 触发器一律拒绝（LL004，包括属主）。app 只有 SELECT/INSERT；readonly 与 inbox 一致，无 io schema／底表权限，也不新增历史视图。
 
 ### `io.inbox_conflict`
 
@@ -239,6 +283,16 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - 证据页精确使用 T13/T13b 的批次行文件号／行序号、事件脱敏摘要、银行流水编号。相关 posting 按差异明确引用的 entryId，在其关联支付／批次／银行详情中定位，保留该来源响应的 asOf，不新增后端接口、不拼成跨请求的统一快照。总览各数据区也分别保留自己的 asOf。
 - E2E 两轮分别以空 Testcontainers 数据库重放 T12 的 `sample-a-1-3` 和 `ac-5-3`（截至 first 检查点，恰好七条差异）。复用场景真值断言和真实签名 webhook、处理方 HTTP 回放、银行 CSV 导入及对账；不直接 SQL 造账。仅测试启动器在 loopback 8090 提供就绪、注入 Clock 读数、受控 worker 排空和 B1 回放准备；生产应用没有这些入口。演示辅助函数 `frontend/e2e/helpers.ts#replayB1Confirmation` 只替换 event_id 后重签并投递原 B1 确认内容。
 
+### P3 T12 实现备注：退款查询、页面与演示
+
+- V19 增加 `core.v_refund_attempt_summary`，关联退款命令，仅公开 refund_id、command_id、attempt_no、sent_at、finished_at、recorded_at、response_status 和由 HTTP 状态生成的 result_code（无响应为 NO_RESPONSE）。migrator 持有视图，readonly 仅 SELECT；app 沿用底表权限。请求、响应原文、error 和凭据均不公开，readonly 仍不能访问 io。
+- 支付详情增加 refunds 与 refundable_remaining；队列位置按整个商户当前 AWAITING_FUNDS 的 queue_seq 排序，从 1 开始，其他状态为 null。退款详情增加 queue_seq、queue_position、processor_refund_ref、entries、postings 和逐次 attempts；命令进度与业务状态分别显示。全部字段沿用同一个 readonly REPEATABLE READ 快照。
+- 总览增加 refund_payable、awaiting_funds_count、awaiting_funds_amount 和 merchant_debt；保留既有 merchantOwes 以兼容 P2。欠款为正数显示，非欠款时 merchant_debt 为 0。
+- 页面金额输入要求 CAD 元、恰好两位小数（例如 20.00），通过字符串与整数运算转换为分；100.5 提示补足两位小数。一次提交的业务编号和幂等键在网络重试中保留，完成后才能开始新退款。
+- `#/refunds/{id}` 展示状态历史、证据引用、退款分录及命令尝试摘要；差异 references 新增 refundIds，同时支持 refund_id、core.refund 以及 processor_refund_ref 解析。六种 P3 差异提供中文名，保留原枚举值用于筛选。
+- 并发面板同时发送不同业务编号与幂等键的两笔请求，逐笔显示真实 HTTP 状态与业务错误。故障演示仅在 E2E 启动时通过 VITE_E2E_REFUNDS 开启：Vite 将 /__e2e__/refund-response-loss 转至 loopback 8090；测试启动器转发真实退款 POST，取得已提交的 201 后关闭响应连接。页面先只读核实已提交退款，再以同键、同请求体重试并核对退款编号。普通生产构建不包含演示入口、控制代理或测试启动器。
+- E2E 增加三轮独立空库重放 S3（并发 6000、并发 5000、丢响应重试），关闭出站调度以固定观察受理后的状态，不运行真实 Stripe。AC-4.10 复用 T01 的挂起事件老化演示；普通表单另验证网络失败后的同键重试和取消必填原因。
+
 ### `io.outbound_command`
 
 `id cmd_…`、`kind`（`SUBMIT_REFUND`/`SUBMIT_PAYOUT`/`QUERY_REFUND`/`QUERY_PAYOUT`）、`subject_id`、`request_id`（对外幂等键，所有重试相同）、`status`（`PENDING`/`IN_FLIGHT`/`UNKNOWN`/`DONE`）、`attempts`、`next_attempt_at`、`lease_owner`、`lease_until`、`lease_epoch`、`first_sent_at`（第一次真正发出的时刻，写入后不改）、`external_ref`、`last_outcome`、`created_at`。
@@ -251,9 +305,26 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 处理事件时向处理方拉取的数据（例如 payout 的 balance transactions）：`id`、`event_id`、`request`（接口和参数）、`response_body`（原始 JSON）、`response_sha256`、`fetched_at`。只追加，作为批次行的原始证据。
 
+### P3 T08 实现备注（V17：退款 HTTP 存档用途）
+
+- `io.processor_fetch.purpose` 的 CHECK 增加 `REFUND_COMMAND`、`REFUND_QUERY`，保留既有三种用途；不新增表、列或权限，三角色及只追加约束沿用 V6。
+- 每次网关 create/retrieve/findByRefundId 调用追加一行，包括失败调用；列表沿用 T04 的整次分页存档，response_body 为逐页原文字符串数组，request.attempts 保留各页参数和状态。POST 的 request 保存 form 和 Idempotency-Key，不保存 Authorization。存档在独立短事务提交，complete 表示本次调用取得可用结果（明确拒绝也算完整结果），不代表业务退款已执行。
+
 ### `io.idempotency_record`
 
 `(client_id, idem_key)` PK、`request_fingerprint`（方法＋路径＋规范化请求体的哈希）、`state`（`IN_PROGRESS`/`COMPLETED`）、`response_status`、`response_body`、`locked_until`、`created_at`、`expires_at`（24 小时）。
+
+### P3 T03 实现备注（V15：io 表）
+
+- `outbound_command.id` 为 `cmd_` 加 26 位 ULID，`kind` 在 P3 只允许 `SUBMIT_REFUND`，P5 再扩展提现；恢复查询作为同一命令的尝试，不另建 QUERY 命令。`subject_id`、唯一 `request_id` 均为非空 text；保留通用命令表的跨对象引用，不设退款专用外键。`status` 限 `PENDING/IN_FLIGHT/UNKNOWN/DONE`，`attempts integer`、`lease_epoch bigint` 非负且默认 0。`next_attempt_at`、`created_at`、`recorded_at` 非空，租约两列、`first_sent_at`、`external_ref`、`last_outcome text` 可空。索引 `(status, next_attempt_at, created_at)` 支持抢占。`first_sent_at` 允许 NULL 首次写入、原值写回；一旦非空，触发器拒绝改值或清空（`23514`）。
+- `outbound_attempt` 以 `(command_id, attempt_no)` 为联合主键，command_id 外键指向命令，attempt_no 为正 integer，lease_epoch 为非负 bigint；`sent_at/finished_at/recorded_at timestamptz`、`request_summary jsonb` 非空，`response_status integer`（若有则 100～599）、`response_body text`（保留原文）、`error text` 可空，以容纳超时或非 JSON 响应。每次调用结束后追加，包含旧租约迟到结果；UPDATE/DELETE/TRUNCATE 由触发器拒绝（`LL004`）。
+- `idempotency_record` 的 `(client_id, idem_key)` 为 text 联合主键；`request_fingerprint text`、`state`、`locked_until/created_at/expires_at/recorded_at timestamptz` 非空，state 限 `IN_PROGRESS/COMPLETED`；`response_status integer`（若有则 100～599）和 `response_body jsonb` 可空，允许处理中尚无响应。应用使用注入 Clock 写入 `expires_at = created_at + 24 小时`，数据库不使用当前时刻默认值。app 的 DELETE 是为清理过期 API 缓存而设的例外：清理条件由应用给出；永久业务去重和首次受理结果仍在不可删除的 refund 行中，不依赖此缓存。
+- V15 同时替换 `io.inbox_event.result` 与 `io.inbox_status_history.result` 的 CHECK，新增 `UNKNOWN_REFUND`。两表原有组合 CHECK 的 REJECTED 分支均允许它，PROCESSED 等分支仍拒绝；结果枚举有这两处 CHECK，以后必须一起改。
+
+### P3 T07 实现备注（沿用 V15，无新迁移）
+
+- outbound_attempt 的 attempt_no 在调用前通过命令 attempts 精确递增分配；已开始但未返回就崩溃的调用可能留下编号空洞。查询与重发分别记录，旧 epoch 迟到的结果也使用其预分配编号追加，不覆盖新 epoch 的记录。request_summary 含 operation、decision、固定 request_id 和 refund_id，不含凭据；响应原文、状态和错误分别存既有字段。
+- 达到调用次数上限后，UNKNOWN 命令 next_attempt_at 使用非空 PostgreSQL infinity 表示停止自动重试；不增加状态或放宽表约束。first_sent_at 仍由既有数据库触发器保护；app／readonly／migrator 权限不变。
 
 ### `io.imported_file`
 
@@ -313,11 +384,18 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 `expected`、`actual`、`evidence_refs` 是当前发现内容，只能由对账运行按最新发现刷新；运营处置不改这三列。每次运行的原始内容保存在只追加的 `recon.finding` 中，旧报告不随 issue 刷新而改变。
 
-差异类别（首版）：`MISSING_IN_LEDGER`、`MISSING_IN_STATEMENT`、`AMOUNT_MISMATCH`、`FEE_MISMATCH`、`DUPLICATE_STATEMENT_LINE`、`BATCH_TOTAL_MISMATCH`、`REFUND_NOT_IN_STATEMENT`、`DEPOSIT_MISSING`、`DEPOSIT_AMOUNT_MISMATCH`、`UNMATCHED_BANK_LINE`、`UNAPPLIED_CASH_OPEN`、`BANK_BALANCE_MISMATCH`、`BATCH_VERSION_CONFLICT`、`STATEMENT_VERSION_CONFLICT`、`TIMING_DIFFERENCE`、`PAYOUT_STATE_CONFLICT`、`BATCH_STATE_CONFLICT`、`REFUND_STATE_CONFLICT`、`UNSUPPORTED_PAYOUT`，入站类 `EVENT_CONTENT_CONFLICT`、`EVENT_BUSINESS_CONFLICT`、`UNSUPPORTED_EVENT`、`LIVEMODE_EVENT`，以及 contracts 1.3 节的老化类别。
+差异类别（首版）：`MISSING_IN_LEDGER`、`MISSING_IN_STATEMENT`、`AMOUNT_MISMATCH`、`FEE_MISMATCH`、`DUPLICATE_STATEMENT_LINE`、`BATCH_TOTAL_MISMATCH`、`REFUND_NOT_IN_STATEMENT`、`DEPOSIT_MISSING`、`DEPOSIT_AMOUNT_MISMATCH`、`UNMATCHED_BANK_LINE`、`UNAPPLIED_CASH_OPEN`、`BANK_BALANCE_MISMATCH`、`BATCH_VERSION_CONFLICT`、`STATEMENT_VERSION_CONFLICT`、`TIMING_DIFFERENCE`、`PAYOUT_STATE_CONFLICT`、`BATCH_STATE_CONFLICT`、`REFUND_STATE_CONFLICT`、`UNSUPPORTED_PAYOUT`、`UNSUPPORTED_BATCH_LINE`，入站类 `EVENT_CONTENT_CONFLICT`、`EVENT_BUSINESS_CONFLICT`、`UNSUPPORTED_EVENT`、`LIVEMODE_EVENT`，以及 contracts 1.3 节的老化类别。
+
+### P3 T02 实现备注（V14：不支持的批次行类别）
+
+- V14 仅扩展 `recon.issue.issue_category`，新增 `UNSUPPORTED_BATCH_LINE`；`recon.finding.category` 只有非空白 CHECK，无类别枚举，无需修改。无新表或授权变动：migrator 属主、app 最小列权限、readonly 仅读视图的契约不变。
+- P3 T02 起新开的 `HELD(UNSUPPORTED_LINE)` 差异用新类别，旧行保留原类别（包括 P2 以 batch 为主体的 `UNSUPPORTED_EVENT`），不迁移历史数据。识别键仍为 `(category, subject_type, subject_id)`，subject 为 batch；入站事件继续用 `UNSUPPORTED_EVENT`。
+- `actual.reason` 和首次触发隔离的 `actual.line` 保留；新增 `actual.lines`，按抓取顺序列出全部不支持类型行及触发隔离的行，每项保留 `id`（balance transaction 编号）、`type`、`gross`（处理方带符号金额，整数分）、`fee`、`net`、引用、币种及业务时间。`payout` 转出行不列入。原核对顺序不变，退款行的支持仍留给 P3 T10。
+- 前端类别映射新增“批次含不支持的行”，用于总览、列表和详情；筛选输入提供该类别的可选提示，仍允许输入其他原始类别代码。
 
 ### P1b-3 实现备注（V4 迁移）
 
-- `id` 为 text 主键，`iss_` 加 26 位 ULID；`category`、`subject_type`、`subject_id`、`detected_by`、`status` 均为 text NOT NULL，两个 subject 字段不得为空白。类别 CHECK 包含上述 23 项及老化类别 `PAYMENT_NOT_SETTLED`、`DEPOSIT_NOT_RECEIVED`、`REFUND_AWAITING_FUNDS_AGED`、`REFUND_NOT_EXECUTED`、`PAYOUT_UNRESOLVED`、`EVENT_PARKED_AGED`。
+- `id` 为 text 主键，`iss_` 加 26 位 ULID；`category`、`subject_type`、`subject_id`、`detected_by`、`status` 均为 text NOT NULL，两个 subject 字段不得为空白。V4 类别 CHECK 包含当时的 23 项及老化类别 `PAYMENT_NOT_SETTLED`、`DEPOSIT_NOT_RECEIVED`、`REFUND_AWAITING_FUNDS_AGED`、`REFUND_NOT_EXECUTED`、`PAYOUT_UNRESOLVED`、`EVENT_PARKED_AGED`；P3 T02 的新增类别见上方 V14 备注。
 - `first_run_id`、`last_run_id` 为可空 text；`RUN` 必须有 `first_run_id`，`INGESTION` 的两个运行号必须都为空，`AGING` 不额外限制运行号。到 `recon.run` 的外键在 P2 建表时补上。
 - `status` 限于 `OPEN`、`EXPLAINED`、`RESOLVED`、`ACCEPTED`。`EXPLAINED`、`ACCEPTED` 要求 `explanation IS NOT NULL`；`RESOLVED` 要求 `explanation` 或 `resolution_correction_id` 至少一个非 NULL；`OPEN` 不限制两者。两列为可空 text，纠错外键在 P4 建 `ledger.correction` 时补上。
 - `expected`、`actual` 为可空 jsonb；`evidence_refs` 为 jsonb NOT NULL，默认 `[]`，CHECK 为 JSON 数组。`recorded_at`、`updated_at` 为 timestamptz NOT NULL。
@@ -335,6 +413,15 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - `sim_truth`：场景编号、种子、注入的故障清单和预期差异（ground truth），对账测试和 Agent 评测共用。
 
 处理方和银行的状态分开存、分开推进，避免两边共享同一个错误（I6）。
+
+### P3 T06 实现备注（模拟器 V5）
+
+- 新表仍由 `simulator` 迁移、拥有；PUBLIC、migrator、app、readonly 的表和序列权限全部显式撤销。业务时间取 SimulationClock，`recorded_at` 取注入的审计 Clock；REST 时间转换为 Unix 秒。
+- `sim_processor.refunds`：`id text PK`（re_）、`charge text FK charge`、正整数 `amount bigint`（小于 2^53）、`status`（pending/succeeded/failed/canceled）、`metadata jsonb`（对象）、`created/recorded_at timestamptz`、可空 `failure_reason`、`balance_transaction text UNIQUE FK balance_transaction`。`creation_order bigint GENERATED ALWAYS AS IDENTITY UNIQUE` 是同刻创建的稳定次序；扫描按 created/order 正序，列表反序。CHECK 保证 succeeded 恰好有余额行、failed 恰好有失败原因。
+- `sim_processor.idempotency_keys`：`key text PK`（1～255 字符）、`request_fingerprint text`（规范 form 参数的 SHA-256）、`response text`（首次退款对象原文）、`created/recorded_at timestamptz`、`purged boolean`。重试返回首次响应，不返回对象当前状态；清理只标记至少 24 小时且早于 before 的键，再用该键会覆盖旧缓存并创建新退款。退款 metadata 不设唯一约束，以便复现 AC-8.7。
+- `sim_processor.refund_faults`：`target text PK`（`*` 全局或 ch_ 编号）、`plan jsonb`（对象）、`recorded_at timestamptz`，保存当前控制参数及剩余计数；每次设置另向既有 `fault_plan` 追加原控制 JSON。指定 charge 的字段覆盖全局同名字段，未指定字段继承全局；空计划清除该作用域的覆盖。
+- `event` 新增可空 `refund_id text FK refunds`；退款事件同时保留 charge_id，完整快照不随后续状态更新。退款、余额行、事件、幂等响应同事务提交，HTTP 投递在提交后执行。创建、执行、清理和故障计数更新共用既有余额表锁，防止跨请求重复退款或重复分配。
+- pending/succeeded 占用 charge 可退额度，failed/canceled 释放；可用余额直接汇总已有余额行的 net，refund 借记只扣一次。charge 提交后和每次模拟时钟推进同步扫描 pending；扫描按创建顺序，余额不够的跳过，继续检查后项（这不是主应用的商户 FIFO 放行队列）。
 
 ### P2 T12 实现备注（场景证据导出，无新迁移）
 

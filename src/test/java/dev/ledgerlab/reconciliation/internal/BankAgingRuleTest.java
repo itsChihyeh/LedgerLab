@@ -25,14 +25,14 @@ class BankAgingRuleTest {
         var manager = f.manager;
         var json = new ReconJson(f.mapper);
         var calendar = new BusinessCalendar();
-        var policy = new AgingPolicy(2, 2, 2);
+        var policy = new AgingPolicy(2, 2, 2, java.time.Duration.ofHours(1), 2, 5, 3);
         var evidence = new BankEvidence(f.jdbc);
         f.runs = new ReconRuns(
                 f.jdbc,
                 manager,
                 f.clock,
                 ids,
-                new ReconProperties(java.time.Duration.ofSeconds(60), "p2-v1"),
+                new ReconProperties(java.time.Duration.ofSeconds(60), "p3-v2"),
                 List.of(
                         new ProcessorRule(f.jdbc, calendar, json, f.mapper, policy),
                         new BankRule(evidence, calendar, policy, json, f.jdbc),
@@ -58,7 +58,7 @@ class BankAgingRuleTest {
     }
 
     RunReport run(RunRequest.Kind kind, Instant cutoff, Instant evidence, boolean dry) {
-        return f.runs.run(new RunRequest(kind, cutoff, evidence, "p2-v1", List.of(), dry));
+        return f.runs.run(new RunRequest(kind, cutoff, evidence, "p3-v2", List.of(), dry));
     }
 
     String statement(String date, int version, long opening, long closing, String... rows) {
@@ -81,6 +81,44 @@ class BankAgingRuleTest {
 
     String credit(String id, long amount, String ref, String date) {
         return "D," + id + ",CREDIT," + amount + ",CAD,BOOKED," + ref + "," + date + "," + date + ",fixture";
+    }
+
+    @Test
+    void ac_4_10_backfilledHistoryStartsStrictlyAfterItsTimestampAndThresholdIsConfigurable() {
+        f.inbox("evt_backfilled");
+        Instant known = ProcessorRuleTest.CAPTURED.plusSeconds(7200);
+        f.jdbc.sql("""
+                INSERT INTO io.inbox_status_history(event_id,to_status,parked_on,lease_epoch,recorded_at,backfilled)
+                VALUES ('evt_backfilled','PARKED','batch:po_absent',1,?,true)
+                """).param(known.atOffset(java.time.ZoneOffset.UTC)).update();
+        var json = new ReconJson(f.mapper);
+        var policy = new AgingPolicy(2, 2, 2, java.time.Duration.ofHours(3), 2, 5, 3);
+        var rule = new AgingRule(f.jdbc, new BusinessCalendar(), policy, new BankEvidence(f.jdbc), json, f.mapper);
+        java.util.function.Function<Instant, List<Finding>> inspect = asOf -> rule.evaluate(new ReconRule.Context(
+                new RunRequest(
+                        RunRequest.Kind.AGING, Instant.parse("2026-11-10T05:00:00Z"), asOf, "p3-v2", List.of(), true),
+                java.util.Map.of()));
+        assertThat(inspect.apply(known)).isEmpty();
+        assertThat(inspect.apply(known.plusSeconds(1))).isEmpty();
+        f.clock.set(known.plusSeconds(120));
+        Instant cutoff = Instant.parse("2026-11-10T05:00:00Z");
+        // With the default one-hour threshold it is overdue, but the backfill cannot leak backwards.
+        assertThat(run(RunRequest.Kind.AGING, cutoff, known, true).findings()).isEmpty();
+        assertThat(run(RunRequest.Kind.AGING, cutoff, known.plusSeconds(1), true)
+                        .findings())
+                .hasSize(1);
+        assertThat(inspect.apply(ProcessorRuleTest.CAPTURED.plusSeconds(10800)))
+                .singleElement()
+                .satisfies(finding -> assertThat(finding.expected()).contains("PT3H"));
+        // At identical timestamps, the identity column orders the state changes.
+        f.jdbc.sql("""
+                INSERT INTO io.inbox_status_history(event_id,from_status,to_status,lease_epoch,recorded_at)
+                VALUES ('evt_backfilled','PARKED','RECEIVED',1,?)
+                """).param(known.atOffset(java.time.ZoneOffset.UTC)).update();
+        assertThat(inspect.apply(ProcessorRuleTest.CAPTURED.plusSeconds(10800))).isEmpty();
+        for (var invalid : List.of(java.time.Duration.ZERO, java.time.Duration.ofSeconds(-1)))
+            org.assertj.core.api.Assertions.assertThatIllegalArgumentException()
+                    .isThrownBy(() -> new AgingPolicy(2, 2, 2, invalid, 2, 5, 3));
     }
 
     @Test
@@ -343,7 +381,7 @@ class BankAgingRuleTest {
                 RunRequest.Kind.BANK,
                 ProcessorRuleTest.CUTOFF,
                 ProcessorRuleTest.AS_OF.plusSeconds(1),
-                "p2-v1",
+                "p3-v2",
                 List.of(pending),
                 true));
         assertThat(pinned.summary())
@@ -403,7 +441,7 @@ class BankAgingRuleTest {
     void ac_5_11_configuredThresholdAlsoControlsProcessorTiming() {
         var calendar = new BusinessCalendar();
         var json = new ReconJson(f.mapper);
-        var policy = new AgingPolicy(3, 4, 5);
+        var policy = new AgingPolicy(3, 4, 5, java.time.Duration.ofHours(1), 2, 5, 3);
         f.payment("ch_config", 10000, ProcessorRuleTest.CAPTURED);
         var processor = new ProcessorRule(f.jdbc, calendar, json, f.mapper, policy);
         var context = new ReconRule.Context(
@@ -411,7 +449,7 @@ class BankAgingRuleTest {
                         RunRequest.Kind.PROCESSOR,
                         Instant.parse("2026-11-14T05:00:00Z"),
                         Instant.parse("2026-11-14T13:00:00Z"),
-                        "processor-v1",
+                        "processor-v2",
                         List.of(),
                         true),
                 java.util.Map.of());
@@ -420,7 +458,8 @@ class BankAgingRuleTest {
                 .satisfies(v -> assertThat(v.dueAt()).isEqualTo(Instant.parse("2026-11-17T05:00:00Z")));
         for (int[] values : List.of(new int[] {0, 2, 2}, new int[] {2, 0, 2}, new int[] {2, 2, 0}))
             org.assertj.core.api.Assertions.assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new AgingPolicy(values[0], values[1], values[2]));
+                    .isThrownBy(() ->
+                            new AgingPolicy(values[0], values[1], values[2], java.time.Duration.ofHours(1), 2, 5, 3));
         org.assertj.core.api.Assertions.assertThatExceptionOfType(ArithmeticException.class)
                 .isThrownBy(() -> BankEvidence.bounded(9007199254740992L));
         org.assertj.core.api.Assertions.assertThatExceptionOfType(ArithmeticException.class)

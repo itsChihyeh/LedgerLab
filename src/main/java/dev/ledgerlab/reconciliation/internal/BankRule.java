@@ -33,7 +33,7 @@ public final class BankRule implements ReconRule {
 
     @Override
     public String version() {
-        return "p2-v1";
+        return "p3-v2";
     }
 
     @Override

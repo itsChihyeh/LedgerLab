@@ -51,7 +51,7 @@ public final class ReconRunController {
                 kind,
                 request.cutoffAt(),
                 request.evidenceAsOf(),
-                kind == RunRequest.Kind.PROCESSOR ? "processor-v1" : properties.ruleVersion(),
+                kind == RunRequest.Kind.PROCESSOR ? "processor-v2" : properties.ruleVersion(),
                 List.of(),
                 request.dryRun()));
     }

@@ -404,6 +404,16 @@ class PaymentCaptureTest {
         AtomicInteger secondPid = new AtomicInteger();
         var paused = service(new Ledger() {
             @Override
+            public long balance(Account account) {
+                return ledger.balance(account);
+            }
+
+            @Override
+            public void assertFundsLocked() {
+                ledger.assertFundsLocked();
+            }
+
+            @Override
             public void lockFunds() {
                 ledger.lockFunds();
                 firstPid.set(

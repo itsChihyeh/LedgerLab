@@ -25,7 +25,6 @@ import net.jqwik.api.state.Transformer;
 
 class PaymentModelProperties {
     static final String SEED = "2026102201";
-    private static ModelApplication app;
     private static ModelReport report = new ModelReport();
     private static long sequenceId;
     private static boolean rebuildFailed;
@@ -34,32 +33,33 @@ class PaymentModelProperties {
     @BeforeContainer
     static void start() {
         report = new ModelReport();
-        app = new ModelApplication();
+        sequenceId = 0;
+        rebuildFailed = false;
     }
 
     @AfterContainer
     static void stop() throws Exception {
-        try {
-            report.write(SEED);
-        } finally {
-            if (app != null) app.close();
-        }
+        report.write(SEED);
     }
 
     @Property(seed = SEED, shrinking = ShrinkingMode.BOUNDED, generation = GenerationMode.RANDOMIZED)
-    void ac_4_11_ac_4_13_p2ActionsMatchIndependentModelAndRebuild(@ForAll("actions") ActionChain<State> chain) {
+    void ac_4_11_ac_4_13_p3ActionsMatchIndependentModelAndRebuild(@ForAll("actions") ActionChain<State> chain) {
         current = null;
         boolean passed = false;
+        long violationsBefore = report.violations;
         try {
-            chain.withInvariant("P1/P2 ledger, payment, batch, bank, inbox and issue model", State::check)
+            chain.withInvariant("P1/P2/P3 ledger, refunds, commands, batch, bank and inbox model", State::check)
                     .run();
             current.drain("final-worker");
+            current.p3.finish();
             current.p2.finish();
             current.app.assertNoPending();
             current.check();
             if (current.rebuild) current.rebuild();
             passed = true;
         } catch (AssertionError | RuntimeException failure) {
+            if (report.violations == violationsBefore) report.violations++;
+            if (current != null) current.failed = true;
             report.lastFailure = chain + "\n" + failure + (current == null ? "" : "\n" + current.app.log);
             throw failure;
         } finally {
@@ -74,18 +74,25 @@ class PaymentModelProperties {
 
     @AfterTry
     void finishPendingWork() {
-        // Finish failed/shrunk attempts before the next baseline without rewriting sealed entries.
         if (current == null) return;
+        // A disproved oracle must not drive cleanup of the actual database during shrinking.
+        // Dispose that test database instead; never rewrite sealed entries to recover a baseline.
+        if (current.failed) {
+            current.app.close();
+            current = null;
+            return;
+        }
         try {
             current.app.advance(31);
             current.app.drain("cleanup-worker");
+            current.p3.finish();
             current.app.advance(7 * 86400);
             current.app.expireWaiting();
         } catch (AssertionError | RuntimeException cleanupFailure) {
             report.cleanupFailures++;
             throw cleanupFailure;
         } finally {
-            if (current.rebuild) current.app.close();
+            current.app.close();
             current = null;
         }
     }
@@ -97,6 +104,15 @@ class PaymentModelProperties {
                     return current;
                 })
                 .withAction(5, new NewCharge())
+                .withAction(8, new P3Scenario.Operation(P3Scenario.Kind.ACCEPT_REFUND))
+                .withAction(3, new P3Scenario.Operation(P3Scenario.Kind.CANCEL_REFUND))
+                .withAction(6, new P3Scenario.Operation(P3Scenario.Kind.COMMAND))
+                .withAction(4, new P3Scenario.Operation(P3Scenario.Kind.REFUND_WEBHOOK))
+                .withAction(2, new P3Scenario.Operation(P3Scenario.Kind.REPLAY_REFUND))
+                .withAction(3, new P3Scenario.Operation(P3Scenario.Kind.RECOVER_EXPIRED))
+                .withAction(2, new P3Scenario.Operation(P3Scenario.Kind.API_REPLAY))
+                .withAction(3, new P3Scenario.Operation(P3Scenario.Kind.PROCESSOR_AVAILABLE))
+                .withAction(5, new P3Scenario.Operation(P3Scenario.Kind.REFUND_BATCH))
                 .withAction(2, new Replay(false, false))
                 .withAction(2, new Replay(false, true))
                 .withAction(3, new Replay(true, false))
@@ -230,8 +246,10 @@ class PaymentModelProperties {
         final Map<Integer, Long> baseline;
         final long entriesBefore;
         final P2Scenario p2;
+        final P3Scenario p3;
         int counter;
         int length;
+        boolean failed;
 
         State(long sequence) {
             this(sequence, null);
@@ -240,7 +258,8 @@ class PaymentModelProperties {
         State(long sequence, ModelApplication supplied) {
             // Once a reconstruction fails, keep rebuilding while jqwik shrinks/replays it.
             rebuild = supplied == null && (rebuildFailed || sequence % 10 == 0);
-            app = supplied != null ? supplied : rebuild ? new ModelApplication() : PaymentModelProperties.app;
+            // Every input log must be independently replayable from its recorded ID seed.
+            app = supplied != null ? supplied : new ModelApplication();
             app.clock.set(java.time.Instant.parse(sequence % 2 == 0 ? "2026-11-10T14:00:00Z" : "2026-10-30T14:00:00Z"));
             app.processor.clear();
             app.log.clear();
@@ -252,6 +271,7 @@ class PaymentModelProperties {
             // No SQL LIKE metacharacters: exact prefix filtering cannot include another sequence.
             prefix = "model" + sequence + "x";
             p2 = new P2Scenario(this);
+            p3 = new P3Scenario(this);
         }
 
         void rebuild() {
@@ -334,10 +354,12 @@ class PaymentModelProperties {
             report.checks++;
             try {
                 assertThat(app.audit.check()).as("global INV-1..5/8").isEmpty();
+                dev.ledgerlab.testsupport.InboxHistoryAssertions.assertConsistent(app.jdbc);
                 Map<Integer, Long> expectedBalances = new HashMap<>(baseline);
                 expectedBalances.merge(1101, model.balanceDelta(), Math::addExact);
                 expectedBalances.merge(2101, model.balanceDelta(), Math::addExact);
                 model.settlement.deltas().forEach((code, delta) -> expectedBalances.merge(code, delta, Math::addExact));
+                p3.model.deltas().forEach((code, delta) -> expectedBalances.merge(code, delta, Math::addExact));
                 Map<Integer, Long> balances = app.balances();
                 assertThat(balances).as("snapshot + model deltas, all accounts").isEqualTo(expectedBalances);
 
@@ -351,6 +373,7 @@ class PaymentModelProperties {
                         .forEach(entry -> actualOutcomes.put(entry.getKey(), entry.getValue()));
                 Map<String, PaymentModel.Outcome> expectedOutcomes = new HashMap<>(model.outcomes);
                 expectedOutcomes.putAll(model.settlement.outcomes);
+                expectedOutcomes.putAll(p3.model.outcomes);
                 assertThat(actualOutcomes)
                         .as("every event, including pending events")
                         .isEqualTo(expectedOutcomes);
@@ -394,12 +417,16 @@ class PaymentModelProperties {
                                 .sql("SELECT count(*) FROM ledger.journal_entry")
                                 .query(Long.class)
                                 .single())
-                        .isEqualTo(entriesBefore + model.payments.size() + model.settlement.entries.size());
+                        .isEqualTo(entriesBefore
+                                + model.payments.size()
+                                + model.settlement.entries.size()
+                                + p3.model.entries.size());
 
                 assertThat(groupCounts("recon.issue", "category", "subject_id")).isEqualTo(model.issueCounts());
                 assertThat(groupCounts("io.inbox_conflict", "event_id", "event_id"))
                         .isEqualTo(model.conflicts);
                 p2.check();
+                p3.check();
             } catch (AssertionError failure) {
                 report.violations++;
                 throw failure;

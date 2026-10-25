@@ -1,4 +1,4 @@
-# P2 场景文件与独立真值（T12）
+# P2/P3 场景文件与独立真值（T12、T13）
 
 场景正本在 `simulator/src/main/resources/scenarios/`；提交的外部证据在
 `src/test/resources/scenarios/<name>/`。主应用测试只读后者，不启动模拟器、不依赖模拟器
@@ -79,3 +79,16 @@ Git Bash 把 `.\mvnw.cmd` 换为 `./mvnw`。第一条命令用 Testcontainers �
 权限隔离沿用 `BankTest.ac_5_13_otherRolesCannotReadWriteOrTruncateBankAndTruth`（app、readonly
 直连 `sim_bank`/`sim_truth` 得到 42501），以及已有 ProcessorTest/PayoutTest 的处理方权限测试。
 两个项目各有源码依赖方向检查，覆盖生产代码和测试代码。无需新增表、迁移或依赖。
+
+## P3 T13：退款样例
+
+新增 `sample-a-1-8` 与 `sample-d`。前者包含 P1/B1 银行入账、P2、R1 2000 退款、B2 2825 净额及银行入账，最终 CASH=MA=12505；后者通过 5180−180=5000 建立前置余额，受理 1000 后由处理方返回 failed，最终 CASH=MA=5000、RP=0。真值明确要求 REFUND_ACCEPTED 和 EXECUTED/FAILED 各两条 posting；逐步逐格断言另由主应用 `P3SamplesTest` 承担。
+
+格式仍为 v1，新增两个动作：
+
+- `refund_accept`：`alias`、`local_ref`、`key` 与退款 API 的 `request`。导出 `refund_api` 步骤，重放时真实调用 API，保存首次响应内的本地退款编号。
+- `refund_submit`：处理方退款 `alias` 及 `request {charge, amount, refund_id}`。运行模拟器真实退款服务，导出原始响应、POST form、Idempotency-Key 和退款 webhook；重放 `outbound` 步骤时执行主应用真实命令 worker 与 HTTP 适配器。
+
+模拟器不读取主应用、也不预测主应用生成的 ULID；`local_ref` 是场景明确声明的合法本地编号占位符。重放仅将此标记绑定为 API 实际返回的退款编号，再替换 metadata、POST form、幂等键及真值中的该身份。金额、状态、事件/支付/处理方退款/批次编号不变。原始模板字节仍逐文件与重新导出的结果比较，签名和 inbox payload 则比较绑定后的确切字节。这是 P3 对固定原文夹具的身份参数化，不把数据库余额或业务状态用作真值。
+
+主应用与模拟器仍互不引用 Java 类型，未新增依赖或迁移。`ScenarioTruthTest` 在原有三个场景之外重放两例，核对独立真值、不可变历史报告和账本审计；模拟器 `ScenarioExportTest` 检查两例重跑一致、事务回滚和全部导出文件字节。

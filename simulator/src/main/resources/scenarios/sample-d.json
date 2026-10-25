@@ -1,0 +1,123 @@
+{
+  "format_version": 1,
+  "start_clock": "2026-11-10T16:00:00Z",
+  "seed": 514,
+  "actions": [
+    {
+      "action": "charge",
+      "alias": "P1",
+      "line_alias": "L1",
+      "request": {
+        "amount": 5180
+      }
+    },
+    {
+      "action": "payout",
+      "alias": "B1",
+      "request": {}
+    },
+    {
+      "action": "reconcile",
+      "payout": "B1",
+      "request": {}
+    },
+    {
+      "action": "bank_fault",
+      "request": {
+        "payout_ref": "$B1",
+        "scenario": "sample-d",
+        "fault": "NONE"
+      }
+    },
+    {
+      "action": "paid",
+      "payout": "B1",
+      "request": {}
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-11T08:00:00Z"
+    },
+    {
+      "action": "snapshot",
+      "business_date": "2026-11-10"
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-12T12:00:00Z"
+    },
+    {
+      "action": "bank_export",
+      "date": "2026-11-12"
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-13T13:02:00Z"
+    },
+    {
+      "action": "refund_fault",
+      "request": {
+        "charge": "$P1",
+        "fail_next": "declined"
+      }
+    },
+    {
+      "action": "refund_accept",
+      "alias": "LOCAL_R1",
+      "local_ref": "rfd_00000000000000000000000001",
+      "key": "sample-d-refund",
+      "request": {
+        "payment_ref": "$P1",
+        "merchant_refund_ref": "R3",
+        "amount": 1000
+      }
+    },
+    {
+      "action": "refund_submit",
+      "alias": "R1",
+      "request": {
+        "charge": "$P1",
+        "refund_id": "$LOCAL_R1",
+        "amount": 1000
+      }
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-13T13:05:00Z"
+    },
+    {
+      "action": "checkpoint",
+      "name": "final"
+    }
+  ],
+  "checkpoints": [
+    {
+      "name": "final",
+      "cutoff_at": "2026-11-13T05:00:00Z",
+      "evidence_as_of": "2026-11-13T13:04:00Z",
+      "expected_findings": [],
+      "expected_balances": {
+        "1101": 0,
+        "1102": 0,
+        "1103": 5000,
+        "2101": 0,
+        "2102": 5000,
+        "2103": 0,
+        "2104": 0,
+        "2105": 0
+      },
+      "expected_entries": [
+        {
+          "subject_id": "$LOCAL_R1",
+          "entry_type": "REFUND_ACCEPTED",
+          "posting_count": 2
+        },
+        {
+          "subject_id": "$LOCAL_R1",
+          "entry_type": "REFUND_FAILED",
+          "posting_count": 2
+        }
+      ]
+    }
+  ]
+}

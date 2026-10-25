@@ -1,0 +1,1 @@
+{"object":"refund","id":"re_82694425a9d9cd4c037826aa4e058cd3","charge":"ch_6c986eafe3f9b10906304bb55906222a","status":"failed","currency":"cad","payment_intent":"pi_69d0357d7dcb5d2ce6c9648310184777","failure_reason":"declined","balance_transaction":null,"amount":1000,"created":1794574920,"metadata":{"ledgerlab_refund_id":"rfd_00000000000000000000000001"}}

@@ -1,0 +1,37 @@
+{
+  "format_version" : 1,
+  "aliases" : {
+    "P1" : "ch_a6fb5cafc3dc4fd8e6f88037d4a05f91",
+    "L1" : "txn_648ae829e27c3efd470f7ee9e0c61609",
+    "B1" : "po_faae00c50ef6eb7ff10ab6cdb05594c6",
+    "P2" : "ch_fe29a3b0d7258b747422f3391e7f1bfe",
+    "LOCAL_R1" : "rfd_00000000000000000000000001",
+    "R1" : "re_6038de74fe02c41378f8a7e547808e14",
+    "B2" : "po_750b9e62a1f1b2bda48450497471fa8e"
+  },
+  "checkpoints" : [ {
+    "name" : "final",
+    "cutoff_at" : "2026-11-17T05:00:00Z",
+    "evidence_as_of" : "2026-11-17T13:00:00Z",
+    "expected_findings" : [ ],
+    "expected_balances" : {
+      "1101" : 0,
+      "1102" : 0,
+      "1103" : 12505,
+      "2101" : 0,
+      "2102" : 12505,
+      "2103" : 0,
+      "2104" : 0,
+      "2105" : 0
+    },
+    "expected_entries" : [ {
+      "subject_id" : "rfd_00000000000000000000000001",
+      "entry_type" : "REFUND_ACCEPTED",
+      "posting_count" : 2
+    }, {
+      "subject_id" : "rfd_00000000000000000000000001",
+      "entry_type" : "REFUND_EXECUTED",
+      "posting_count" : 2
+    } ]
+  } ]
+}

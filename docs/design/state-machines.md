@@ -50,6 +50,18 @@ REQUESTED ──受理──▶ AWAITING_FUNDS ──资金覆盖──▶ READY
 - `UNKNOWN` 没有超时出口。老化检查会对停留过久的 `UNKNOWN` 报警，但只有处理方的明确结果能让它离开。
 - 已执行后又被处理方撤销的退款（Stripe 测试里有“先成功后失败”的路径）不在首版范围内：`SUCCEEDED` 之后再收到失败证据，不改状态、不记账，开差异 `REFUND_STATE_CONFLICT`，页面可见。
 
+### P3 T04 实现备注：受理历史与运营取消
+
+受理统一写 `NULL → AWAITING_FUNDS`（API）；若同事务资金覆盖，再写 `AWAITING_FUNDS → READY`（QUEUE）并插入命令。事务提交时对外状态仍为 AWAITING_FUNDS 或 READY。每条历史都有 Clock 时间，证据引用本地退款号；运营取消写 `AWAITING_FUNDS → CANCELLED`（OPERATOR），原因保存在退款行。其余状态拒绝取消并返回 `REFUND_NOT_CANCELLABLE`，不写历史或分录。
+
+### P3 T07 实现备注：处理方退款证据
+
+- 公开 `refunds.RefundEvidence.apply(ProcessorRefundFact)` 参加调用方事务，返回 APPLIED／DUPLICATE_FACT／CONFLICT；没有事务时拒绝执行。先取资金锁，再锁支付、退款（ADR-0004）；本地编号为空时按已知 `re_` 找退款，不存在报 REFUND_NOT_FOUND。T09 webhook 强制按 metadata 找本地退款，不走 re_ 回退，也不 PARKED；未知退款的拒绝和差异见第 5 节。
+- pending 使 READY／UNKNOWN 进入 SUBMITTED；重复 SUBMITTED 只允许补首次得知的处理方编号。成功、失败分别记 REFUND_EXECUTED、REFUND_FAILED；失败同事务恢复支付额度并同步放行 FIFO。终态重复事实不追加历史或分录，终态收到 pending 保持原样；相反终态、等待／运营取消后的处理方证据、编号冲突均通过既有 IngestionIssues 开 REFUND_STATE_CONFLICT，不改变退款。不同退款争用同一 `re_` 也作为冲突处理。
+- 状态变化追加来源和证据编号。分录／历史 occurred_at 使用事实携带的证据时间；命令响应／查询使用收到结果的注入 Clock 时间，resolved_at／历史 recorded_at 使用应用事务的 Clock 时间。submitted_at 优先取命令 first_sent_at；没有发送记录的外部证据以 occurred_at 为回退值。超时只让 READY／SUBMITTED 进入 UNKNOWN，不覆盖 SUCCEEDED／FAILED，重复 UNKNOWN 不追加状态历史。
+- refunds 新增对 outbound 的 SPI 和 reconciliation 的公开 IngestionIssues 依赖；outbound 不依赖任何业务模块。PaymentRefunds 只增加只读 processorRef 方法，供事务外准备不可变 charge 编号；原接口不变。
+- 真库定向测试覆盖创建即成功、失败释放队列、重复与冲突、事务回滚、两种超时／成功交错。所有退款测试共用 INV-9、INV-10 和 AC-3.14 检查。独立纯 Java 参考模型新增 pending、成功、失败、超时动作，jqwik 固定种子 2026102407、每序列最多 12 步，次数沿用本地 100／CI 1000 的配置；每步核对状态、额度、余额、命令数和分录数，受控并发仍由定向测试验证。
+
 ## 3. 提现 Payout（S1）
 
 ```
@@ -93,11 +105,17 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 - `PAYOUT_FAILED` 之后银行又出现入账：开 `BATCH_STATE_CONFLICT`，按精确匹配失败记 `UNAPPLIED_CASH_RECEIVED`（2026-10-23 改：让账上现金等于银行，钱归属留给受限纠错），批次状态不变。
 - 银行入账比批次确认先到：流水行 `WAITING`，批次 `CONFIRMED` 的同一事务里重新匹配，匹配上就同时记 `BANK_DEPOSIT_RECEIVED`、批次直接到 `BANKED`（money-model 第 3 节）。
 
-- 批次里出现本地还在 `SUBMITTED`/`UNKNOWN` 的退款：批次本身就是执行证据，同一事务里先记 `REFUND_EXECUTED`，再核对批次。
+- 批次里出现本地还在 `READY`/`SUBMITTED`/`UNKNOWN` 的退款：批次本身就是执行证据；先核对全批明细，再在同一事务里记 `REFUND_EXECUTED` 和 `BATCH_SETTLED`。
 - 同一个 `batch_id` 再次到达但内容哈希不同：不覆盖，原批次保持原状，新内容存为冲突版本，开差异 `BATCH_VERSION_CONFLICT`。只有“明细就绪且拉完”的快照才算一个版本；未就绪或没拉完的抓取只存档，不参与比较。
 - 先到 `payout.reconciliation_completed`、后到 `payout.created`（乱序）：直接按就绪处理，`created` 到达时只记状态历史。
-- 批次里有不支持的行类型（例如拒付）：`HELD`，原因 `UNSUPPORTED_LINE`，页面显示批次不完整。
+- 批次里有不支持的行类型（例如拒付）：`HELD`，原因 `UNSUPPORTED_LINE`，开 `UNSUPPORTED_BATCH_LINE` 差异，页面显示批次不完整。
 - 批次里出现本地根本没有的支付：先停在 `HELD`，等对应 webhook（乱序）；超过老化阈值报 `MISSING_IN_LEDGER`。
+
+### P3 T10 实现备注：退款批次核对
+
+- 退款行按 processor_refund_ref 逐笔匹配，金额不等为 HELD(AMOUNT_MISMATCH)，FAILED／CANCELLED／AWAITING_FUNDS 或处理方身份冲突为 HELD(REFUND_STATE_CONFLICT)，已属于另一批为 HELD(LINE_IN_OTHER_BATCH)。沿用批次主体的金额／状态差异和 DUPLICATE_STATEMENT_LINE 映射；没有任何退款或批次分录部分提交。
+- 取回对象仍无法关联本地退款时为 HELD(UNKNOWN_REFUND)，立即开 MISSING_IN_LEDGER，subject=(refund,re_…)。未知支付的延后老化规则不变；只有 UNKNOWN_PAYMENT 自动重核。P2 因退款行而 HELD(UNSUPPORTED_LINE) 的历史批次不自动重核，留给 P4 纠错；新版本不改写旧原因或差异。
+- 全批核对通过后先应用退款执行证据，再记 BATCH_SETTLED，关联退款 batch_id，然后放行 FIFO，最后唤醒银行 WAITING。已确认版本规范化支持 REFUND，重放相同行只记重复证据，不重复扣款。
 
 ### P2 T05 实现备注：批次确认与入站恢复
 
@@ -113,11 +131,17 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 ### P2 T06 实现备注：核对失败、重核、版本与打款失败
 
 - HELD 沿用 inbox `PROCESSED/APPLIED`，不新增 result 或数据库枚举。核对失败不插入批次行、不记批次分录；原文固定保存在 `lines_fetch_id` 指向的完整 `io.processor_fetch` 中。差异为 `detected_by=INGESTION`、subject 为 batch，`expected`／`actual` 保存核对值、行身份和处理方引用，`evidence_refs` 关联入站事件／拉取存档。
-- 沿用现有差异类别：`AMOUNT_MISMATCH`、`FEE_EXCEEDS_GROSS` 均报 `AMOUNT_MISMATCH`（费用超过毛额是金额契约违规）；`UNSUPPORTED_LINE` 报 `UNSUPPORTED_EVENT`；`LINE_IN_OTHER_BATCH` 报 `DUPLICATE_STATEMENT_LINE`；`TOTAL_MISMATCH` 报 `BATCH_TOTAL_MISMATCH`。具体原因仍在批次 `hold_reason` 和差异 `actual.reason` 中。`UNKNOWN_PAYMENT` 不立即开差异，留给 T11 老化。实际手续费与合同手续费不同仍按实际值结算，T10 对账再报 `FEE_MISMATCH`。
+- 差异类别映射：`AMOUNT_MISMATCH`、`FEE_EXCEEDS_GROSS` 均报 `AMOUNT_MISMATCH`（费用超过毛额是金额契约违规）；`UNSUPPORTED_LINE` 自 P3 T02 起报 `UNSUPPORTED_BATCH_LINE`（P2 原为 `UNSUPPORTED_EVENT`）；`LINE_IN_OTHER_BATCH` 报 `DUPLICATE_STATEMENT_LINE`；`TOTAL_MISMATCH` 报 `BATCH_TOTAL_MISMATCH`。具体原因仍在批次 `hold_reason` 和差异 `actual.reason` 中。`UNKNOWN_PAYMENT` 不立即开差异，留给 T11 老化。实际手续费与合同手续费不同仍按实际值结算，T10 对账再报 `FEE_MISMATCH`。
 - ingestion 在 `PaymentCapture.capture` 返回 `APPLIED`／`DUPLICATE_FACT` 后，同一事务同步调用 settlement 的按支付号重核入口。按批次号锁定 `HELD(UNKNOWN_PAYMENT)` 候选，读取其固定 `lines_fetch_id` 的完整存档，仅重核含该支付号的批次；不发 HTTP。多笔支付尚未到齐时继续 HELD；到齐后 `HELD → RECEIVED → CONFIRMED`，清 `hold_reason`，支付与批次记账一起提交或回滚。其他 HELD 原因不自动恢复。
 - 已 `CONFIRMED`／`BANKED`／`PAYOUT_FAILED` 的再次就绪事件完整拉取后比较规范化版本：跳过 `type=payout` 转账行，按 `balance_txn_id` 排序，对行身份、类型、引用、gross／fee／net、转小写的币种、业务时间 epoch seconds 的 JSON 数组算 SHA-256，另比较 payout 金额。相同为 `PROCESSED/DUPLICATE_FACT`；不同为 `REJECTED/BUSINESS_CONFLICT`，开 `BATCH_VERSION_CONFLICT`，新 fetch 即冲突版本存档。原批次字段、明细和分录不改，只追加证据历史；同一差异识别键不重复建 issue。原始字节哈希仅用于存档完整性。未就绪或不完整拉取不参与比较；重复 created 仍只记历史。
 - `payout.failed`／`payout.canceled` 不拉明细：批次不存在时 `PARKED`；`ANNOUNCED`／`HELD` 只记历史、`PROCESSED/APPLIED`，保留 HELD 原因；`CONFIRMED` 同事务转 `PAYOUT_FAILED`，按已核对 net 记 `BATCH_PAYOUT_FAILED`（借 1101／贷 1102），source key 为 `batch:{id}:payout_failed`；重复失败为 `PROCESSED/DUPLICATE_FACT`。`BANKED` 时仅记历史、开 `BATCH_STATE_CONFLICT`，inbox `REJECTED/BUSINESS_CONFLICT`。之后退回行仍须匹配失败批次的金额、币种、状态且未被其他批次使用；样例 H 使用真实失败事件建立前置。
 - `SettlementWorkerTest` 覆盖 AC-5.2、5.3、5.19、4.1、1.4b、5.18，包括规范化去重、冲突重复告警、不完整版本、请款与重核回滚、失败与分录回滚、BANKED 冲突。`SettlementModelProperties` 的独立纯 Java 模型新增请款、变更版本、失败／取消、退回重发、跨批次复用、异常费用和不支持行；从 S0 或 S1 开始随机组合，每步检查账本不变量、INV-9 的 2101／1102、余额、状态、hold reason、历史、明细／posting 数和差异身份。重发动作要求原批次已失败，跨批次复用要求已结算；其余可任意乱序，使用新 event_id 重复事实。种子 `2026102306`，最多 24 步，次数跟随 Maven 的 jqwik 配置（本地 100、CI 1000），动作执行／前置不满足计数和状态分布写入 Surefire 的 jqwik 报告。并发与事务故障仍由受控定向测试覆盖，不把随机模型当作并发证明。
+
+### P3 T02 实现备注：不支持的批次行
+
+- P3 T02 起新开的 `HELD(UNSUPPORTED_LINE)` 差异用 `UNSUPPORTED_BATCH_LINE`，旧行保留原类别，不迁移 P2 的 batch 主体 `UNSUPPORTED_EVENT`。入站 `charge.dispute.created` 等仍开 `UNSUPPORTED_EVENT`。
+- subject 仍为 batch，识别键仍是 `(category, subject_type, subject_id)`；同批次重复明细就绪继续返回 `DUPLICATE_FACT`，不重复开差异，也不记账。原核对顺序与 HELD 恢复规则不变。
+- `actual.line` 保留首次触发隔离的行，`actual.lines` 列出本次完整抓取的全部不支持类型行及触发隔离的行，包含 balance transaction `id`、`type`、带符号整数分 `gross`、`fee`、`net` 等原有行字段；跳过 `payout` 转出行。退款行的支持留给 P3 T10。
 
 ## 5. 入站事件 Inbox（R6）
 
@@ -128,7 +152,7 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 RECEIVED ──处理完成──▶ PROCESSED（result = APPLIED 或 DUPLICATE_FACT）
    │ ▲
    ▼ │ 依赖对象到达
-PARKED（依赖的对象还不存在，例如退款事件先于支付事件到达）
+PARKED（依赖的对象还不存在，例如 payout.paid 先于批次公告到达；退款不走此路径）
 RECEIVED ──事件类型不支持、字段越界、业务冲突、livemode──▶ REJECTED（result 写原因，告警，页面可见）
 RECEIVED ──订阅范围外的类型──▶ IGNORED
 RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，next_attempt_at 退避；超过上限变 DEAD）
@@ -143,8 +167,14 @@ RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，n
 - 抢占、业务、失败记录各使用独立事务。抢占提交后、业务事务开始前，以及业务写入完成后、epoch 写回前各有一个生产空操作测试钩子，用 latch 或异常控制崩溃和接管顺序。
 - P2 T05 在抢占提交后、业务事务开始前增加 payout 明细拉取及 `afterFetch` 测试钩子。HTTP 和 fetch 存档沿用 T04；分页不完整抛出处理失败，进入既有失败事务，不写批次版本或冲突差异。拉取期间租约可被接管，成功与失败仍用原 `lease_epoch` 条件写回；过期 worker 的业务历史、唤醒和分录全部随事务回滚。
 - `PARKED` 事件在它依赖的对象创建时被同一事务唤醒（回到 `RECEIVED`），后台也会定期扫描。
-- P1 处理 `charge.succeeded`；P2 T05 接入 `payout.created`、`payout.reconciliation_completed`、`payout.paid`。`charge.dispute.*` 拒绝为 `UNSUPPORTED_TYPE` 并开差异；其余类型（含 T06 的 payout.failed/canceled 和 P3 的 refund）暂为 `IGNORED`、结果为空。任何类型的 `livemode=true` 优先拒绝为 `LIVEMODE`；具体映射见 stripe-integration 第 2 节。
+- P1 处理 `charge.succeeded`；P2 接入五类 payout 事件；P3 T09 接入 `refund.created`、`refund.updated`、`refund.failed`。退款未知 metadata 为 REJECTED / UNKNOWN_REFUND，不 PARKED；冲突为 REJECTED / BUSINESS_CONFLICT；pending 的状态变化和成功／失败处理均经统一入口。`charge.dispute.*` 拒绝为 UNSUPPORTED_TYPE，其余未订阅类型 IGNORED。任何类型的 livemode=true 优先拒绝；具体准入与订阅映射见 stripe-integration 第 2 节。
 - P1 的“告警”和“开差异”写进 `recon.issue`，`detected_by = INGESTION`，不需要对账运行（data-dictionary 第 4 节）；上述 `DEAD` 不开差异。
+
+### P3 T09 实现备注：退款与 inbox 原子性
+
+退款分流复用既有四事务与 lease_epoch 写回，业务事务内同时提交退款状态／历史／分录／差异、inbox 结果与 InboxStatusHistory。失败或租约过期导致业务回滚，不留下已执行退款或终态 inbox 历史。APPLIED／DUPLICATE_FACT → PROCESSED，CONFLICT → REJECTED(BUSINESS_CONFLICT)，后者的差异已由统一入口写入。
+
+V15 已同步放宽 inbox_event 与 inbox_status_history 的 result CHECK，本任务无需迁移。拒绝和成功的新路径均通过 T01 历史一致性守卫，另外检查最后一条历史的 result 与 inbox 一致。未知退款重投不自动唤醒，空库重放必须先恢复本地受理／命令；详细重放含义见 stripe-integration 的 T09 备注。
 
 ## 6. 出站命令 Outbound command（R5）
 
@@ -162,12 +192,27 @@ RECEIVED ──处理时出现非预期错误──▶ RECEIVED（attempts+1，n
 - 第一次真正发出请求时写入 `first_sent_at`，之后不再改；每次尝试另记一行 `io.outbound_attempt`（时间、请求、结果或错误）。退款“超过 20 小时只有完整查询确认不存在才重发”的规则以 `first_sent_at` 为准（stripe-integration 第 3 节）。
 - 命令本身没有“失败放弃”状态。重试次数超过上限只会告警并停止自动重试，业务对象保持 `UNKNOWN`，等待人工查询或流水证据。
 
+### P3 T07 实现备注：worker 与发送边界
+
+- 抢占使用 ADR-0008 指定的 `FOR UPDATE SKIP LOCKED`。T07 任务 B 写作 `FOR NO KEY UPDATE`，按已确认的“ADR 优先”口径采用前者；锁只持有到抢占短事务提交，不跨 HTTP。
+
+- `outbound.CommandHandler` 按 kind 注册；execute 在事务外执行，applyInTransaction 在 worker 的写回事务中执行。`processAvailable()` 即使被事务调用也先暂挂外层事务；抢占、调用前检查、尝试存档、业务写回各自独立提交。业务写回先取资金锁，最后以 id／lease_epoch／IN_FLIGHT 条件更新命令，0 行抛异常回滚全部业务写入，独立提交的迟到尝试保留。
+- 抢占 PENDING／UNKNOWN 的到期命令或租约严格过期的 IN_FLIGHT；每次抢占递增 epoch。发送前钩子之后再次校验 epoch、状态和租约有效期，旧 worker 在查询结束或暂停后也不能未经校验重发。调用前短事务同时分配 attempts／attempt_no，并首次设置 first_sent_at。编号提前分配防止新旧租约迟到回执撞主键；崩溃可能留下编号空洞。每次网关操作（创建、按编号查询、完整分页查询）完成后单独追加审计行，不把查询与后续重发合并为一条。
+- attempts 统计实际开始的网关操作，查询也计数；达到 max-attempts 后不再开始下一次操作，UNKNOWN 的 next_attempt_at 设 PostgreSQL infinity 并告警，不释放退款资金。进程崩溃后即使最后一次已占用上限，接管者也可完成 UNKNOWN 写回而不再调用网关。默认 20 次；退避以次数计算 5s 倍增至 15min，再加最多 25% 的可注入随机抖动，总延迟仍不超过 cap。租约 60s，每批 10，轮询 1s，配置前缀 ledgerlab.outbound；测试关闭调度直接驱动 worker。
+- 生产钩子为无操作，测试在抢占后、HTTP 前、回执写回前用 latch／异常控制交错。HTTP 异常只存安全错误码 TRANSPORT_ERROR，不把可能包含凭据的异常正文带进日志。网关提供的响应正文与状态保存到 io.outbound_attempt，last_outcome 只保存固定结果码供既有脱敏视图读取。
+- T07 不提供 HTTP 实现；没有 ProcessorRefundGateway bean 时不注册退款处理器，命令保持 PENDING。T08 提供网关后共用同一 SPI；处理器不依赖 ingestion。
+
 ## 7. 对账差异 Reconciliation issue
+
+### P3 T11 实现备注
+
+- 退款 PROCESSOR 检查使用处理方退款号逐笔匹配；相同支付的不同部分退款不是重复行，相同 statement_line_id 在同一有效快照内重复才报 DUPLICATE_STATEMENT_LINE。未知 re_ 的 MISSING_IN_LEDGER 沿用入口的 `(refund, re_…)` 身份；金额差异和本地缺行以 `(refund, rfd_…)` 为 subject。
+- SUCCEEDED 缺行按执行时刻到期，由 PROCESSOR 在同一运行中解释旧 TIMING_DIFFERENCE 并打开 REFUND_NOT_IN_STATEMENT。退款本地等待／未知状态的老化由 AGING 负责；释放等待、成功或失败后解释原老化差异，绝不自动把 UNKNOWN 改成 FAILED。发现、处置、人工关闭及旧报告保留沿用第 7.1 节。
 
 ### P2 T11 实现备注
 
 - 到期缺失由 AGING 产生老化发现，并在同一事务中把同一义务的 OPEN 时间差转为 EXPLAINED，解释写“已升级为 PAYMENT_NOT_SETTLED / DEPOSIT_NOT_RECEIVED”。支付时间差原属 PROCESSOR，批次时间差原属 BANK；跨运行类别的转 EXPLAINED 由 AGING 负责，普通发现消失仍只在原运行类别内解释，INGESTION 差异不自动解释。
-- HELD 历史追加原因和固定明细 fetch 引用，包含 paid、failed 等保持原状态的证据行；按 evidence_as_of 前最后一行恢复状态与原因。PARKED 老化改到 P3，需先补 inbox 只追加状态历史，取代上文 T05 留给 T11 的安排。
+- HELD 历史追加原因和固定明细 fetch 引用，包含 paid、failed 等保持原状态的证据行；按 evidence_as_of 前最后一行恢复状态与原因。P3 T01 已补 inbox 只追加状态历史与 PARKED 老化，取代上文 T05 留给 T11 的安排；历史回填边界见 data-dictionary，时间与发现内容见 contracts 的 P3 T01 实现备注。
 
 | 从 | 到 | 触发 |
 |---|---|---|

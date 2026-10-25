@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { IssueDetail, IssueList, Overview } from "../src/api";
-import { backend } from "./helpers";
+import { backend, control, deliver } from "./helpers";
 
 test("ac_5_15 trace B1 discrepancy and accept with a reason", async ({
   page,
@@ -163,4 +163,66 @@ test("ac_5_15 missing evidence and empty filter are explicit", async ({
   }
   await page.goto("/#/recon?status=RESOLVED");
   await expect(page.getByRole("table")).toContainText("暂无记录");
+});
+
+test("ac_4_10 parked aging appears in overview and discrepancy list", async ({
+  page,
+  request,
+}) => {
+  const received = Number(await (await request.get(`${control}/clock`)).text());
+  const eventId = "evt_e2e_parked_aged";
+  await deliver(
+    request,
+    JSON.stringify({
+      id: eventId,
+      type: "payout.paid",
+      api_version: "2026-09-30.endive",
+      livemode: false,
+      created: received,
+      data: {
+        object: {
+          id: "po_e2e_absent",
+          amount: 9680,
+          currency: "cad",
+          automatic: true,
+          method: "standard",
+          status: "paid",
+          reconciliation_status: "in_progress",
+          arrival_date: received,
+          created: received,
+        },
+      },
+    }),
+  );
+  expect(
+    (await request.post(`${control}/advance-clock`, { data: "3661" })).ok(),
+  ).toBeTruthy();
+  const run = await request.post(`${backend}/api/recon/runs`, {
+    data: {
+      kind: "AGING",
+      cutoffAt: "2026-11-12T05:00:00Z",
+      evidenceAsOf: new Date((received + 3600) * 1000).toISOString(),
+      dryRun: false,
+    },
+  });
+  expect(run.ok(), await run.text()).toBeTruthy();
+  const issues: IssueList = await (
+    await request.get(
+      `${backend}/api/recon/issues?category=EVENT_PARKED_AGED&status=OPEN`,
+    )
+  ).json();
+  expect(issues.issues).toHaveLength(1);
+  expect(issues.issues[0].subjectId).toBe(eventId);
+  await page.goto("/#/");
+  await page
+    .getByRole("link", { name: "事件挂起超时 · 1", exact: true })
+    .click();
+  await expect(page.getByLabel("类别", { exact: true })).toHaveValue(
+    "EVENT_PARKED_AGED",
+  );
+  const table = page.getByRole("table", { name: "差异列表（最近 100 条）" });
+  await expect(table).toContainText(eventId);
+  await expect(table).toContainText("OPEN");
+  await page.getByRole("link", { name: "事件挂起超时", exact: true }).click();
+  await expect(page.locator("dl.summary")).toContainText(eventId);
 });
