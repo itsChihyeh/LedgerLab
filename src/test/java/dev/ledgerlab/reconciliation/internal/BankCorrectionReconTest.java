@@ -125,6 +125,8 @@ class BankCorrectionReconTest {
                 new IssueStore(f.jdbc, f.ids, f.clock, f.manager),
                 f.rechecks,
                 new SettlementCorrections(f.jdbc, f.ledger),
+                new dev.ledgerlab.payouts.PayoutCorrections(
+                        f.jdbc, f.ledger, new dev.ledgerlab.shared.BusinessCalendar(), f.clock),
                 f.clock,
                 f.mapper,
                 f.manager);

@@ -9,9 +9,11 @@ import dev.ledgerlab.ledger.CorrectionReason;
 import dev.ledgerlab.ledger.CorrectionRequest;
 import dev.ledgerlab.ledger.CorrectionType;
 import dev.ledgerlab.ledger.Ledger;
+import dev.ledgerlab.ledger.NegativeBalanceException;
 import dev.ledgerlab.ledger.PostingLine;
 import dev.ledgerlab.ledger.SubjectType;
 import dev.ledgerlab.payments.PaymentCorrections;
+import dev.ledgerlab.payouts.PayoutCorrections;
 import dev.ledgerlab.reconciliation.IssueDisposition;
 import dev.ledgerlab.settlement.BatchRechecks;
 import dev.ledgerlab.settlement.SettlementCorrections;
@@ -35,6 +37,7 @@ public final class JdbcCorrections implements Corrections {
     private final IssueDisposition issues;
     private final BatchRechecks rechecks;
     private final SettlementCorrections settlement;
+    private final PayoutCorrections payouts;
     private final Clock clock;
     private final ObjectMapper mapper;
     private final TransactionTemplate transactions;
@@ -48,10 +51,11 @@ public final class JdbcCorrections implements Corrections {
             IssueDisposition issues,
             BatchRechecks rechecks,
             SettlementCorrections settlement,
+            PayoutCorrections payouts,
             Clock clock,
             ObjectMapper mapper,
             PlatformTransactionManager manager) {
-        this(jdbc, ledger, payments, issues, rechecks, settlement, clock, mapper, manager, () -> {});
+        this(jdbc, ledger, payments, issues, rechecks, settlement, payouts, clock, mapper, manager, () -> {});
     }
 
     /** Test seam after ledger writes, before business state changes; no production failure setting. */
@@ -62,6 +66,7 @@ public final class JdbcCorrections implements Corrections {
             IssueDisposition issues,
             BatchRechecks rechecks,
             SettlementCorrections settlement,
+            PayoutCorrections payouts,
             Clock clock,
             ObjectMapper mapper,
             PlatformTransactionManager manager,
@@ -72,6 +77,7 @@ public final class JdbcCorrections implements Corrections {
         this.issues = issues;
         this.rechecks = rechecks;
         this.settlement = settlement;
+        this.payouts = payouts;
         this.clock = clock;
         this.mapper = mapper;
         this.transactions = new TransactionTemplate(manager);
@@ -80,13 +86,30 @@ public final class JdbcCorrections implements Corrections {
 
     @Override
     public CorrectionResult submit(CorrectionCommand command) {
-        return Objects.requireNonNull(transactions.execute(tx -> {
-            ledger.lockFunds();
-            return switch (command.type()) {
-                case VOID_CAPTURE, RESTATE_CAPTURE_AMOUNT -> correctCapture(command);
-                case APPLY_UNAPPLIED_CASH, RESTORE_FAILED_PAYOUT -> correctBank(command);
-            };
-        }));
+        try {
+            return Objects.requireNonNull(transactions.execute(tx -> {
+                ledger.lockFunds();
+                return switch (command.type()) {
+                    case VOID_CAPTURE, RESTATE_CAPTURE_AMOUNT -> correctCapture(command);
+                    case APPLY_UNAPPLIED_CASH, RESTORE_FAILED_PAYOUT -> correctBank(command);
+                    case CONFIRM_FAILED_PAYOUT_PAID -> correctPayout(command);
+                };
+            }));
+        } catch (NegativeBalanceException error) {
+            if (command.type() == CorrectionType.CONFIRM_FAILED_PAYOUT_PAID && error.account() == Account.BANK_CASH)
+                throw new CorrectionException(409, "CASH_WOULD_GO_NEGATIVE");
+            throw error;
+        } catch (org.springframework.dao.DataIntegrityViolationException error) {
+            if (command.type() == CorrectionType.CONFIRM_FAILED_PAYOUT_PAID) {
+                for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+                    if (cause instanceof java.sql.SQLException sql
+                            && "23514".equals(sql.getSQLState())
+                            && String.valueOf(sql.getMessage()).contains("account_non_negative"))
+                        throw new CorrectionException(409, "CASH_WOULD_GO_NEGATIVE");
+                }
+            }
+            throw error;
+        }
     }
 
     private record Entry(
@@ -300,6 +323,104 @@ public final class JdbcCorrections implements Corrections {
         issueIds.forEach(id -> issues.resolveByCorrection(id, recorded.correctionId(), command.reasonNote()));
         return new CorrectionReader(jdbc, mapper, false).detail(recorded.correctionId());
     }
+
+    private CorrectionResult correctPayout(CorrectionCommand command) {
+        var ids = command.bankTxnIds();
+        if (!CorrectionCommand.text(command.payoutId())
+                || ids == null
+                || ids.size() != 1
+                || (command.reasonCode() != CorrectionReason.PAYOUT_FAILURE_DISPROVED
+                        && command.reasonCode() != CorrectionReason.OTHER)
+                || command.evidence().stream()
+                        .noneMatch(e -> e.type().equals("bank_txn") && e.id().equals(ids.getFirst())))
+            throw new CorrectionException(400, "INVALID_REQUEST");
+        for (var evidence : command.evidence()) checkEvidence(evidence);
+        String payoutId = Objects.requireNonNull(command.payoutId());
+        var payout = jdbc.sql("SELECT status,amount FROM core.payout WHERE id=? FOR UPDATE")
+                .param(payoutId)
+                .query((rs, n) -> new Payout(rs.getString(1), rs.getLong(2)))
+                .optional()
+                .orElseThrow(() -> new CorrectionException(404, "PAYOUT_NOT_FOUND"));
+        if (!payout.status().equals("FAILED")) {
+            var prior =
+                    jdbc.sql("""
+                    SELECT id FROM ledger.correction WHERE subject_type='payout' AND subject_id=?
+                        AND correction_type='CONFIRM_FAILED_PAYOUT_PAID' ORDER BY recorded_at,id LIMIT 1
+                    """).param(payoutId).query(String.class).optional().orElse(null);
+            throw new CorrectionException(409, "PAYOUT_NOT_FAILED", prior);
+        }
+        String bankId = ids.getFirst();
+        var line = jdbc.sql("""
+                SELECT version,status,direction,currency,match_status,reference,amount,booking_date
+                FROM recon.bank_line WHERE bank_txn_id=? ORDER BY version DESC LIMIT 1 FOR UPDATE
+                """)
+                .param(bankId)
+                .query((rs, n) -> new PayoutDebit(
+                        rs.getInt(1),
+                        rs.getString(2).equals("BOOKED")
+                                && rs.getString(3).equals("DEBIT")
+                                && rs.getString(4).equals("CAD")
+                                && rs.getString(5).equals("UNMATCHED_NO_POSTING")
+                                && rs.getString(6).equals(payoutId),
+                        rs.getLong(7),
+                        rs.getObject(8, java.time.LocalDate.class)))
+                .optional()
+                .orElseThrow(() -> new CorrectionException(409, "BANK_LINE_NOT_PAYOUT_DEBIT"));
+        if (!line.eligible()) throw new CorrectionException(409, "BANK_LINE_NOT_PAYOUT_DEBIT");
+        if (line.amount() != payout.amount()) throw new CorrectionException(409, "APPLICATION_AMOUNT_MISMATCH");
+        String entryId = jdbc.sql("""
+                SELECT id FROM ledger.journal_entry WHERE entry_type='PAYOUT_FAILED'
+                    AND source_key=? AND subject_type='payout' AND subject_id=?
+                """)
+                .params("payout:" + payoutId + ":failed", payoutId)
+                .query(String.class)
+                .single();
+        ledger.findCorrectionForEntry(entryId).ifPresent(target -> {
+            throw new CorrectionException(409, "ALREADY_REVERSED", target.correctionId());
+        });
+        var now = clock.instant();
+        var recorded = ledger.recordCorrection(new CorrectionRequest(
+                command.type(),
+                command.reasonCode(),
+                command.reasonNote(),
+                mapper.writeValueAsString(command.evidence()),
+                mapper.writeValueAsString(java.util.Map.of("payoutId", payoutId, "bankTxnId", bankId)),
+                SubjectType.PAYOUT,
+                payoutId,
+                command.requestedBy(),
+                List.of(entryId),
+                List.of(),
+                List.of(
+                        PostingLine.debit(Account.PAYOUT_IN_TRANSIT, payout.amount()),
+                        PostingLine.credit(Account.BANK_CASH, payout.amount())),
+                now));
+        afterReversal.run();
+        payouts.confirmFailedPaid(payoutId, bankId, line.bookingDate(), recorded.correctionId());
+        int changed = jdbc.sql("""
+                UPDATE recon.bank_line SET match_status='PAYOUT_PAID',matched_payout_id=?
+                WHERE bank_txn_id=? AND version=? AND match_status='UNMATCHED_NO_POSTING'
+                """).params(payoutId, bankId, line.version()).update();
+        if (changed != 1) throw new IllegalStateException("Bank line is no longer eligible for payout correction");
+        var issueIds = new java.util.TreeSet<>(
+                jdbc.sql("""
+                SELECT id FROM recon.issue WHERE category IN ('PAYOUT_STATE_CONFLICT','UNMATCHED_BANK_LINE')
+                    AND ((subject_type='payout' AND subject_id=?) OR (subject_type='bank_txn' AND subject_id=?))
+                """).params(payoutId, bankId).query(String.class).list());
+        command.evidence().stream()
+                .filter(e -> e.type().equals("issue"))
+                .map(CorrectionCommand.Evidence::id)
+                .filter(id -> jdbc.sql("SELECT subject_type<>'batch' FROM recon.issue WHERE id=?")
+                        .param(id)
+                        .query(Boolean.class)
+                        .single())
+                .forEach(issueIds::add);
+        issueIds.forEach(id -> issues.resolveByCorrection(id, recorded.correctionId(), command.reasonNote()));
+        return new CorrectionReader(jdbc, mapper, false).detail(recorded.correctionId());
+    }
+
+    private record Payout(String status, long amount) {}
+
+    private record PayoutDebit(int version, boolean eligible, long amount, java.time.LocalDate bookingDate) {}
 
     private void checkEvidence(CorrectionCommand.Evidence evidence) {
         String sql = switch (evidence.type()) {

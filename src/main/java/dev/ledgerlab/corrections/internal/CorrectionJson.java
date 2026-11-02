@@ -21,6 +21,7 @@ final class CorrectionJson {
             "originalEntryId",
             "newAmount",
             "batchId",
+            "payoutId",
             "bankTxnIds",
             "bankTxnId",
             "reasonCode",
@@ -73,7 +74,7 @@ final class CorrectionJson {
                 }
             }
             var type = CorrectionType.valueOf(text(root, "type"));
-            if (type == CorrectionType.RESTORE_FAILED_PAYOUT) {
+            if (type == CorrectionType.RESTORE_FAILED_PAYOUT || type == CorrectionType.CONFIRM_FAILED_PAYOUT_PAID) {
                 if (root.has("bankTxnIds")) throw invalid();
                 banks = List.of(text(root, "bankTxnId"));
             } else if (root.has("bankTxnId")) throw invalid();
@@ -83,6 +84,7 @@ final class CorrectionJson {
                     amount,
                     optional(root, "batchId"),
                     banks,
+                    optional(root, "payoutId"),
                     CorrectionReason.valueOf(text(root, "reasonCode")),
                     text(root, "reasonNote"),
                     evidence,

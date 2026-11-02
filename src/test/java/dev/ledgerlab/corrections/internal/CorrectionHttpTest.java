@@ -72,6 +72,8 @@ class CorrectionHttpTest {
                 new IssueStore(f.jdbc, f.ids, f.clock, f.manager),
                 f.rechecks,
                 new dev.ledgerlab.settlement.SettlementCorrections(f.jdbc, ledger),
+                new dev.ledgerlab.payouts.PayoutCorrections(
+                        f.jdbc, ledger, new dev.ledgerlab.shared.BusinessCalendar(), f.clock),
                 f.clock,
                 f.mapper,
                 f.manager,

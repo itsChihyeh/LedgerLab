@@ -233,7 +233,11 @@ public class JdbcLedger implements Ledger {
         // Validate every target before writing any audit rows; the funds lock serializes other corrections.
         List<CorrectionEntry> reversed = new ArrayList<>();
         for (String id : request.reversedEntryIds()) {
-            reversed.add(requireTarget(id, false));
+            var target = requireTarget(id, false);
+            if (target.type() == EntryType.PAYOUT_FAILED
+                    && request.type() != dev.ledgerlab.ledger.CorrectionType.CONFIRM_FAILED_PAYOUT_PAID)
+                throw new IllegalArgumentException("ENTRY_NOT_CORRECTABLE: " + id);
+            reversed.add(target);
         }
         for (String id : request.appliedEntryIds()) {
             requireTarget(id, true);

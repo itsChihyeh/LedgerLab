@@ -88,6 +88,12 @@ final class CorrectionReader {
                 .param(id)
                 .query((rs, n) -> rs.getString(1))
                 .list();
+        boolean payout = "payout".equals(correction.get("subjectType"));
+        if (payout)
+            bankLines = List.of(
+                    ((tools.jackson.databind.JsonNode) java.util.Objects.requireNonNull(correction.get("params")))
+                            .path("bankTxnId")
+                            .asString());
         return new CorrectionResult(
                 correction,
                 targets,
@@ -98,6 +104,7 @@ final class CorrectionReader {
                                 : List.of(),
                         batches,
                         bankLines,
-                        issues));
+                        issues,
+                        payout ? List.of((String) correction.get("subjectId")) : List.of()));
     }
 }

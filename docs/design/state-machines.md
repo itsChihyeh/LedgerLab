@@ -114,6 +114,10 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 - 查询明确返回 404 NOT_FOUND 时完成 QUERY_PAYOUT（last_outcome=PAYOUT_NOT_FOUND），提现与资金保持不变。资金锁内锁住对应 SUBMIT_PAYOUT；已 DONE 则开 PAYOUT_STATE_CONFLICT，否则仅把 next_attempt_at 改为注入 Clock 的当前时刻，保留 attempts、first_sent_at、状态和租约，交由原提交处理器按既有重试上限及租约规则处理，不重置次数或绕过上限。上述差异或调度写入与查询命令 epoch 校验同事务，迟到回执的写入回滚，独立尝试存档保留。
 - AC-7.23／AC-7.9 真库与本地 HTTP 测试覆盖命令复用与并发入队、完成后再查、状态拒绝和不存在、运营配置 404、只查不发、拒绝释放与退款队列原子性、404 两分支、查询重试、银行出账抢先到达及旧租约 404 写回回滚。
 
+### P5 T07 实现备注：失败提现的冲突纠错
+
+`CONFIRM_FAILED_PAYOUT_PAID` 已实现 ADR-0011 第 8 节的受限 `FAILED → PAID` 边：同一事务内冲销失败分录、重记出账、保存 correction 历史、匹配当前银行行并关闭相关 OPEN 差异。`paid_at` 沿用银行 booking_date 的多伦多日初；纠错分录与历史时间取注入 Clock，保留原失败证据。不唤醒退款队列；随后 CREDIT 证据复用正常 `PAID → RETURNED` 路径。现有纠错详情返回 `params.payoutId/bankTxnId`、`affected.payouts/bankLines`；总览沿用既有欠款字段显示负可用。现金不足返回 409 且全部回滚，银行余额对账汇总留 T08。
+
 ## 4. 结算批次 Settlement batch（S2）
 
 | 从 | 到 | 触发 | 分录 |

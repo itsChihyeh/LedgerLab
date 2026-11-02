@@ -11,10 +11,34 @@ public record CorrectionCommand(
         @Nullable Long newAmount,
         @Nullable String batchId,
         @Nullable List<String> bankTxnIds,
+        @Nullable String payoutId,
         CorrectionReason reasonCode,
         String reasonNote,
         List<Evidence> evidence,
         String requestedBy) {
+    public CorrectionCommand(
+            CorrectionType type,
+            @Nullable String originalEntryId,
+            @Nullable Long newAmount,
+            @Nullable String batchId,
+            @Nullable List<String> bankTxnIds,
+            CorrectionReason reasonCode,
+            String reasonNote,
+            List<Evidence> evidence,
+            String requestedBy) {
+        this(
+                type,
+                originalEntryId,
+                newAmount,
+                batchId,
+                bankTxnIds,
+                null,
+                reasonCode,
+                reasonNote,
+                evidence,
+                requestedBy);
+    }
+
     public CorrectionCommand {
         if (type == null
                 || reasonCode == null
