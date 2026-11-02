@@ -1,0 +1,6 @@
+# Additive P5 smoke configuration; normal Compose and P2-P4 stay unchanged.
+services:
+  app:
+    environment:
+      LEDGERLAB_BANK_PAYMENTS_ENABLED: "true"
+      LEDGERLAB_BANK_PAYMENTS_BASE_URL: http://simulator:8081
