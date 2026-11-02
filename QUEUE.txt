@@ -1,3 +1,14 @@
 # 按顺序处理；每行一个任务文件（tasks/ 下）。Claude 会在审查后往这里追加修复任务。
 # 以 # 开头的行忽略。已完成的任务以 p5 分支上提交信息里的 “Task: <编号>” 判定。
-# 设计定稿后 Claude 会在下面追加 T01…；在那之前队列为空，执行者按 RUNNER“等待”每 10 分钟查一次。
+# 设计正本：p5 分支 ADR-0006 补充（2026-11-02）与 ADR-0011 第 8 节。
+T01-sim-bank-payments.md
+T02-payout-schema.md
+T03-payout-acceptance-api.md
+T04-payout-outbound.md
+T05-bank-payout-evidence.md
+T06-payout-query-api.md
+T07-correction-failed-payout-paid.md
+T08-payout-recon-aging.md
+T09-payout-model-tests-samples.md
+T10-payout-pages.md
+T11-smoke-p5.md
