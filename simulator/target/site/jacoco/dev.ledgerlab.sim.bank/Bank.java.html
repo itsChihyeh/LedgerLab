@@ -1,0 +1,447 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Bank.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">ledgerlab-simulator</a> &gt; <a href="index.source.html" class="el_package">dev.ledgerlab.sim.bank</a> &gt; <span class="el_source">Bank.java</span></div><h1>Bank.java</h1><pre class="source lang-java linenums">package dev.ledgerlab.sim.bank;
+
+import java.sql.Timestamp;
+import java.time.Clock;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.List;
+import java.util.Objects;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.server.ResponseStatusException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+
+/** Owns bank execution and statements. All reads use only bank-owned evidence. */
+@Service
+public final class Bank implements IncomingTransfers {
+    private static final String ACCOUNT = &quot;SIM-CAD-001&quot;;
+    private static final long LINE_MAX = 99999999;
+<span class="fc" id="L24">    private static final ZoneId TORONTO = ZoneId.of(&quot;America/Toronto&quot;);</span>
+<span class="fc" id="L25">    private static final List&lt;String&gt; INCOMING_FAULTS = List.of(</span>
+            &quot;NONE&quot;, &quot;SHORT&quot;, &quot;DUPLICATE&quot;, &quot;SPLIT&quot;, &quot;DELAY_DAYS&quot;, &quot;PENDING_FIRST&quot;, &quot;FOREIGN_CURRENCY&quot;, &quot;UNKNOWN_CREDIT&quot;);
+    private final JdbcClient jdbc;
+    private final TransactionTemplate transaction;
+    private final Clock clock;
+    private final OutgoingPayments outgoing;
+<span class="fc" id="L31">    private final BankCalendar calendar = new BankCalendar();</span>
+<span class="fc" id="L32">    private final JsonMapper json = JsonMapper.builder().build();</span>
+
+<span class="fc" id="L34">    public Bank(JdbcClient jdbc, PlatformTransactionManager manager, @Qualifier(&quot;simulationClock&quot;) Clock clock) {</span>
+<span class="fc" id="L35">        this.jdbc = jdbc;</span>
+<span class="fc" id="L36">        this.transaction = new TransactionTemplate(manager);</span>
+<span class="fc" id="L37">        this.clock = clock;</span>
+<span class="fc" id="L38">        this.outgoing = new OutgoingPayments(jdbc, clock);</span>
+<span class="fc" id="L39">    }</span>
+
+    private LocalDate today() {
+<span class="fc" id="L42">        return clock.instant().atZone(TORONTO).toLocalDate();</span>
+    }
+
+    private Timestamp now() {
+<span class="fc" id="L46">        return Timestamp.from(clock.instant());</span>
+    }
+
+    private void lock() {
+<span class="fc" id="L50">        jdbc.sql(&quot;insert into sim_bank.account values (?,'CAD',0,?) on conflict do nothing&quot;)</span>
+<span class="fc" id="L51">                .param(ACCOUNT)</span>
+<span class="fc" id="L52">                .param(now())</span>
+<span class="fc" id="L53">                .update();</span>
+<span class="fc" id="L54">        jdbc.sql(&quot;select account_ref from sim_bank.account where account_ref=? for update&quot;)</span>
+<span class="fc" id="L55">                .param(ACCOUNT)</span>
+<span class="fc" id="L56">                .query(String.class)</span>
+<span class="fc" id="L57">                .single();</span>
+<span class="fc" id="L58">    }</span>
+
+    public JsonNode plan(JsonNode request) {
+<span class="fc bfc" id="L61" title="All 2 branches covered.">        if (!request.isObject()</span>
+<span class="fc" id="L62">                || !List.of(&quot;payout_ref&quot;, &quot;target_ref&quot;, &quot;scenario&quot;, &quot;fault&quot;, &quot;parameter&quot;, &quot;memo&quot;)</span>
+<span class="fc bfc" id="L63" title="All 2 branches covered.">                        .containsAll(request.propertyNames())) throw invalid(&quot;plan fields&quot;);</span>
+<span class="pc bpc" id="L64" title="1 of 4 branches missed.">        if (request.has(&quot;payout_ref&quot;) &amp;&amp; request.has(&quot;target_ref&quot;)) throw invalid(&quot;duplicate target&quot;);</span>
+<span class="fc" id="L65">        String target = text(request, &quot;target_ref&quot;, text(request, &quot;payout_ref&quot;, &quot;*&quot;));</span>
+<span class="fc" id="L66">        String scenario = text(request, &quot;scenario&quot;, &quot;manual&quot;);</span>
+<span class="fc" id="L67">        String fault = text(request, &quot;fault&quot;, &quot;NONE&quot;);</span>
+<span class="fc" id="L68">        String memo = text(request, &quot;memo&quot;, &quot;Simulated bank transfer&quot;);</span>
+<span class="fc bfc" id="L69" title="All 6 branches covered.">        if (!(target.equals(&quot;*&quot;) || target.startsWith(&quot;po_&quot;) || target.startsWith(&quot;mpo_&quot;))</span>
+<span class="fc bfc" id="L70" title="All 2 branches covered.">                || scenario.isBlank()</span>
+<span class="fc bfc" id="L71" title="All 4 branches covered.">                || !(INCOMING_FAULTS.contains(fault) || OutgoingPayments.FAULTS.contains(fault))) throw invalid(&quot;plan&quot;);</span>
+<span class="fc" id="L72">        JsonNode parameter = request.path(&quot;parameter&quot;);</span>
+<span class="fc bfc" id="L73" title="All 6 branches covered.">        if (!parameter.isMissingNode() &amp;&amp; (!parameter.isIntegralNumber() || !parameter.canConvertToLong()))</span>
+<span class="fc" id="L74">            throw invalid(&quot;parameter must be an integer&quot;);</span>
+<span class="pc bpc" id="L75" title="1 of 4 branches missed.">        long value = parameter.isMissingNode() ? (fault.equals(&quot;UNKNOWN_CREDIT&quot;) ? 100 : 0) : parameter.asLong();</span>
+<span class="pc bpc" id="L76" title="1 of 4 branches missed.">        if (value &lt; 0</span>
+                || value &gt; LINE_MAX
+<span class="fc bfc" id="L78" title="All 6 branches covered.">                || ((fault.equals(&quot;SHORT&quot;) || fault.equals(&quot;UNKNOWN_CREDIT&quot;)) &amp;&amp; value == 0)</span>
+<span class="pc bpc" id="L79" title="1 of 6 branches missed.">                || (List.of(&quot;DELAY_DAYS&quot;, &quot;RETURN_AFTER_DAYS&quot;).contains(fault) &amp;&amp; (value &lt; 1 || value &gt; 730))</span>
+<span class="pc bpc" id="L80" title="1 of 4 branches missed.">                || (fault.equals(&quot;UNAVAILABLE&quot;) &amp;&amp; value &lt; 1)</span>
+<span class="fc" id="L81">                || (!List.of(&quot;SHORT&quot;, &quot;UNKNOWN_CREDIT&quot;, &quot;DELAY_DAYS&quot;, &quot;RETURN_AFTER_DAYS&quot;, &quot;UNAVAILABLE&quot;)</span>
+<span class="fc bfc" id="L82" title="All 4 branches covered.">                                .contains(fault)</span>
+<span class="fc" id="L83">                        &amp;&amp; value != 0)) throw invalid(&quot;parameter range&quot;);</span>
+<span class="fc" id="L84">        var normalized = json.createObjectNode()</span>
+<span class="fc" id="L85">                .put(&quot;payout_ref&quot;, target)</span>
+<span class="fc" id="L86">                .put(&quot;scenario&quot;, scenario)</span>
+<span class="fc" id="L87">                .put(&quot;fault&quot;, fault)</span>
+<span class="fc" id="L88">                .put(&quot;parameter&quot;, value)</span>
+<span class="fc" id="L89">                .put(&quot;memo&quot;, memo);</span>
+<span class="fc" id="L90">        transaction.executeWithoutResult(status -&gt; {</span>
+<span class="fc" id="L91">            lock();</span>
+<span class="fc" id="L92">            jdbc.sql(&quot;&quot;&quot;</span>
+                    insert into sim_bank.fault_plan values (?,?,?,?,?,?)
+                    on conflict (target_ref) do update set scenario=excluded.scenario, fault=excluded.fault,
+                        parameter=excluded.parameter, memo=excluded.memo, recorded_at=excluded.recorded_at
+                    &quot;&quot;&quot;)
+<span class="fc" id="L97">                    .param(target)</span>
+<span class="fc" id="L98">                    .param(scenario)</span>
+<span class="fc" id="L99">                    .param(fault)</span>
+<span class="fc" id="L100">                    .param(value)</span>
+<span class="fc" id="L101">                    .param(memo)</span>
+<span class="fc" id="L102">                    .param(now())</span>
+<span class="fc" id="L103">                    .update();</span>
+<span class="fc" id="L104">        });</span>
+<span class="fc" id="L105">        return normalized;</span>
+    }
+
+    @Override
+    public void receive(String payoutRef, long amount) {
+<span class="fc bfc" id="L110" title="All 6 branches covered.">        if (!payoutRef.startsWith(&quot;po_&quot;) || amount &lt;= 0 || amount &gt;= 9007199254740992L)</span>
+<span class="fc" id="L111">            throw invalid(&quot;incoming transfer&quot;);</span>
+<span class="fc" id="L112">        transaction.executeWithoutResult(status -&gt; {</span>
+<span class="fc" id="L113">            lock();</span>
+<span class="fc" id="L114">            var existing = jdbc.sql(&quot;select claimed_amount from sim_bank.incoming_transfer where payout_ref=?&quot;)</span>
+<span class="fc" id="L115">                    .param(payoutRef)</span>
+<span class="fc" id="L116">                    .query(Long.class)</span>
+<span class="fc" id="L117">                    .optional();</span>
+<span class="fc bfc" id="L118" title="All 2 branches covered.">            if (existing.isPresent()) {</span>
+<span class="fc bfc" id="L119" title="All 2 branches covered.">                if (existing.get() != amount)</span>
+<span class="fc" id="L120">                    throw new ResponseStatusException(HttpStatus.CONFLICT, &quot;Transfer changed&quot;);</span>
+<span class="fc" id="L121">                return;</span>
+            }
+<span class="fc" id="L123">            JsonNode plan = jdbc.sql(&quot;&quot;&quot;</span>
+                    select scenario, fault, parameter, memo from sim_bank.fault_plan
+                    where target_ref in (?, '*') order by (target_ref = ?) desc limit 1
+                    &quot;&quot;&quot;)
+<span class="fc" id="L127">                    .param(payoutRef)</span>
+<span class="fc" id="L128">                    .param(payoutRef)</span>
+<span class="fc" id="L129">                    .query((row, index) -&gt; json.createObjectNode()</span>
+<span class="fc" id="L130">                            .put(&quot;scenario&quot;, row.getString(1))</span>
+<span class="fc" id="L131">                            .put(&quot;fault&quot;, row.getString(2))</span>
+<span class="fc" id="L132">                            .put(&quot;parameter&quot;, row.getLong(3))</span>
+<span class="fc" id="L133">                            .put(&quot;memo&quot;, row.getString(4)))</span>
+<span class="fc" id="L134">                    .optional()</span>
+<span class="fc" id="L135">                    .orElseGet(() -&gt; json.createObjectNode()</span>
+<span class="fc" id="L136">                            .put(&quot;scenario&quot;, &quot;default&quot;)</span>
+<span class="fc" id="L137">                            .put(&quot;fault&quot;, &quot;NONE&quot;)</span>
+<span class="fc" id="L138">                            .put(&quot;parameter&quot;, 0)</span>
+<span class="fc" id="L139">                            .put(&quot;memo&quot;, &quot;Simulated bank transfer&quot;));</span>
+<span class="fc bfc" id="L140" title="All 2 branches covered.">            if (!INCOMING_FAULTS.contains(plan.path(&quot;fault&quot;).asText()))</span>
+<span class="fc" id="L141">                ((tools.jackson.databind.node.ObjectNode) plan)</span>
+<span class="fc" id="L142">                        .put(&quot;fault&quot;, &quot;NONE&quot;)</span>
+<span class="fc" id="L143">                        .put(&quot;parameter&quot;, 0);</span>
+<span class="fc" id="L144">            String fault = plan.path(&quot;fault&quot;).asText();</span>
+<span class="fc" id="L145">            long parameter = plan.path(&quot;parameter&quot;).asLong();</span>
+<span class="fc bfc" id="L146" title="All 8 branches covered.">            if ((fault.equals(&quot;SHORT&quot;) &amp;&amp; parameter &gt;= amount) || (fault.equals(&quot;SPLIT&quot;) &amp;&amp; amount &lt; 2))</span>
+<span class="fc" id="L147">                throw invalid(&quot;fault would produce a zero or negative bank line&quot;);</span>
+<span class="fc" id="L148">            LocalDate due =</span>
+<span class="fc bfc" id="L149" title="All 2 branches covered.">                    calendar.addBusinessDays(today(), Math.addExact(1, fault.equals(&quot;DELAY_DAYS&quot;) ? parameter : 0));</span>
+<span class="fc bfc" id="L150" title="All 2 branches covered.">            if (fault.equals(&quot;PENDING_FIRST&quot;)) BankCalendar.check(due.plusDays(1));</span>
+<span class="fc" id="L151">            jdbc.sql(&quot;insert into sim_bank.incoming_transfer values (?,?,?,?::jsonb,?,false,?)&quot;)</span>
+<span class="fc" id="L152">                    .param(payoutRef)</span>
+<span class="fc" id="L153">                    .param(ACCOUNT)</span>
+<span class="fc" id="L154">                    .param(amount)</span>
+<span class="fc" id="L155">                    .param(plan.toString())</span>
+<span class="fc" id="L156">                    .param(due)</span>
+<span class="fc" id="L157">                    .param(now())</span>
+<span class="fc" id="L158">                    .update();</span>
+<span class="fc bfc" id="L159" title="All 2 branches covered.">            if (!fault.equals(&quot;NONE&quot;)) truth(plan.path(&quot;scenario&quot;).asText(), payoutRef, fault, category(fault));</span>
+<span class="fc" id="L160">        });</span>
+<span class="fc" id="L161">    }</span>
+
+    private static String category(String fault) {
+<span class="fc bfc" id="L164" title="All 3 branches covered.">        return switch (fault) {</span>
+<span class="fc" id="L165">            case &quot;SHORT&quot;, &quot;SPLIT&quot; -&gt; &quot;DEPOSIT_AMOUNT_MISMATCH&quot;;</span>
+<span class="fc" id="L166">            case &quot;DELAY_DAYS&quot;, &quot;PENDING_FIRST&quot; -&gt; &quot;TIMING_DIFFERENCE&quot;;</span>
+<span class="fc" id="L167">            default -&gt; &quot;UNMATCHED_BANK_LINE&quot;;</span>
+        };
+    }
+
+    private void truth(String scenario, String object, String fault, String category) {
+<span class="fc" id="L172">        jdbc.sql(</span>
+                        &quot;insert into sim_truth.injected_fault (scenario,object_ref,fault,expected_category,recorded_at) values (?,?,?,?,?)&quot;)
+<span class="fc" id="L174">                .param(scenario)</span>
+<span class="fc" id="L175">                .param(object)</span>
+<span class="fc" id="L176">                .param(fault)</span>
+<span class="fc" id="L177">                .param(category)</span>
+<span class="fc" id="L178">                .param(now())</span>
+<span class="fc" id="L179">                .update();</span>
+<span class="fc" id="L180">    }</span>
+
+    /** Also called after clock advance; due work is persisted and survives a restart. */
+    public void advance() {
+<span class="fc" id="L184">        transaction.executeWithoutResult(status -&gt; {</span>
+<span class="fc" id="L185">            lock();</span>
+<span class="fc" id="L186">            executeDue();</span>
+<span class="fc" id="L187">        });</span>
+<span class="fc" id="L188">    }</span>
+
+    public OutgoingPayments.Result submitPayment(JsonNode request) {
+<span class="fc" id="L191">        return Objects.requireNonNull(transaction.execute(status -&gt; {</span>
+<span class="fc" id="L192">            lock();</span>
+<span class="fc" id="L193">            return outgoing.submit(request);</span>
+        }));
+    }
+
+    public OutgoingPayments.Result payment(String requestId) {
+<span class="fc" id="L198">        return Objects.requireNonNull(transaction.execute(status -&gt; {</span>
+<span class="fc" id="L199">            lock();</span>
+<span class="fc" id="L200">            return outgoing.get(requestId);</span>
+        }));
+    }
+
+    public OutgoingPayments.Result payments() {
+<span class="fc" id="L205">        return Objects.requireNonNull(transaction.execute(status -&gt; {</span>
+<span class="fc" id="L206">            lock();</span>
+<span class="fc" id="L207">            return outgoing.list();</span>
+        }));
+    }
+
+    private void executeDue() {
+<span class="fc" id="L212">        var due = jdbc.sql(</span>
+                        &quot;select payout_ref,claimed_amount,plan::text,due_date from sim_bank.incoming_transfer where not executed and due_date&lt;=? order by due_date,payout_ref&quot;)
+<span class="fc" id="L214">                .param(today())</span>
+<span class="fc" id="L215">                .query((row, index) -&gt; new Transfer(</span>
+<span class="fc" id="L216">                        row.getString(1),</span>
+<span class="fc" id="L217">                        row.getLong(2),</span>
+<span class="fc" id="L218">                        json.readTree(row.getString(3)),</span>
+<span class="fc" id="L219">                        row.getObject(4, LocalDate.class)))</span>
+<span class="fc" id="L220">                .list();</span>
+<span class="fc bfc" id="L221" title="All 2 branches covered.">        for (Transfer transfer : due) {</span>
+<span class="fc" id="L222">            execute(transfer);</span>
+<span class="fc" id="L223">            jdbc.sql(&quot;update sim_bank.incoming_transfer set executed=true where payout_ref=?&quot;)</span>
+<span class="fc" id="L224">                    .param(transfer.id())</span>
+<span class="fc" id="L225">                    .update();</span>
+<span class="fc" id="L226">        }</span>
+<span class="fc" id="L227">        jdbc.sql(&quot;update sim_bank.txn set status='BOOKED' where status='PENDING' and booking_date&lt;=?&quot;)</span>
+<span class="fc" id="L228">                .param(today())</span>
+<span class="fc" id="L229">                .update();</span>
+<span class="fc" id="L230">        outgoing.executeDue(today());</span>
+<span class="fc" id="L231">        long balance = 0;</span>
+<span class="fc bfc" id="L232" title="All 2 branches covered.">        for (Line line : rows()) {</span>
+<span class="fc bfc" id="L233" title="All 2 branches covered.">            if (line.status().equals(&quot;BOOKED&quot;))</span>
+<span class="fc bfc" id="L234" title="All 2 branches covered.">                balance = line.direction().equals(&quot;CREDIT&quot;)</span>
+<span class="fc" id="L235">                        ? Math.addExact(balance, line.amount())</span>
+<span class="fc" id="L236">                        : Math.subtractExact(balance, line.amount());</span>
+<span class="fc" id="L237">        }</span>
+<span class="fc" id="L238">        jdbc.sql(&quot;update sim_bank.account set balance=? where account_ref=?&quot;)</span>
+<span class="fc" id="L239">                .param(balance)</span>
+<span class="fc" id="L240">                .param(ACCOUNT)</span>
+<span class="fc" id="L241">                .update();</span>
+<span class="fc" id="L242">    }</span>
+
+    private void execute(Transfer transfer) {
+<span class="fc" id="L245">        String fault = transfer.plan().path(&quot;fault&quot;).asText();</span>
+<span class="fc" id="L246">        long parameter = transfer.plan().path(&quot;parameter&quot;).asLong();</span>
+<span class="fc bfc" id="L247" title="All 2 branches covered.">        long amount = fault.equals(&quot;SHORT&quot;) ? Math.subtractExact(transfer.amount(), parameter) : transfer.amount();</span>
+        int next;
+<span class="fc bfc" id="L249" title="All 2 branches covered.">        if (fault.equals(&quot;SPLIT&quot;)) {</span>
+<span class="fc" id="L250">            next = add(transfer, amount / 2, transfer.id(), 1);</span>
+<span class="fc" id="L251">            next = add(transfer, Math.subtractExact(amount, amount / 2), transfer.id(), next);</span>
+<span class="fc" id="L252">        } else next = add(transfer, amount, transfer.id(), 1);</span>
+<span class="fc bfc" id="L253" title="All 2 branches covered.">        if (fault.equals(&quot;DUPLICATE&quot;)) add(transfer, amount, transfer.id(), next);</span>
+<span class="fc bfc" id="L254" title="All 2 branches covered.">        if (fault.equals(&quot;UNKNOWN_CREDIT&quot;)) add(transfer, parameter, &quot;unknown_&quot; + transfer.id(), next);</span>
+<span class="fc" id="L255">    }</span>
+
+    private int add(Transfer transfer, long amount, String reference, int sequence) {
+<span class="fc" id="L258">        String fault = transfer.plan().path(&quot;fault&quot;).asText();</span>
+<span class="fc" id="L259">        boolean pending = fault.equals(&quot;PENDING_FIRST&quot;);</span>
+<span class="fc bfc" id="L260" title="All 2 branches covered.">        LocalDate booked = pending ? transfer.due().plusDays(1) : transfer.due();</span>
+<span class="fc bfc" id="L261" title="All 2 branches covered.">        while (amount &gt; 0) {</span>
+<span class="fc" id="L262">            long part = Math.min(amount, LINE_MAX);</span>
+<span class="fc" id="L263">            jdbc.sql(&quot;&quot;&quot;</span>
+                    insert into sim_bank.txn (bank_txn_id,account_ref,payout_ref,direction,amount,currency,status,
+                        reference,booking_date,value_date,visible_date,memo,recorded_at)
+                    values (?,?,?,'CREDIT',?,?,?,?,?,?,?,?,?)
+                    &quot;&quot;&quot;)
+<span class="fc" id="L268">                    .param(&quot;bt_&quot; + transfer.id() + &quot;_&quot; + sequence)</span>
+<span class="fc" id="L269">                    .param(ACCOUNT)</span>
+<span class="fc" id="L270">                    .param(transfer.id())</span>
+<span class="fc" id="L271">                    .param(part)</span>
+<span class="fc bfc" id="L272" title="All 2 branches covered.">                    .param(fault.equals(&quot;FOREIGN_CURRENCY&quot;) ? &quot;USD&quot; : &quot;CAD&quot;)</span>
+<span class="fc bfc" id="L273" title="All 2 branches covered.">                    .param(pending ? &quot;PENDING&quot; : &quot;BOOKED&quot;)</span>
+<span class="fc" id="L274">                    .param(reference)</span>
+<span class="fc" id="L275">                    .param(booked)</span>
+<span class="fc" id="L276">                    .param(booked)</span>
+<span class="fc" id="L277">                    .param(transfer.due())</span>
+<span class="fc" id="L278">                    .param(transfer.plan().path(&quot;memo&quot;).asText())</span>
+<span class="fc" id="L279">                    .param(now())</span>
+<span class="fc" id="L280">                    .update();</span>
+<span class="fc" id="L281">            amount = Math.subtractExact(amount, part);</span>
+<span class="fc" id="L282">            sequence = Math.incrementExact(sequence);</span>
+<span class="fc" id="L283">        }</span>
+<span class="fc" id="L284">        return sequence;</span>
+    }
+
+    private List&lt;Line&gt; rows() {
+<span class="fc" id="L288">        return jdbc.sql(&quot;select * from sim_bank.txn where account_ref=? order by booking_date,bank_txn_id&quot;)</span>
+<span class="fc" id="L289">                .param(ACCOUNT)</span>
+<span class="fc" id="L290">                .query((row, index) -&gt; new Line(</span>
+<span class="fc" id="L291">                        row.getString(&quot;bank_txn_id&quot;),</span>
+<span class="fc" id="L292">                        row.getString(&quot;direction&quot;),</span>
+<span class="fc" id="L293">                        row.getLong(&quot;amount&quot;),</span>
+<span class="fc" id="L294">                        row.getString(&quot;currency&quot;),</span>
+<span class="fc" id="L295">                        row.getString(&quot;status&quot;),</span>
+<span class="fc" id="L296">                        row.getString(&quot;reference&quot;),</span>
+<span class="fc" id="L297">                        row.getObject(&quot;booking_date&quot;, LocalDate.class),</span>
+<span class="fc" id="L298">                        row.getObject(&quot;value_date&quot;, LocalDate.class),</span>
+<span class="fc" id="L299">                        row.getObject(&quot;visible_date&quot;, LocalDate.class),</span>
+<span class="fc" id="L300">                        row.getString(&quot;memo&quot;)))</span>
+<span class="fc" id="L301">                .list();</span>
+    }
+
+    public List&lt;Line&gt; transactions() {
+<span class="fc" id="L305">        return Objects.requireNonNull(transaction.execute(status -&gt; {</span>
+<span class="fc" id="L306">            lock();</span>
+<span class="fc" id="L307">            executeDue();</span>
+<span class="fc" id="L308">            return rows();</span>
+        }));
+    }
+
+    public String statement(LocalDate date, String corrupt) {
+<span class="fc" id="L313">        BankCalendar.check(date);</span>
+<span class="fc bfc" id="L314" title="All 2 branches covered.">        if (date.isAfter(today())) throw invalid(&quot;statement date is in the future&quot;);</span>
+<span class="fc bfc" id="L315" title="All 2 branches covered.">        if (!List.of(&quot;&quot;, &quot;trailer_count&quot;, &quot;trailer_sum&quot;, &quot;balance&quot;).contains(corrupt)) throw invalid(&quot;corrupt&quot;);</span>
+<span class="fc" id="L316">        return Objects.requireNonNull(transaction.execute(status -&gt; {</span>
+<span class="fc" id="L317">            lock();</span>
+<span class="fc" id="L318">            executeDue();</span>
+<span class="fc" id="L319">            var totals = totals(date, rows());</span>
+<span class="fc" id="L320">            String body = totals.details() + totals.trailer(&quot;&quot;);</span>
+<span class="fc" id="L321">            var prior = jdbc.sql(</span>
+                            &quot;select version,body,content from sim_bank.statement where account_ref=? and statement_date=? order by version desc limit 1&quot;)
+<span class="fc" id="L323">                    .param(ACCOUNT)</span>
+<span class="fc" id="L324">                    .param(date)</span>
+<span class="fc" id="L325">                    .query((row, index) -&gt; new Statement(row.getInt(1), row.getString(2), row.getString(3)))</span>
+<span class="fc" id="L326">                    .optional();</span>
+<span class="fc" id="L327">            int version = prior.map(Statement::version).orElse(0);</span>
+            String clean;
+<span class="fc bfc" id="L329" title="All 4 branches covered.">            if (prior.isPresent() &amp;&amp; prior.get().body().equals(body))</span>
+<span class="fc" id="L330">                clean = prior.get().content();</span>
+            else {
+<span class="fc" id="L332">                version = Math.incrementExact(version);</span>
+<span class="fc" id="L333">                clean = header(date, version) + body;</span>
+<span class="fc" id="L334">                jdbc.sql(&quot;insert into sim_bank.statement values (?,?,?,?,?,?)&quot;)</span>
+<span class="fc" id="L335">                        .param(ACCOUNT)</span>
+<span class="fc" id="L336">                        .param(date)</span>
+<span class="fc" id="L337">                        .param(version)</span>
+<span class="fc" id="L338">                        .param(clean)</span>
+<span class="fc" id="L339">                        .param(body)</span>
+<span class="fc" id="L340">                        .param(now())</span>
+<span class="fc" id="L341">                        .update();</span>
+            }
+<span class="fc bfc" id="L343" title="All 2 branches covered.">            if (corrupt.isEmpty()) return clean;</span>
+<span class="fc" id="L344">            truth(</span>
+                    &quot;statement-corruption&quot;,
+                    ACCOUNT + &quot;:&quot; + date + &quot;:&quot; + version,
+                    corrupt,
+<span class="fc bfc" id="L348" title="All 2 branches covered.">                    corrupt.equals(&quot;balance&quot;) ? &quot;BANK_BALANCE_MISMATCH&quot; : &quot;FILE_INCOMPLETE&quot;);</span>
+<span class="fc" id="L349">            return header(date, version) + totals.details() + totals.trailer(corrupt);</span>
+        }));
+    }
+
+    private static String header(LocalDate date, int version) {
+<span class="fc" id="L354">        return &quot;H,BANK_STATEMENT,&quot; + ACCOUNT + &quot;,&quot; + date + &quot;,&quot; + date + &quot;,&quot; + version + &quot;,CAD\r\n&quot;;</span>
+    }
+
+    private static Totals totals(LocalDate date, List&lt;Line&gt; lines) {
+<span class="fc" id="L358">        long opening = 0;</span>
+<span class="fc" id="L359">        long credit = 0;</span>
+<span class="fc" id="L360">        long debit = 0;</span>
+<span class="fc" id="L361">        long count = 0;</span>
+<span class="fc" id="L362">        StringBuilder details = new StringBuilder();</span>
+<span class="fc bfc" id="L363" title="All 2 branches covered.">        for (Line line : lines) {</span>
+<span class="fc bfc" id="L364" title="All 4 branches covered.">            if (line.status().equals(&quot;BOOKED&quot;) &amp;&amp; line.booking_date().isBefore(date)) {</span>
+<span class="fc bfc" id="L365" title="All 2 branches covered.">                opening = line.direction().equals(&quot;CREDIT&quot;)</span>
+<span class="fc" id="L366">                        ? Math.addExact(opening, line.amount())</span>
+<span class="fc" id="L367">                        : Math.subtractExact(opening, line.amount());</span>
+            }
+<span class="fc bfc" id="L369" title="All 4 branches covered.">            if (!line.visible_date().equals(date) &amp;&amp; !line.booking_date().equals(date)) continue;</span>
+<span class="fc bfc" id="L370" title="All 2 branches covered.">            String status = date.isBefore(line.booking_date()) ? &quot;PENDING&quot; : line.status();</span>
+<span class="fc" id="L371">            count = Math.incrementExact(count);</span>
+<span class="fc" id="L372">            details.append(&quot;D,&quot;)</span>
+<span class="fc" id="L373">                    .append(csv(line.bank_txn_id()))</span>
+<span class="fc" id="L374">                    .append(',')</span>
+<span class="fc" id="L375">                    .append(line.direction())</span>
+<span class="fc" id="L376">                    .append(',')</span>
+<span class="fc" id="L377">                    .append(line.amount())</span>
+<span class="fc" id="L378">                    .append(',')</span>
+<span class="fc" id="L379">                    .append(line.currency())</span>
+<span class="fc" id="L380">                    .append(',')</span>
+<span class="fc" id="L381">                    .append(status)</span>
+<span class="fc" id="L382">                    .append(',')</span>
+<span class="fc" id="L383">                    .append(csv(line.reference()))</span>
+<span class="fc" id="L384">                    .append(',')</span>
+<span class="fc" id="L385">                    .append(line.booking_date())</span>
+<span class="fc" id="L386">                    .append(',')</span>
+<span class="fc" id="L387">                    .append(line.value_date())</span>
+<span class="fc" id="L388">                    .append(',')</span>
+<span class="fc" id="L389">                    .append(csv(line.memo()))</span>
+<span class="fc" id="L390">                    .append(&quot;\r\n&quot;);</span>
+<span class="fc bfc" id="L391" title="All 2 branches covered.">            if (status.equals(&quot;BOOKED&quot;)) {</span>
+<span class="fc bfc" id="L392" title="All 2 branches covered.">                if (line.direction().equals(&quot;CREDIT&quot;)) credit = Math.addExact(credit, line.amount());</span>
+<span class="fc" id="L393">                else debit = Math.addExact(debit, line.amount());</span>
+            }
+<span class="fc" id="L395">        }</span>
+<span class="fc" id="L396">        return new Totals(</span>
+<span class="fc" id="L397">                details.toString(),</span>
+                count,
+                credit,
+                debit,
+                opening,
+<span class="fc" id="L402">                Math.subtractExact(Math.addExact(opening, credit), debit));</span>
+    }
+
+    private static String csv(String value) {
+<span class="pc bpc" id="L406" title="3 of 8 branches missed.">        return value.contains(&quot;,&quot;) || value.contains(&quot;\&quot;&quot;) || value.contains(&quot;\r&quot;) || value.contains(&quot;\n&quot;)</span>
+<span class="fc" id="L407">                ? &quot;\&quot;&quot; + value.replace(&quot;\&quot;&quot;, &quot;\&quot;\&quot;&quot;) + &quot;\&quot;&quot;</span>
+<span class="fc" id="L408">                : value;</span>
+    }
+
+    private static String text(JsonNode node, String name, String fallback) {
+<span class="fc" id="L412">        JsonNode value = node.path(name);</span>
+<span class="fc bfc" id="L413" title="All 2 branches covered.">        if (value.isMissingNode()) return fallback;</span>
+<span class="fc bfc" id="L414" title="All 2 branches covered.">        if (!value.isString()) throw invalid(name);</span>
+<span class="fc" id="L415">        return value.asText();</span>
+    }
+
+    private static ResponseStatusException invalid(String reason) {
+<span class="fc" id="L419">        return new ResponseStatusException(HttpStatus.BAD_REQUEST, &quot;Invalid bank &quot; + reason);</span>
+    }
+
+<span class="fc" id="L422">    private record Transfer(String id, long amount, JsonNode plan, LocalDate due) {}</span>
+
+<span class="fc" id="L424">    private record Statement(int version, String body, String content) {}</span>
+
+<span class="fc" id="L426">    public record Line(</span>
+            String bank_txn_id,
+            String direction,
+            long amount,
+            String currency,
+            String status,
+            String reference,
+            LocalDate booking_date,
+            LocalDate value_date,
+            LocalDate visible_date,
+            String memo) {}
+
+<span class="fc" id="L438">    private record Totals(String details, long count, long credit, long debit, long opening, long closing) {</span>
+        String trailer(String corrupt) {
+<span class="fc bfc" id="L440" title="All 2 branches covered.">            return &quot;T,&quot; + (corrupt.equals(&quot;trailer_count&quot;) ? Math.incrementExact(count) : count) + &quot;,&quot;</span>
+<span class="fc bfc" id="L441" title="All 2 branches covered.">                    + (corrupt.equals(&quot;trailer_sum&quot;) ? Math.incrementExact(credit) : credit) + &quot;,&quot; + debit + &quot;,&quot;</span>
+                    + opening + &quot;,&quot;
+<span class="fc bfc" id="L443" title="All 2 branches covered.">                    + (corrupt.equals(&quot;balance&quot;) ? Math.incrementExact(closing) : closing) + &quot;\r\n&quot;;</span>
+        }
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

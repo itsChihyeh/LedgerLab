@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Processor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">ledgerlab-simulator</a> &gt; <a href="index.source.html" class="el_package">dev.ledgerlab.sim.processor</a> &gt; <span class="el_source">Processor.java</span></div><h1>Processor.java</h1><pre class="source lang-java linenums">package dev.ledgerlab.sim.processor;
+
+import java.sql.Timestamp;
+import java.time.Clock;
+import java.util.Map;
+import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.server.ResponseStatusException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
+
+@Service
+public final class Processor {
+    private static final String API_VERSION = &quot;2026-09-30.endive&quot;;
+    private final JdbcClient jdbc;
+    private final TransactionTemplate transaction;
+    private final SimulationClock simulation;
+    private final Clock clock;
+    private final SeededIds ids;
+    private final EventDelivery sender;
+    private final BalanceTransactions balances;
+<span class="fc" id="L26">    private final JsonMapper json = JsonMapper.builder().build();</span>
+<span class="fc" id="L27">    private final java.util.List&lt;Runnable&gt; chargeListeners = new java.util.concurrent.CopyOnWriteArrayList&lt;&gt;();</span>
+
+    public Processor(
+            JdbcClient jdbc,
+            PlatformTransactionManager manager,
+            SimulationClock simulation,
+            Clock clock,
+            SeededIds ids,
+            EventDelivery sender,
+<span class="fc" id="L36">            BalanceTransactions balances) {</span>
+<span class="fc" id="L37">        this.jdbc = jdbc;</span>
+<span class="fc" id="L38">        this.transaction = new TransactionTemplate(manager);</span>
+<span class="fc" id="L39">        this.simulation = simulation;</span>
+<span class="fc" id="L40">        this.clock = clock;</span>
+<span class="fc" id="L41">        this.ids = ids;</span>
+<span class="fc" id="L42">        this.sender = sender;</span>
+<span class="fc" id="L43">        this.balances = balances;</span>
+<span class="fc" id="L44">    }</span>
+
+    public Map&lt;String, Object&gt; create(JsonNode request) {
+<span class="fc" id="L47">        long amount = integer(request, &quot;amount&quot;, null);</span>
+<span class="fc" id="L48">        ObjectNode charge = json.createObjectNode();</span>
+<span class="fc" id="L49">        charge.put(&quot;id&quot;, ids.next(&quot;ch&quot;))</span>
+<span class="fc" id="L50">                .put(&quot;object&quot;, &quot;charge&quot;)</span>
+<span class="fc" id="L51">                .put(&quot;payment_intent&quot;, ids.next(&quot;pi&quot;))</span>
+<span class="fc" id="L52">                .put(&quot;amount&quot;, amount)</span>
+<span class="fc" id="L53">                .put(&quot;amount_captured&quot;, integer(request, &quot;amount_captured&quot;, amount))</span>
+<span class="fc" id="L54">                .put(&quot;currency&quot;, text(request, &quot;currency&quot;, &quot;cad&quot;))</span>
+<span class="fc" id="L55">                .put(&quot;captured&quot;, bool(request, &quot;captured&quot;, true))</span>
+<span class="fc" id="L56">                .put(&quot;status&quot;, text(request, &quot;status&quot;, &quot;succeeded&quot;))</span>
+<span class="fc" id="L57">                .put(&quot;livemode&quot;, bool(request, &quot;livemode&quot;, false))</span>
+<span class="fc" id="L58">                .put(&quot;created&quot;, simulation.instant().getEpochSecond());</span>
+<span class="fc" id="L59">        ObjectNode event = event(charge, &quot;charge.succeeded&quot;);</span>
+<span class="fc" id="L60">        transaction.executeWithoutResult(status -&gt; {</span>
+<span class="fc" id="L61">            balances.lock();</span>
+<span class="fc" id="L62">            jdbc.sql(&quot;&quot;&quot;</span>
+                    insert into sim_processor.charge
+                    (id, payment_intent, amount, amount_captured, currency, captured, status, livemode, created, recorded_at)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    &quot;&quot;&quot;)
+<span class="fc" id="L67">                    .param(charge.path(&quot;id&quot;).asText())</span>
+<span class="fc" id="L68">                    .param(charge.path(&quot;payment_intent&quot;).asText())</span>
+<span class="fc" id="L69">                    .param(amount)</span>
+<span class="fc" id="L70">                    .param(charge.path(&quot;amount_captured&quot;).asLong())</span>
+<span class="fc" id="L71">                    .param(charge.path(&quot;currency&quot;).asText())</span>
+<span class="fc" id="L72">                    .param(charge.path(&quot;captured&quot;).asBoolean())</span>
+<span class="fc" id="L73">                    .param(charge.path(&quot;status&quot;).asText())</span>
+<span class="fc" id="L74">                    .param(charge.path(&quot;livemode&quot;).asBoolean())</span>
+<span class="fc" id="L75">                    .param(charge.path(&quot;created&quot;).asLong())</span>
+<span class="fc" id="L76">                    .param(Timestamp.from(clock.instant()))</span>
+<span class="fc" id="L77">                    .update();</span>
+<span class="fc" id="L78">            balances.charge(charge, request);</span>
+<span class="fc" id="L79">            store(event);</span>
+<span class="fc" id="L80">        });</span>
+<span class="fc" id="L81">        sender.deliver(event.path(&quot;id&quot;).asText(), json.writeValueAsString(event));</span>
+<span class="fc" id="L82">        chargeListeners.forEach(Runnable::run);</span>
+<span class="fc" id="L83">        return Map.of(&quot;charge&quot;, charge, &quot;event_id&quot;, event.path(&quot;id&quot;).asText());</span>
+    }
+
+    void onCharge(Runnable listener) {
+<span class="fc" id="L87">        chargeListeners.add(listener);</span>
+<span class="fc" id="L88">    }</span>
+
+    public Map&lt;String, Object&gt; redeliver(String id) {
+<span class="fc" id="L91">        sender.deliver(id, payload(id));</span>
+<span class="fc" id="L92">        return Map.of(&quot;event_id&quot;, id);</span>
+    }
+
+    public Map&lt;String, Object&gt; reissue(String id) {
+<span class="fc" id="L96">        JsonNode original = json.readTree(payload(id));</span>
+<span class="fc" id="L97">        JsonNode charge = original.path(&quot;data&quot;).path(&quot;object&quot;);</span>
+<span class="fc" id="L98">        ObjectNode event = event(charge, original.path(&quot;type&quot;).asText());</span>
+<span class="fc" id="L99">        store(event);</span>
+<span class="fc" id="L100">        sender.deliver(event.path(&quot;id&quot;).asText(), json.writeValueAsString(event));</span>
+<span class="fc" id="L101">        return Map.of(</span>
+<span class="fc" id="L102">                charge.path(&quot;object&quot;).asText(),</span>
+                charge,
+                &quot;event_id&quot;,
+<span class="fc" id="L105">                event.path(&quot;id&quot;).asText());</span>
+    }
+
+    public Map&lt;String, Object&gt; inspect(String id) {
+<span class="fc" id="L109">        return Map.of(</span>
+                &quot;payload&quot;,
+<span class="fc" id="L111">                payload(id),</span>
+                &quot;deliveries&quot;,
+<span class="fc" id="L113">                jdbc.sql(&quot;&quot;&quot;</span>
+                select id, event_id, target_url, signed_at, http_status, error, recorded_at
+                from sim_processor.webhook_delivery where event_id = ? order by id
+<span class="fc" id="L116">                &quot;&quot;&quot;).param(id).query().listOfRows());</span>
+    }
+
+    private String payload(String id) {
+<span class="fc" id="L120">        return jdbc.sql(&quot;select payload from sim_processor.event where id = ?&quot;)</span>
+<span class="fc" id="L121">                .param(id)</span>
+<span class="fc" id="L122">                .query(String.class)</span>
+<span class="fc" id="L123">                .optional()</span>
+<span class="fc" id="L124">                .orElseThrow(() -&gt; new ResponseStatusException(HttpStatus.NOT_FOUND));</span>
+    }
+
+    ObjectNode event(JsonNode charge, String type) {
+<span class="fc" id="L128">        ObjectNode event = json.createObjectNode();</span>
+<span class="fc" id="L129">        event.put(&quot;id&quot;, ids.next(&quot;evt&quot;))</span>
+<span class="fc" id="L130">                .put(&quot;object&quot;, &quot;event&quot;)</span>
+<span class="fc" id="L131">                .put(&quot;api_version&quot;, API_VERSION)</span>
+<span class="fc" id="L132">                .put(&quot;created&quot;, simulation.instant().getEpochSecond())</span>
+<span class="fc" id="L133">                .put(&quot;livemode&quot;, charge.path(&quot;livemode&quot;).asBoolean())</span>
+<span class="fc" id="L134">                .put(&quot;type&quot;, type);</span>
+<span class="fc" id="L135">        event.putObject(&quot;data&quot;).set(&quot;object&quot;, charge);</span>
+<span class="fc" id="L136">        return event;</span>
+    }
+
+    void store(ObjectNode event) {
+<span class="fc" id="L140">        JsonNode object = event.path(&quot;data&quot;).path(&quot;object&quot;);</span>
+<span class="fc" id="L141">        boolean payout = object.path(&quot;object&quot;).asText().equals(&quot;payout&quot;);</span>
+<span class="fc" id="L142">        boolean refund = object.path(&quot;object&quot;).asText().equals(&quot;refund&quot;);</span>
+<span class="fc" id="L143">        jdbc.sql(&quot;&quot;&quot;</span>
+                insert into sim_processor.event (id, charge_id, type, api_version, created, payload, recorded_at, payout_id, refund_id)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                &quot;&quot;&quot;)
+<span class="fc" id="L147">                .param(event.path(&quot;id&quot;).asText())</span>
+<span class="fc bfc" id="L148" title="All 4 branches covered.">                .param(payout ? null : object.path(refund ? &quot;charge&quot; : &quot;id&quot;).asText())</span>
+<span class="fc" id="L149">                .param(event.path(&quot;type&quot;).asText())</span>
+<span class="fc" id="L150">                .param(API_VERSION)</span>
+<span class="fc" id="L151">                .param(event.path(&quot;created&quot;).asLong())</span>
+<span class="fc" id="L152">                .param(json.writeValueAsString(event))</span>
+<span class="fc" id="L153">                .param(Timestamp.from(clock.instant()))</span>
+<span class="fc bfc" id="L154" title="All 2 branches covered.">                .param(payout ? object.path(&quot;id&quot;).asText() : null)</span>
+<span class="fc bfc" id="L155" title="All 2 branches covered.">                .param(refund ? object.path(&quot;id&quot;).asText() : null)</span>
+<span class="fc" id="L156">                .update();</span>
+<span class="fc" id="L157">    }</span>
+
+    Map&lt;String, Object&gt; deliver(ObjectNode event) {
+<span class="fc" id="L160">        sender.deliver(event.path(&quot;id&quot;).asText(), json.writeValueAsString(event));</span>
+<span class="fc" id="L161">        return Map.of(</span>
+                &quot;payout&quot;,
+<span class="fc" id="L163">                event.path(&quot;data&quot;).path(&quot;object&quot;),</span>
+                &quot;event_id&quot;,
+<span class="fc" id="L165">                event.path(&quot;id&quot;).asText());</span>
+    }
+
+    static long integer(JsonNode request, String field, @org.jspecify.annotations.Nullable Long fallback) {
+<span class="fc" id="L169">        JsonNode value = request.path(field);</span>
+<span class="fc bfc" id="L170" title="All 4 branches covered.">        if (value.isMissingNode() &amp;&amp; fallback != null) return fallback;</span>
+<span class="fc bfc" id="L171" title="All 4 branches covered.">        if (!value.isIntegralNumber() || !value.canConvertToLong()) throw badRequest(field);</span>
+<span class="fc" id="L172">        return value.asLong();</span>
+    }
+
+    static String text(JsonNode request, String field, String fallback) {
+<span class="fc" id="L176">        JsonNode value = request.path(field);</span>
+<span class="fc bfc" id="L177" title="All 2 branches covered.">        if (value.isMissingNode()) return fallback;</span>
+<span class="fc bfc" id="L178" title="All 2 branches covered.">        if (!value.isString()) throw badRequest(field);</span>
+<span class="fc" id="L179">        return value.asText();</span>
+    }
+
+    static boolean bool(JsonNode request, String field, boolean fallback) {
+<span class="fc" id="L183">        JsonNode value = request.path(field);</span>
+<span class="fc bfc" id="L184" title="All 2 branches covered.">        if (value.isMissingNode()) return fallback;</span>
+<span class="fc bfc" id="L185" title="All 2 branches covered.">        if (!value.isBoolean()) throw badRequest(field);</span>
+<span class="fc" id="L186">        return value.asBoolean();</span>
+    }
+
+    static ResponseStatusException badRequest(String field) {
+<span class="fc" id="L190">        return new ResponseStatusException(HttpStatus.BAD_REQUEST, &quot;Invalid &quot; + field);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

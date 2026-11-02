@@ -1,0 +1,312 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ScenarioRunner.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">ledgerlab-simulator</a> &gt; <a href="index.source.html" class="el_package">dev.ledgerlab.sim.scenario</a> &gt; <span class="el_source">ScenarioRunner.java</span></div><h1>ScenarioRunner.java</h1><pre class="source lang-java linenums">package dev.ledgerlab.sim.scenario;
+
+import dev.ledgerlab.sim.bank.Bank;
+import dev.ledgerlab.sim.processor.BalanceTransactions;
+import dev.ledgerlab.sim.processor.EventDelivery;
+import dev.ledgerlab.sim.processor.Payouts;
+import dev.ledgerlab.sim.processor.Processor;
+import dev.ledgerlab.sim.processor.RefundFaults;
+import dev.ledgerlab.sim.processor.Refunds;
+import dev.ledgerlab.sim.processor.SeededIds;
+import dev.ledgerlab.sim.processor.SimulationClock;
+import java.io.IOException;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
+import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.server.ResponseStatusException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.ObjectNode;
+
+/** Runs real processor and bank services against simulator tables, without contacting the app. */
+@Service
+public final class ScenarioRunner {
+<span class="fc" id="L34">    private static final JsonMapper JSON = JsonMapper.builder().build();</span>
+    private final JdbcClient jdbc;
+    private final PlatformTransactionManager manager;
+
+<span class="fc" id="L38">    public ScenarioRunner(JdbcClient jdbc, PlatformTransactionManager manager) {</span>
+<span class="fc" id="L39">        this.jdbc = jdbc;</span>
+<span class="fc" id="L40">        this.manager = manager;</span>
+<span class="fc" id="L41">    }</span>
+
+    public Map&lt;String, String&gt; run(String name) {
+<span class="fc bfc" id="L44" title="All 2 branches covered.">        if (!name.matches(&quot;[a-z0-9]+(?:-[a-z0-9]+)*&quot;)) throw invalid(&quot;scenario name&quot;);</span>
+<span class="fc" id="L45">        try (var input = ScenarioRunner.class.getResourceAsStream(&quot;/scenarios/&quot; + name + &quot;.json&quot;)) {</span>
+<span class="fc bfc" id="L46" title="All 2 branches covered.">            if (input == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, &quot;Unknown scenario&quot;);</span>
+<span class="fc" id="L47">            return run(JSON.readTree(input));</span>
+<span class="nc" id="L48">        } catch (IOException e) {</span>
+<span class="nc" id="L49">            throw new IllegalStateException(&quot;Cannot read scenario&quot;, e);</span>
+        }
+    }
+
+    public Map&lt;String, String&gt; run(JsonNode scenario) {
+<span class="fc" id="L54">        return Objects.requireNonNull(new TransactionTemplate(manager).execute(status -&gt; {</span>
+            // Refuse a populated simulator; never erase interactive work. Locks also exclude its writers.
+<span class="fc" id="L56">            jdbc.sql(</span>
+                            &quot;lock table sim_processor.balance_transaction, sim_processor.charge, sim_processor.payout, sim_processor.fault_plan, sim_processor.refunds, sim_processor.idempotency_keys, sim_processor.refund_faults, sim_bank.account, sim_bank.fault_plan in exclusive mode&quot;)
+<span class="fc" id="L58">                    .update();</span>
+<span class="fc" id="L59">            if (jdbc.sql(</span>
+                                    &quot;select (select count(*) from sim_processor.charge)+(select count(*) from sim_processor.payout)+(select count(*) from sim_bank.account)+(select count(*) from sim_bank.fault_plan)+(select count(*) from sim_processor.fault_plan)+(select count(*) from sim_processor.refund_faults)+(select count(*) from sim_processor.idempotency_keys)&quot;)
+<span class="fc" id="L61">                            .query(Long.class)</span>
+<span class="fc bfc" id="L62" title="All 2 branches covered.">                            .single()</span>
+                    != 0)
+<span class="fc" id="L64">                throw new ResponseStatusException(HttpStatus.CONFLICT, &quot;Scenario export requires an empty simulator&quot;);</span>
+<span class="fc" id="L65">            status.setRollbackOnly();</span>
+<span class="fc" id="L66">            return new Execution(scenario).run();</span>
+        }));
+    }
+
+    private final class Execution {
+        private final JsonNode scenario;
+        private final SimulationClock clock;
+        private final SeededIds ids;
+        private final Bank bank;
+        private final Processor processor;
+        private final Payouts payouts;
+        private final Refunds refunds;
+        private final RefundFaults refundFaults;
+<span class="fc" id="L79">        private final Map&lt;String, String&gt; aliases = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L80">        private final Map&lt;String, String&gt; files = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L81">        private final ArrayNode steps = JSON.createArrayNode();</span>
+        private int eventNumber;
+        private int responseNumber;
+        private int bankNumber;
+
+<span class="fc" id="L86">        Execution(JsonNode scenario) {</span>
+<span class="fc" id="L87">            this.scenario = scenario;</span>
+<span class="fc bfc" id="L88" title="All 2 branches covered.">            if (scenario.path(&quot;format_version&quot;).asInt() != 1</span>
+<span class="pc bpc" id="L89" title="1 of 2 branches missed.">                    || !scenario.path(&quot;seed&quot;).isIntegralNumber()</span>
+<span class="pc bpc" id="L90" title="1 of 2 branches missed.">                    || !scenario.path(&quot;seed&quot;).canConvertToLong()</span>
+<span class="pc bpc" id="L91" title="1 of 2 branches missed.">                    || !scenario.path(&quot;actions&quot;).isArray()</span>
+<span class="pc bpc" id="L92" title="1 of 2 branches missed.">                    || !scenario.path(&quot;checkpoints&quot;).isArray()) throw invalid(&quot;scenario header&quot;);</span>
+<span class="fc" id="L93">            var checkpointNames = new java.util.HashSet&lt;String&gt;();</span>
+<span class="fc bfc" id="L94" title="All 2 branches covered.">            for (JsonNode checkpoint : scenario.path(&quot;checkpoints&quot;)) {</span>
+<span class="pc bpc" id="L95" title="1 of 2 branches missed.">                if (!checkpointNames.add(required(checkpoint, &quot;name&quot;))</span>
+<span class="fc bfc" id="L96" title="All 2 branches covered.">                        || !checkpoint.path(&quot;expected_findings&quot;).isArray()) throw invalid(&quot;checkpoint&quot;);</span>
+<span class="fc" id="L97">                Instant.parse(required(checkpoint, &quot;cutoff_at&quot;));</span>
+<span class="fc" id="L98">                Instant.parse(required(checkpoint, &quot;evidence_as_of&quot;));</span>
+<span class="fc" id="L99">            }</span>
+<span class="fc" id="L100">            clock = new SimulationClock(Instant.parse(required(scenario, &quot;start_clock&quot;)));</span>
+<span class="fc" id="L101">            ids = new SeededIds(scenario.path(&quot;seed&quot;).longValue());</span>
+<span class="fc" id="L102">            bank = new Bank(jdbc, manager, clock);</span>
+<span class="fc" id="L103">            var balances = new BalanceTransactions(jdbc, clock, clock, ids, Duration.ZERO);</span>
+<span class="fc" id="L104">            EventDelivery delivery = (id, payload) -&gt; {</span>
+<span class="fc" id="L105">                String file = &quot;events/%03d.json&quot;.formatted(++eventNumber);</span>
+<span class="fc" id="L106">                files.put(file, payload);</span>
+<span class="fc" id="L107">                step(&quot;event&quot;).put(&quot;body&quot;, file).putArray(&quot;responses&quot;);</span>
+<span class="fc" id="L108">            };</span>
+<span class="fc" id="L109">            processor = new Processor(jdbc, manager, clock, clock, ids, delivery, balances);</span>
+<span class="fc" id="L110">            refundFaults = new RefundFaults(jdbc, clock, balances, manager);</span>
+<span class="fc" id="L111">            refunds = new Refunds(jdbc, manager, balances, processor, delivery, clock, clock, ids, refundFaults);</span>
+<span class="fc" id="L112">            payouts = new Payouts(jdbc, manager, balances, processor, clock, clock, ids, bank);</span>
+<span class="fc" id="L113">        }</span>
+
+        Map&lt;String, String&gt; run() {
+<span class="fc bfc" id="L116" title="All 2 branches covered.">            for (JsonNode action : scenario.path(&quot;actions&quot;)) {</span>
+<span class="fc bfc" id="L117" title="All 15 branches covered.">                switch (required(action, &quot;action&quot;)) {</span>
+                    case &quot;advance&quot;, &quot;advance_clock&quot; -&gt; {
+<span class="fc bfc" id="L119" title="All 2 branches covered.">                        Duration delta = action.has(&quot;to&quot;)</span>
+<span class="fc" id="L120">                                ? Duration.between(clock.instant(), Instant.parse(required(action, &quot;to&quot;)))</span>
+<span class="fc" id="L121">                                : Duration.ofSeconds(seconds(action));</span>
+<span class="fc" id="L122">                        clock.advance(delta);</span>
+<span class="fc" id="L123">                        bank.advance();</span>
+<span class="fc" id="L124">                    }</span>
+<span class="fc" id="L125">                    case &quot;refund_fault&quot; -&gt; refundFaults.configure(resolve(action.path(&quot;request&quot;)));</span>
+                    case &quot;refund_accept&quot; -&gt; {
+<span class="fc" id="L127">                        String token = required(action, &quot;local_ref&quot;);</span>
+<span class="fc" id="L128">                        alias(required(action, &quot;alias&quot;), token);</span>
+<span class="fc" id="L129">                        var api = step(&quot;refund_api&quot;).put(&quot;local_ref&quot;, token).put(&quot;key&quot;, required(action, &quot;key&quot;));</span>
+<span class="fc" id="L130">                        api.set(&quot;request&quot;, resolve(action.path(&quot;request&quot;)));</span>
+<span class="fc" id="L131">                    }</span>
+                    case &quot;refund_submit&quot; -&gt; {
+<span class="fc" id="L133">                        JsonNode request = resolve(action.path(&quot;request&quot;));</span>
+<span class="fc" id="L134">                        Map&lt;String, String&gt; parameters = new java.util.TreeMap&lt;&gt;(Map.of(</span>
+                                &quot;charge&quot;,
+<span class="fc" id="L136">                                required(request, &quot;charge&quot;),</span>
+                                &quot;amount&quot;,
+<span class="fc" id="L138">                                Long.toString(request.path(&quot;amount&quot;).longValue()),</span>
+                                &quot;metadata[ledgerlab_refund_id]&quot;,
+<span class="fc" id="L140">                                required(request, &quot;refund_id&quot;)));</span>
+<span class="fc" id="L141">                        var responses = step(&quot;outbound&quot;).putArray(&quot;responses&quot;);</span>
+<span class="fc" id="L142">                        var submission = refunds.create(parameters, required(request, &quot;refund_id&quot;));</span>
+<span class="pc bpc" id="L143" title="1 of 2 branches missed.">                        if (submission.hang()) throw invalid(&quot;scenario refund submission timed out&quot;);</span>
+<span class="fc" id="L144">                        alias(</span>
+<span class="fc" id="L145">                                required(action, &quot;alias&quot;),</span>
+<span class="fc" id="L146">                                submission.refund().path(&quot;id&quot;).asText());</span>
+<span class="fc" id="L147">                        String file = &quot;rest/%03d.json&quot;.formatted(++responseNumber);</span>
+<span class="fc" id="L148">                        files.put(file, JSON.writeValueAsString(submission.refund()));</span>
+<span class="fc" id="L149">                        var response = responses</span>
+<span class="fc" id="L150">                                .addObject()</span>
+<span class="fc" id="L151">                                .put(&quot;method&quot;, &quot;POST&quot;)</span>
+<span class="fc" id="L152">                                .put(&quot;path&quot;, &quot;/v1/refunds&quot;)</span>
+<span class="fc" id="L153">                                .put(&quot;status&quot;, 200)</span>
+<span class="fc" id="L154">                                .put(&quot;body&quot;, file)</span>
+<span class="fc" id="L155">                                .put(&quot;idempotency_key&quot;, required(request, &quot;refund_id&quot;));</span>
+<span class="fc" id="L156">                        response.set(&quot;query&quot;, JSON.createObjectNode());</span>
+<span class="fc" id="L157">                        response.set(&quot;form&quot;, JSON.valueToTree(parameters));</span>
+<span class="fc" id="L158">                    }</span>
+<span class="fc" id="L159">                    case &quot;process_refunds&quot; -&gt; refunds.process();</span>
+                    case &quot;charge&quot; -&gt; {
+<span class="fc" id="L161">                        var created = processor.create(resolve(action.path(&quot;request&quot;)));</span>
+<span class="fc" id="L162">                        JsonNode charge = (JsonNode) Objects.requireNonNull(created.get(&quot;charge&quot;));</span>
+<span class="fc" id="L163">                        alias(required(action, &quot;alias&quot;), charge.path(&quot;id&quot;).asText());</span>
+<span class="fc bfc" id="L164" title="All 2 branches covered.">                        if (action.has(&quot;line_alias&quot;))</span>
+<span class="fc" id="L165">                            alias(</span>
+<span class="fc" id="L166">                                    required(action, &quot;line_alias&quot;),</span>
+<span class="fc" id="L167">                                    charge.path(&quot;balance_transaction&quot;).asText());</span>
+<span class="fc" id="L168">                    }</span>
+                    case &quot;payout&quot; -&gt; {
+<span class="fc" id="L170">                        JsonNode payout = (JsonNode) Objects.requireNonNull(</span>
+<span class="fc" id="L171">                                payouts.create(resolve(action.path(&quot;request&quot;))).get(&quot;payout&quot;));</span>
+<span class="fc" id="L172">                        alias(required(action, &quot;alias&quot;), payout.path(&quot;id&quot;).asText());</span>
+<span class="fc" id="L173">                    }</span>
+                    case &quot;reconcile&quot;, &quot;paid&quot;, &quot;failed&quot; -&gt; {
+<span class="fc" id="L175">                        String id = reference(required(action, &quot;payout&quot;));</span>
+<span class="fc" id="L176">                        int deliveriesBefore = eventNumber;</span>
+<span class="fc" id="L177">                        payouts.transition(id, required(action, &quot;action&quot;), resolve(action.path(&quot;request&quot;)));</span>
+<span class="fc bfc" id="L178" title="All 2 branches covered.">                        if (eventNumber &gt; deliveriesBefore</span>
+<span class="fc bfc" id="L179" title="All 2 branches covered.">                                &amp;&amp; action.path(&quot;action&quot;).asText().equals(&quot;reconcile&quot;))</span>
+<span class="fc" id="L180">                            pages(</span>
+<span class="fc" id="L181">                                    (ArrayNode) steps.get(steps.size() - 1).path(&quot;responses&quot;),</span>
+                                    &quot;/v1/balance_transactions&quot;,
+<span class="fc" id="L183">                                    Map.of(&quot;payout&quot;, id));</span>
+<span class="fc" id="L184">                    }</span>
+                    case &quot;processor_fault&quot; -&gt;
+<span class="fc" id="L186">                        payouts.faults(reference(required(action, &quot;payout&quot;)), resolve(action.path(&quot;request&quot;)));</span>
+<span class="fc" id="L187">                    case &quot;bank_fault&quot; -&gt; bank.plan(resolve(action.path(&quot;request&quot;)));</span>
+<span class="fc" id="L188">                    case &quot;external_alias&quot; -&gt; alias(required(action, &quot;alias&quot;), ids.next(required(action, &quot;prefix&quot;)));</span>
+<span class="fc" id="L189">                    case &quot;snapshot&quot; -&gt; snapshot(LocalDate.parse(required(action, &quot;business_date&quot;)));</span>
+                    case &quot;bank_export&quot; -&gt; {
+<span class="fc" id="L191">                        String file = &quot;bank/%03d.csv&quot;.formatted(++bankNumber);</span>
+<span class="fc" id="L192">                        files.put(file, bank.statement(LocalDate.parse(required(action, &quot;date&quot;)), &quot;&quot;));</span>
+<span class="fc" id="L193">                        step(&quot;bank&quot;).put(&quot;body&quot;, file);</span>
+<span class="fc bfc" id="L194" title="All 2 branches covered.">                        for (JsonNode binding : action.path(&quot;aliases&quot;)) {</span>
+<span class="fc" id="L195">                            var matches = bank.transactions().stream()</span>
+<span class="fc" id="L196">                                    .filter(line -&gt; line.reference().equals(reference(required(binding, &quot;payout&quot;))))</span>
+<span class="fc" id="L197">                                    .toList();</span>
+<span class="fc" id="L198">                            alias(</span>
+<span class="fc" id="L199">                                    required(binding, &quot;alias&quot;),</span>
+<span class="fc" id="L200">                                    matches.get(binding.path(&quot;index&quot;).asInt()).bank_txn_id());</span>
+<span class="fc" id="L201">                        }</span>
+<span class="fc" id="L202">                    }</span>
+<span class="fc" id="L203">                    case &quot;checkpoint&quot; -&gt; step(&quot;checkpoint&quot;).put(&quot;name&quot;, required(action, &quot;name&quot;));</span>
+<span class="fc" id="L204">                    default -&gt; throw invalid(&quot;action &quot; + action.path(&quot;action&quot;));</span>
+                }
+<span class="fc" id="L206">            }</span>
+<span class="fc" id="L207">            ObjectNode truth = JSON.createObjectNode().put(&quot;format_version&quot;, 1);</span>
+<span class="fc" id="L208">            truth.set(&quot;aliases&quot;, JSON.valueToTree(aliases));</span>
+<span class="fc" id="L209">            truth.set(&quot;checkpoints&quot;, resolve(scenario.path(&quot;checkpoints&quot;)));</span>
+<span class="fc" id="L210">            files.put(&quot;truth.json&quot;, pretty(truth));</span>
+<span class="fc" id="L211">            files.put(</span>
+                    &quot;manifest.json&quot;,
+<span class="fc" id="L213">                    pretty(JSON.createObjectNode().put(&quot;format_version&quot;, 1).set(&quot;steps&quot;, steps)));</span>
+<span class="fc" id="L214">            return java.util.Collections.unmodifiableMap(new LinkedHashMap&lt;&gt;(files));</span>
+        }
+
+        private void snapshot(LocalDate date) {
+<span class="fc" id="L218">            ObjectNode step = step(&quot;snapshot&quot;).put(&quot;business_date&quot;, date.toString());</span>
+<span class="fc" id="L219">            ArrayNode responses = step.putArray(&quot;responses&quot;);</span>
+<span class="fc" id="L220">            ZoneId zone = ZoneId.of(&quot;America/Toronto&quot;);</span>
+<span class="fc" id="L221">            ArrayNode found = pages(</span>
+                    responses,
+                    &quot;/v1/payouts&quot;,
+<span class="fc" id="L224">                    Map.of(</span>
+                            &quot;created[gte]&quot;,
+<span class="fc" id="L226">                                    Long.toString(date.atStartOfDay(zone).toEpochSecond()),</span>
+                            &quot;created[lt]&quot;,
+<span class="fc" id="L228">                                    Long.toString(</span>
+<span class="fc" id="L229">                                            date.plusDays(1).atStartOfDay(zone).toEpochSecond())));</span>
+<span class="fc bfc" id="L230" title="All 2 branches covered.">            for (JsonNode payout : found)</span>
+<span class="fc" id="L231">                pages(</span>
+                        responses,
+                        &quot;/v1/balance_transactions&quot;,
+<span class="fc" id="L234">                        Map.of(&quot;payout&quot;, payout.path(&quot;id&quot;).asText()));</span>
+<span class="fc" id="L235">        }</span>
+
+        private ArrayNode pages(ArrayNode responses, String path, Map&lt;String, String&gt; query) {
+<span class="fc" id="L238">            var parameters = new java.util.TreeMap&lt;&gt;(query);</span>
+<span class="fc" id="L239">            parameters.put(&quot;limit&quot;, &quot;100&quot;);</span>
+<span class="fc" id="L240">            ArrayNode items = JSON.createArrayNode();</span>
+            while (true) {
+<span class="fc bfc" id="L242" title="All 2 branches covered.">                ObjectNode body = path.equals(&quot;/v1/payouts&quot;)</span>
+<span class="fc" id="L243">                        ? payouts.list(parameters)</span>
+<span class="fc" id="L244">                        : payouts.lines(Objects.requireNonNull(parameters.get(&quot;payout&quot;)), parameters);</span>
+<span class="fc" id="L245">                String file = &quot;rest/%03d.json&quot;.formatted(++responseNumber);</span>
+<span class="fc" id="L246">                files.put(file, JSON.writeValueAsString(body));</span>
+<span class="fc" id="L247">                var response = responses</span>
+<span class="fc" id="L248">                        .addObject()</span>
+<span class="fc" id="L249">                        .put(&quot;method&quot;, &quot;GET&quot;)</span>
+<span class="fc" id="L250">                        .put(&quot;path&quot;, path)</span>
+<span class="fc" id="L251">                        .put(&quot;status&quot;, 200)</span>
+<span class="fc" id="L252">                        .put(&quot;body&quot;, file);</span>
+<span class="fc" id="L253">                response.set(&quot;query&quot;, JSON.valueToTree(parameters));</span>
+<span class="fc bfc" id="L254" title="All 2 branches covered.">                for (JsonNode item : body.path(&quot;data&quot;)) items.add(item);</span>
+<span class="fc bfc" id="L255" title="All 2 branches covered.">                if (!body.path(&quot;has_more&quot;).asBoolean()) return items;</span>
+<span class="fc" id="L256">                JsonNode data = body.path(&quot;data&quot;);</span>
+<span class="fc" id="L257">                parameters.put(</span>
+<span class="fc" id="L258">                        &quot;starting_after&quot;, data.get(data.size() - 1).path(&quot;id&quot;).asText());</span>
+<span class="fc" id="L259">            }</span>
+        }
+
+        private ObjectNode step(String type) {
+<span class="fc" id="L263">            return steps.addObject().put(&quot;type&quot;, type).put(&quot;at&quot;, clock.instant().toString());</span>
+        }
+
+        private void alias(String alias, String id) {
+<span class="fc bfc" id="L267" title="All 2 branches covered.">            if (aliases.putIfAbsent(alias, id) != null) throw invalid(&quot;duplicate alias &quot; + alias);</span>
+<span class="fc" id="L268">        }</span>
+
+        private String reference(String alias) {
+<span class="fc" id="L271">            String result = aliases.get(alias);</span>
+<span class="fc bfc" id="L272" title="All 2 branches covered.">            if (result == null) throw invalid(&quot;unknown alias &quot; + alias);</span>
+<span class="fc" id="L273">            return result;</span>
+        }
+
+        private JsonNode resolve(JsonNode node) {
+<span class="fc bfc" id="L277" title="All 4 branches covered.">            if (node.isString() &amp;&amp; node.asText().startsWith(&quot;$&quot;))</span>
+<span class="fc" id="L278">                return JSON.getNodeFactory().stringNode(reference(node.asText().substring(1)));</span>
+<span class="fc bfc" id="L279" title="All 2 branches covered.">            if (node.isObject()) {</span>
+<span class="fc" id="L280">                ObjectNode result = JSON.createObjectNode();</span>
+<span class="fc" id="L281">                node.properties().forEach(e -&gt; result.set(e.getKey(), resolve(e.getValue())));</span>
+<span class="fc" id="L282">                return result;</span>
+            }
+<span class="fc bfc" id="L284" title="All 2 branches covered.">            if (node.isArray()) {</span>
+<span class="fc" id="L285">                ArrayNode result = JSON.createArrayNode();</span>
+<span class="fc" id="L286">                node.forEach(value -&gt; result.add(resolve(value)));</span>
+<span class="fc" id="L287">                return result;</span>
+            }
+<span class="fc" id="L289">            return node.deepCopy();</span>
+        }
+    }
+
+    private static String required(JsonNode node, String field) {
+<span class="pc bpc" id="L294" title="2 of 4 branches missed.">        if (!node.path(field).isString() || node.path(field).asText().isBlank()) throw invalid(field);</span>
+<span class="fc" id="L295">        return node.path(field).asText();</span>
+    }
+
+    private static long seconds(JsonNode action) {
+<span class="fc" id="L299">        JsonNode value = action.path(&quot;seconds&quot;);</span>
+<span class="pc bpc" id="L300" title="2 of 6 branches missed.">        if (!value.isIntegralNumber() || !value.canConvertToLong() || value.asLong() &lt; 0) throw invalid(&quot;seconds&quot;);</span>
+<span class="fc" id="L301">        return value.asLong();</span>
+    }
+
+    private static String pretty(JsonNode node) {
+<span class="fc" id="L305">        return JSON.writerWithDefaultPrettyPrinter().writeValueAsString(node).replace(&quot;\r\n&quot;, &quot;\n&quot;) + &quot;\n&quot;;</span>
+    }
+
+    private static ResponseStatusException invalid(String reason) {
+<span class="fc" id="L309">        return new ResponseStatusException(HttpStatus.BAD_REQUEST, &quot;Invalid &quot; + reason);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

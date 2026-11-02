@@ -1,0 +1,106 @@
+{
+  "format_version" : 1,
+  "steps" : [ {
+    "type" : "event",
+    "at" : "2026-11-10T16:00:00Z",
+    "body" : "events/001.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T16:00:00Z",
+    "body" : "events/002.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T16:00:00Z",
+    "body" : "events/003.json",
+    "responses" : [ {
+      "method" : "GET",
+      "path" : "/v1/balance_transactions",
+      "status" : 200,
+      "body" : "rest/001.json",
+      "query" : {
+        "limit" : "100",
+        "payout" : "po_00e7c49031e209d6cd50e9d0d381a5d7"
+      }
+    } ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-10T16:00:00Z",
+    "body" : "events/004.json",
+    "responses" : [ ]
+  }, {
+    "type" : "snapshot",
+    "at" : "2026-11-11T08:00:00Z",
+    "business_date" : "2026-11-10",
+    "responses" : [ {
+      "method" : "GET",
+      "path" : "/v1/payouts",
+      "status" : 200,
+      "body" : "rest/002.json",
+      "query" : {
+        "created[gte]" : "1794286800",
+        "created[lt]" : "1794373200",
+        "limit" : "100"
+      }
+    }, {
+      "method" : "GET",
+      "path" : "/v1/balance_transactions",
+      "status" : 200,
+      "body" : "rest/003.json",
+      "query" : {
+        "limit" : "100",
+        "payout" : "po_00e7c49031e209d6cd50e9d0d381a5d7"
+      }
+    } ]
+  }, {
+    "type" : "bank",
+    "at" : "2026-11-12T12:00:00Z",
+    "body" : "bank/001.csv"
+  }, {
+    "type" : "refund_api",
+    "at" : "2026-11-13T13:02:00Z",
+    "local_ref" : "rfd_00000000000000000000000001",
+    "key" : "sample-d-refund",
+    "request" : {
+      "payment_ref" : "ch_6c986eafe3f9b10906304bb55906222a",
+      "merchant_refund_ref" : "R3",
+      "amount" : 1000
+    }
+  }, {
+    "type" : "outbound",
+    "at" : "2026-11-13T13:02:00Z",
+    "responses" : [ {
+      "method" : "POST",
+      "path" : "/v1/refunds",
+      "status" : 200,
+      "body" : "rest/004.json",
+      "idempotency_key" : "rfd_00000000000000000000000001",
+      "query" : { },
+      "form" : {
+        "amount" : "1000",
+        "charge" : "ch_6c986eafe3f9b10906304bb55906222a",
+        "metadata[ledgerlab_refund_id]" : "rfd_00000000000000000000000001"
+      }
+    } ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-13T13:02:00Z",
+    "body" : "events/005.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-13T13:02:00Z",
+    "body" : "events/006.json",
+    "responses" : [ ]
+  }, {
+    "type" : "event",
+    "at" : "2026-11-13T13:02:00Z",
+    "body" : "events/007.json",
+    "responses" : [ ]
+  }, {
+    "type" : "checkpoint",
+    "at" : "2026-11-13T13:05:00Z",
+    "name" : "final"
+  } ]
+}

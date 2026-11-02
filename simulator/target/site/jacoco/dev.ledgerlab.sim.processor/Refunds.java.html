@@ -1,0 +1,356 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Refunds.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">ledgerlab-simulator</a> &gt; <a href="index.source.html" class="el_package">dev.ledgerlab.sim.processor</a> &gt; <span class="el_source">Refunds.java</span></div><h1>Refunds.java</h1><pre class="source lang-java linenums">package dev.ledgerlab.sim.processor;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.TreeMap;
+import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
+
+@Service
+public final class Refunds {
+    private static final String SELECT = &quot;&quot;&quot;
+            select r.*, c.currency, c.payment_intent from sim_processor.refunds r
+            join sim_processor.charge c on c.id=r.charge
+            &quot;&quot;&quot;;
+    private final JdbcClient jdbc;
+    private final TransactionTemplate transaction;
+    private final BalanceTransactions balances;
+    private final Processor processor;
+    private final EventDelivery sender;
+    private final SimulationClock simulation;
+    private final Clock clock;
+    private final SeededIds ids;
+    private final RefundFaults faults;
+<span class="fc" id="L42">    private final JsonMapper json = JsonMapper.builder().build();</span>
+
+    public Refunds(
+            JdbcClient jdbc,
+            PlatformTransactionManager manager,
+            BalanceTransactions balances,
+            Processor processor,
+            EventDelivery sender,
+            SimulationClock simulation,
+            Clock clock,
+            SeededIds ids,
+<span class="fc" id="L53">            RefundFaults faults) {</span>
+<span class="fc" id="L54">        this.jdbc = jdbc;</span>
+<span class="fc" id="L55">        this.transaction = new TransactionTemplate(manager);</span>
+<span class="fc" id="L56">        this.balances = balances;</span>
+<span class="fc" id="L57">        this.processor = processor;</span>
+<span class="fc" id="L58">        this.sender = sender;</span>
+<span class="fc" id="L59">        this.simulation = simulation;</span>
+<span class="fc" id="L60">        this.clock = clock;</span>
+<span class="fc" id="L61">        this.ids = ids;</span>
+<span class="fc" id="L62">        this.faults = faults;</span>
+<span class="fc" id="L63">        simulation.onAdvance(this::process);</span>
+<span class="fc" id="L64">        processor.onCharge(this::process);</span>
+<span class="fc" id="L65">    }</span>
+
+    public Submission create(Map&lt;String, String&gt; parameters, String key) {
+<span class="pc bpc" id="L68" title="1 of 4 branches missed.">        if (key.isBlank() || key.length() &gt; 255)</span>
+<span class="fc" id="L69">            throw RefundError.invalid(&quot;parameter_invalid&quot;, &quot;Idempotency-Key required (1-255 characters)&quot;);</span>
+<span class="fc bfc" id="L70" title="All 2 branches covered.">        for (String name : parameters.keySet())</span>
+<span class="fc bfc" id="L71" title="All 2 branches covered.">            if (!List.of(&quot;charge&quot;, &quot;amount&quot;, &quot;metadata[ledgerlab_refund_id]&quot;).contains(name))</span>
+<span class="fc" id="L72">                throw RefundError.invalid(&quot;parameter_unknown&quot;, name);</span>
+<span class="fc" id="L73">        String charge = parameters.getOrDefault(&quot;charge&quot;, &quot;&quot;);</span>
+<span class="fc bfc" id="L74" title="All 2 branches covered.">        if (charge.isBlank()) throw RefundError.invalid(&quot;parameter_missing&quot;, &quot;charge required&quot;);</span>
+<span class="fc" id="L75">        long amount = positiveAmount(parameters.getOrDefault(&quot;amount&quot;, &quot;&quot;));</span>
+<span class="fc" id="L76">        var canonical = new TreeMap&lt;&gt;(parameters);</span>
+<span class="fc" id="L77">        canonical.put(&quot;amount&quot;, Long.toString(amount));</span>
+<span class="fc" id="L78">        String fingerprint = fingerprint(json.writeValueAsString(canonical));</span>
+<span class="fc" id="L79">        ObjectNode metadata = json.createObjectNode();</span>
+<span class="pc bpc" id="L80" title="1 of 2 branches missed.">        if (parameters.containsKey(&quot;metadata[ledgerlab_refund_id]&quot;))</span>
+<span class="fc" id="L81">            metadata.put(&quot;ledgerlab_refund_id&quot;, parameters.get(&quot;metadata[ledgerlab_refund_id]&quot;));</span>
+
+<span class="fc" id="L83">        Created created = Objects.requireNonNull(transaction.execute(status -&gt; {</span>
+<span class="fc" id="L84">            balances.lock();</span>
+<span class="fc bfc" id="L85" title="All 2 branches covered.">            if (faults.consume(charge, &quot;timeout_before_create&quot;))</span>
+<span class="fc" id="L86">                return new Created(json.createObjectNode(), List.of(), true, false);</span>
+<span class="fc" id="L87">            var previous = jdbc.sql(</span>
+                            &quot;select request_fingerprint,response from sim_processor.idempotency_keys where key=? and not purged&quot;)
+<span class="fc" id="L89">                    .param(key)</span>
+<span class="fc" id="L90">                    .query((row, n) -&gt; new Cached(row.getString(1), row.getString(2)))</span>
+<span class="fc" id="L91">                    .optional();</span>
+<span class="fc bfc" id="L92" title="All 2 branches covered.">            if (previous.isPresent()) {</span>
+<span class="fc bfc" id="L93" title="All 2 branches covered.">                if (!previous.get().fingerprint().equals(fingerprint))</span>
+<span class="fc" id="L94">                    throw new RefundError(</span>
+                            HttpStatus.BAD_REQUEST,
+                            &quot;idempotency_error&quot;,
+                            &quot;idempotency_key_in_use&quot;,
+                            &quot;Same key used with different parameters&quot;);
+<span class="fc" id="L99">                return new Created(</span>
+<span class="fc" id="L100">                        (ObjectNode) json.readTree(previous.get().response()),</span>
+<span class="fc" id="L101">                        List.of(),</span>
+                        false,
+<span class="fc" id="L103">                        faults.consume(charge, &quot;timeout_after_create&quot;));</span>
+            }
+<span class="fc" id="L105">            JsonNode original = charge(charge);</span>
+<span class="pc bpc" id="L106" title="1 of 2 branches missed.">            if (!original.path(&quot;captured&quot;).asBoolean()</span>
+<span class="pc bpc" id="L107" title="1 of 2 branches missed.">                    || !original.path(&quot;status&quot;).asText().equals(&quot;succeeded&quot;)</span>
+<span class="pc bpc" id="L108" title="1 of 2 branches missed.">                    || original.path(&quot;livemode&quot;).asBoolean()</span>
+<span class="pc bpc" id="L109" title="1 of 2 branches missed.">                    || !original.path(&quot;currency&quot;).asText().equals(&quot;cad&quot;))</span>
+<span class="nc" id="L110">                throw RefundError.invalid(&quot;charge_invalid&quot;, &quot;Only captured test CAD charges are supported&quot;);</span>
+<span class="fc" id="L111">            long reserved = 0;</span>
+<span class="fc bfc" id="L112" title="All 2 branches covered.">            for (long value : jdbc.sql(</span>
+                            &quot;select amount from sim_processor.refunds where charge=? and status in ('pending','succeeded')&quot;)
+<span class="fc" id="L114">                    .param(charge)</span>
+<span class="fc" id="L115">                    .query(Long.class)</span>
+<span class="fc" id="L116">                    .list()) reserved = Math.addExact(reserved, value);</span>
+<span class="fc" id="L117">            long remaining = Math.subtractExact(original.path(&quot;amount_captured&quot;).asLong(), reserved);</span>
+<span class="fc bfc" id="L118" title="All 2 branches covered.">            if (remaining &lt;= 0) throw RefundError.invalid(&quot;charge_already_refunded&quot;, &quot;Charge already fully refunded&quot;);</span>
+<span class="fc bfc" id="L119" title="All 2 branches covered.">            if (amount &gt; remaining)</span>
+<span class="fc" id="L120">                throw RefundError.invalid(&quot;amount_too_large&quot;, &quot;Amount exceeds remaining charge amount&quot;);</span>
+<span class="fc" id="L121">            String id = ids.next(&quot;re&quot;);</span>
+<span class="fc" id="L122">            jdbc.sql(&quot;&quot;&quot;</span>
+                    insert into sim_processor.refunds(id,charge,amount,status,metadata,created,recorded_at)
+                    values (?,?,?,'pending',?::jsonb,?,?)
+                    &quot;&quot;&quot;)
+<span class="fc" id="L126">                    .param(id)</span>
+<span class="fc" id="L127">                    .param(charge)</span>
+<span class="fc" id="L128">                    .param(amount)</span>
+<span class="fc" id="L129">                    .param(json.writeValueAsString(metadata))</span>
+<span class="fc" id="L130">                    .param(Timestamp.from(simulation.instant()))</span>
+<span class="fc" id="L131">                    .param(Timestamp.from(clock.instant()))</span>
+<span class="fc" id="L132">                    .update();</span>
+<span class="fc" id="L133">            ObjectNode plan = faults.effective(charge);</span>
+<span class="fc bfc" id="L134" title="All 6 branches covered.">            if (!plan.has(&quot;fail_next&quot;) &amp;&amp; !plan.path(&quot;force_pending&quot;).asBoolean() &amp;&amp; available() &gt;= amount)</span>
+<span class="fc" id="L135">                execute(id, amount);</span>
+<span class="fc" id="L136">            var events = new ArrayList&lt;ObjectNode&gt;();</span>
+<span class="fc" id="L137">            event(get(id), &quot;refund.created&quot;, plan, events);</span>
+<span class="fc bfc" id="L138" title="All 2 branches covered.">            if (plan.has(&quot;fail_next&quot;)) {</span>
+<span class="fc" id="L139">                fail(id, plan.path(&quot;fail_next&quot;).asText());</span>
+<span class="fc" id="L140">                faults.consumeFailure(charge);</span>
+<span class="fc" id="L141">                event(get(id), &quot;refund.updated&quot;, plan, events);</span>
+<span class="fc" id="L142">                event(get(id), &quot;refund.failed&quot;, plan, events);</span>
+            }
+<span class="fc" id="L144">            ObjectNode response = get(id);</span>
+<span class="fc" id="L145">            jdbc.sql(&quot;&quot;&quot;</span>
+                    insert into sim_processor.idempotency_keys(key,request_fingerprint,response,created,purged,recorded_at)
+                    values (?,?,?,?,false,?) on conflict (key) do update set request_fingerprint=excluded.request_fingerprint,
+                    response=excluded.response,created=excluded.created,purged=false,recorded_at=excluded.recorded_at
+                    &quot;&quot;&quot;)
+<span class="fc" id="L150">                    .param(key)</span>
+<span class="fc" id="L151">                    .param(fingerprint)</span>
+<span class="fc" id="L152">                    .param(json.writeValueAsString(response))</span>
+<span class="fc" id="L153">                    .param(Timestamp.from(simulation.instant()))</span>
+<span class="fc" id="L154">                    .param(Timestamp.from(clock.instant()))</span>
+<span class="fc" id="L155">                    .update();</span>
+<span class="fc" id="L156">            return new Created(response, events, false, faults.consume(charge, &quot;timeout_after_create&quot;));</span>
+        }));
+<span class="fc bfc" id="L158" title="All 2 branches covered.">        if (created.before()) throw RefundError.timeout();</span>
+        // Like existing simulator charge/payout delivery, HTTP is outside the funds transaction.
+        // Thus event_before_response is guaranteed, including waiting for the relay's HTTP completion.
+<span class="fc" id="L161">        deliver(created.events());</span>
+<span class="fc" id="L162">        return new Submission(created.refund(), created.after());</span>
+    }
+
+    public ObjectNode get(String id) {
+<span class="fc" id="L166">        return jdbc.sql(SELECT + &quot; where r.id=?&quot;)</span>
+<span class="fc" id="L167">                .param(id)</span>
+<span class="fc" id="L168">                .query(this::object)</span>
+<span class="fc" id="L169">                .optional()</span>
+<span class="fc" id="L170">                .orElseThrow(() -&gt; new RefundError(</span>
+                        HttpStatus.NOT_FOUND, &quot;invalid_request_error&quot;, &quot;resource_missing&quot;, &quot;No such refund&quot;));
+    }
+
+    public ObjectNode list(Map&lt;String, String&gt; parameters) {
+<span class="fc" id="L175">        String charge = parameters.getOrDefault(&quot;charge&quot;, &quot;&quot;);</span>
+<span class="fc bfc" id="L176" title="All 2 branches covered.">        if (!charge.isEmpty()) charge(charge);</span>
+        int limit;
+        try {
+<span class="fc" id="L179">            limit = Integer.parseInt(parameters.getOrDefault(&quot;limit&quot;, &quot;10&quot;));</span>
+<span class="fc" id="L180">        } catch (NumberFormatException e) {</span>
+<span class="fc" id="L181">            throw RefundError.invalid(&quot;parameter_invalid_integer&quot;, &quot;limit&quot;);</span>
+<span class="fc" id="L182">        }</span>
+<span class="fc bfc" id="L183" title="All 4 branches covered.">        if (limit &lt; 1 || limit &gt; 100) throw RefundError.invalid(&quot;parameter_invalid_integer&quot;, &quot;limit must be 1-100&quot;);</span>
+<span class="fc" id="L184">        List&lt;ObjectNode&gt; rows = jdbc.sql(</span>
+                        SELECT + &quot; where (?='' or r.charge=?) order by r.created desc, r.creation_order desc&quot;)
+<span class="fc" id="L186">                .param(charge)</span>
+<span class="fc" id="L187">                .param(charge)</span>
+<span class="fc" id="L188">                .query(this::object)</span>
+<span class="fc" id="L189">                .list();</span>
+<span class="fc" id="L190">        int offset = 0;</span>
+<span class="fc" id="L191">        String cursor = parameters.getOrDefault(&quot;starting_after&quot;, &quot;&quot;);</span>
+<span class="fc bfc" id="L192" title="All 2 branches covered.">        if (parameters.containsKey(&quot;starting_after&quot;)) {</span>
+<span class="fc" id="L193">            int found = -1;</span>
+<span class="fc bfc" id="L194" title="All 2 branches covered.">            for (int i = 0; i &lt; rows.size(); i++)</span>
+<span class="fc bfc" id="L195" title="All 2 branches covered.">                if (rows.get(i).path(&quot;id&quot;).asText().equals(cursor)) found = i;</span>
+<span class="fc bfc" id="L196" title="All 2 branches covered.">            if (found &lt; 0) throw RefundError.invalid(&quot;resource_missing&quot;, &quot;Invalid starting_after cursor&quot;);</span>
+<span class="fc" id="L197">            offset = Math.addExact(found, 1);</span>
+        }
+<span class="fc bfc" id="L199" title="All 2 branches covered.">        if (faults.effective(charge).path(&quot;list_page_timeout&quot;).asLong() == Math.addExact(offset / limit, 1))</span>
+<span class="fc" id="L200">            throw RefundError.timeout();</span>
+<span class="fc" id="L201">        int end = Math.min(rows.size(), Math.addExact(offset, limit));</span>
+<span class="fc" id="L202">        ObjectNode response = json.createObjectNode()</span>
+<span class="fc" id="L203">                .put(&quot;object&quot;, &quot;list&quot;)</span>
+<span class="fc" id="L204">                .put(&quot;url&quot;, &quot;/v1/refunds&quot;)</span>
+<span class="fc bfc" id="L205" title="All 2 branches covered.">                .put(&quot;has_more&quot;, end &lt; rows.size());</span>
+<span class="fc" id="L206">        var data = response.putArray(&quot;data&quot;);</span>
+<span class="fc" id="L207">        rows.subList(offset, end).forEach(data::add);</span>
+<span class="fc" id="L208">        return response;</span>
+    }
+
+    public int process() {
+<span class="fc" id="L212">        List&lt;ObjectNode&gt; events = Objects.requireNonNull(transaction.execute(status -&gt; {</span>
+<span class="fc" id="L213">            balances.lock();</span>
+<span class="fc" id="L214">            var pending = jdbc.sql(SELECT + &quot; where r.status='pending' order by r.created,r.creation_order&quot;)</span>
+<span class="fc" id="L215">                    .query(this::object)</span>
+<span class="fc" id="L216">                    .list();</span>
+<span class="fc" id="L217">            var produced = new ArrayList&lt;ObjectNode&gt;();</span>
+<span class="fc bfc" id="L218" title="All 2 branches covered.">            for (ObjectNode refund : pending) {</span>
+<span class="fc" id="L219">                ObjectNode plan = faults.effective(refund.path(&quot;charge&quot;).asText());</span>
+<span class="fc" id="L220">                long amount = refund.path(&quot;amount&quot;).asLong();</span>
+<span class="fc bfc" id="L221" title="All 4 branches covered.">                if (!plan.path(&quot;force_pending&quot;).asBoolean() &amp;&amp; available() &gt;= amount) {</span>
+<span class="fc" id="L222">                    String id = refund.path(&quot;id&quot;).asText();</span>
+<span class="fc" id="L223">                    execute(id, amount);</span>
+<span class="fc" id="L224">                    event(get(id), &quot;refund.updated&quot;, plan, produced);</span>
+                }
+<span class="fc" id="L226">            }</span>
+<span class="fc" id="L227">            return produced;</span>
+        }));
+<span class="fc" id="L229">        deliver(events);</span>
+<span class="fc" id="L230">        return events.size();</span>
+    }
+
+    public ObjectNode transition(String id, String action, JsonNode request) {
+<span class="fc" id="L234">        List&lt;ObjectNode&gt; events = Objects.requireNonNull(transaction.execute(status -&gt; {</span>
+<span class="fc" id="L235">            balances.lock();</span>
+<span class="fc" id="L236">            ObjectNode refund = get(id);</span>
+<span class="fc bfc" id="L237" title="All 2 branches covered.">            String target = action.equals(&quot;succeed&quot;) ? &quot;succeeded&quot; : &quot;failed&quot;;</span>
+<span class="fc bfc" id="L238" title="All 2 branches covered.">            if (refund.path(&quot;status&quot;).asText().equals(target)) return List.&lt;ObjectNode&gt;of();</span>
+<span class="fc bfc" id="L239" title="All 2 branches covered.">            if (!refund.path(&quot;status&quot;).asText().equals(&quot;pending&quot;)) throw conflict(&quot;Refund is already terminal&quot;);</span>
+<span class="fc bfc" id="L240" title="All 2 branches covered.">            if (action.equals(&quot;succeed&quot;)) {</span>
+<span class="fc bfc" id="L241" title="All 2 branches covered.">                if (available() &lt; refund.path(&quot;amount&quot;).asLong()) throw conflict(&quot;Insufficient available balance&quot;);</span>
+<span class="fc" id="L242">                execute(id, refund.path(&quot;amount&quot;).asLong());</span>
+<span class="pc bpc" id="L243" title="1 of 2 branches missed.">            } else if (action.equals(&quot;fail&quot;)) {</span>
+<span class="fc" id="L244">                String reason = Processor.text(request, &quot;reason&quot;, &quot;declined&quot;);</span>
+<span class="pc bpc" id="L245" title="1 of 2 branches missed.">                if (reason.isBlank()) throw RefundError.invalid(&quot;parameter_invalid&quot;, &quot;reason&quot;);</span>
+<span class="fc" id="L246">                fail(id, reason);</span>
+<span class="pc" id="L247">            } else throw RefundError.invalid(&quot;parameter_invalid&quot;, &quot;action&quot;);</span>
+<span class="fc" id="L248">            ObjectNode plan = faults.effective(refund.path(&quot;charge&quot;).asText());</span>
+<span class="fc" id="L249">            var produced = new ArrayList&lt;ObjectNode&gt;();</span>
+<span class="fc" id="L250">            event(get(id), &quot;refund.updated&quot;, plan, produced);</span>
+<span class="fc bfc" id="L251" title="All 2 branches covered.">            if (action.equals(&quot;fail&quot;)) event(get(id), &quot;refund.failed&quot;, plan, produced);</span>
+<span class="fc" id="L252">            return produced;</span>
+        }));
+<span class="fc" id="L254">        deliver(events);</span>
+<span class="fc" id="L255">        return get(id);</span>
+    }
+
+    public int purge(JsonNode request) {
+        Instant before =
+<span class="pc bpc" id="L260" title="1 of 2 branches missed.">                request.has(&quot;before&quot;) ? Instant.parse(Processor.text(request, &quot;before&quot;, &quot;&quot;)) : simulation.instant();</span>
+<span class="pc bpc" id="L261" title="1 of 2 branches missed.">        if (before.isAfter(simulation.instant()))</span>
+<span class="nc" id="L262">            throw RefundError.invalid(&quot;parameter_invalid&quot;, &quot;before is in the future&quot;);</span>
+<span class="fc" id="L263">        return Objects.requireNonNull(transaction.execute(status -&gt; {</span>
+<span class="fc" id="L264">            balances.lock();</span>
+<span class="fc" id="L265">            return jdbc.sql(</span>
+                            &quot;update sim_processor.idempotency_keys set purged=true where not purged and created &lt; ? and created &lt;= ?&quot;)
+<span class="fc" id="L267">                    .param(Timestamp.from(before))</span>
+<span class="fc" id="L268">                    .param(Timestamp.from(simulation.instant().minus(Duration.ofHours(24))))</span>
+<span class="fc" id="L269">                    .update();</span>
+        }));
+    }
+
+    private JsonNode charge(String id) {
+<span class="fc" id="L274">        return jdbc.sql(&quot;select row_to_json(c)::text from sim_processor.charge c where id=?&quot;)</span>
+<span class="fc" id="L275">                .param(id)</span>
+<span class="fc" id="L276">                .query(String.class)</span>
+<span class="fc" id="L277">                .optional()</span>
+<span class="fc" id="L278">                .map(json::readTree)</span>
+<span class="fc" id="L279">                .orElseThrow(() -&gt; RefundError.invalid(&quot;resource_missing&quot;, &quot;No such charge&quot;));</span>
+    }
+
+    private long available() {
+<span class="fc" id="L283">        long total = 0;</span>
+<span class="fc bfc" id="L284" title="All 2 branches covered.">        for (ObjectNode row : balances.available())</span>
+<span class="fc" id="L285">            total = Math.addExact(total, row.path(&quot;net&quot;).asLong());</span>
+<span class="fc" id="L286">        return total;</span>
+    }
+
+    private void execute(String id, long amount) {
+<span class="fc" id="L290">        String line = balances.add(&quot;refund&quot;, id, Math.negateExact(amount), 0, &quot;cad&quot;, null, simulation.instant());</span>
+<span class="fc" id="L291">        jdbc.sql(&quot;update sim_processor.refunds set status='succeeded',balance_transaction=? where id=?&quot;)</span>
+<span class="fc" id="L292">                .param(line)</span>
+<span class="fc" id="L293">                .param(id)</span>
+<span class="fc" id="L294">                .update();</span>
+<span class="fc" id="L295">    }</span>
+
+    private void fail(String id, String reason) {
+<span class="fc" id="L298">        jdbc.sql(&quot;update sim_processor.refunds set status='failed',failure_reason=? where id=?&quot;)</span>
+<span class="fc" id="L299">                .param(reason)</span>
+<span class="fc" id="L300">                .param(id)</span>
+<span class="fc" id="L301">                .update();</span>
+<span class="fc" id="L302">    }</span>
+
+    private void event(ObjectNode refund, String type, ObjectNode plan, List&lt;ObjectNode&gt; events) {
+<span class="fc bfc" id="L305" title="All 2 branches covered.">        if (plan.path(&quot;suppress_events&quot;).asBoolean()) return;</span>
+<span class="fc" id="L306">        ObjectNode event = processor.event(refund, type);</span>
+<span class="fc" id="L307">        processor.store(event);</span>
+<span class="fc" id="L308">        events.add(event);</span>
+<span class="fc" id="L309">    }</span>
+
+    private void deliver(List&lt;ObjectNode&gt; events) {
+<span class="fc bfc" id="L312" title="All 2 branches covered.">        for (ObjectNode event : events) sender.deliver(event.path(&quot;id&quot;).asText(), json.writeValueAsString(event));</span>
+<span class="fc" id="L313">    }</span>
+
+    private ObjectNode object(ResultSet row, int number) throws SQLException {
+<span class="fc" id="L316">        ObjectNode result = json.createObjectNode().put(&quot;object&quot;, &quot;refund&quot;);</span>
+<span class="fc bfc" id="L317" title="All 2 branches covered.">        for (String field : List.of(</span>
+                &quot;id&quot;, &quot;charge&quot;, &quot;status&quot;, &quot;currency&quot;, &quot;payment_intent&quot;, &quot;failure_reason&quot;, &quot;balance_transaction&quot;))
+<span class="fc" id="L319">            result.put(field, row.getString(field));</span>
+<span class="fc" id="L320">        result.put(&quot;amount&quot;, row.getLong(&quot;amount&quot;))</span>
+<span class="fc" id="L321">                .put(&quot;created&quot;, row.getTimestamp(&quot;created&quot;).toInstant().getEpochSecond());</span>
+<span class="fc" id="L322">        result.set(&quot;metadata&quot;, json.readTree(row.getString(&quot;metadata&quot;)));</span>
+<span class="fc" id="L323">        return result;</span>
+    }
+
+    private static long positiveAmount(String value) {
+        try {
+<span class="fc bfc" id="L328" title="All 2 branches covered.">            if (!value.matches(&quot;[0-9]+&quot;)) throw new NumberFormatException();</span>
+<span class="fc" id="L329">            long amount = Long.parseLong(value);</span>
+<span class="pc bpc" id="L330" title="1 of 4 branches missed.">            if (amount &lt;= 0 || amount &gt;= 9007199254740992L) throw new NumberFormatException();</span>
+<span class="fc" id="L331">            return amount;</span>
+<span class="fc" id="L332">        } catch (NumberFormatException e) {</span>
+<span class="fc" id="L333">            throw RefundError.invalid(&quot;parameter_invalid_integer&quot;, &quot;amount must be positive integer cents&quot;);</span>
+        }
+    }
+
+    private static String fingerprint(String value) {
+        try {
+<span class="fc" id="L339">            return HexFormat.of()</span>
+<span class="fc" id="L340">                    .formatHex(MessageDigest.getInstance(&quot;SHA-256&quot;).digest(value.getBytes(StandardCharsets.UTF_8)));</span>
+<span class="nc" id="L341">        } catch (NoSuchAlgorithmException e) {</span>
+<span class="nc" id="L342">            throw new IllegalStateException(e);</span>
+        }
+    }
+
+    private static RefundError conflict(String message) {
+<span class="fc" id="L347">        return new RefundError(HttpStatus.CONFLICT, &quot;invalid_request_error&quot;, &quot;refund_state_conflict&quot;, message);</span>
+    }
+
+<span class="fc" id="L350">    public record Submission(ObjectNode refund, boolean hang) {}</span>
+
+<span class="fc" id="L352">    private record Cached(String fingerprint, String response) {}</span>
+
+<span class="fc" id="L354">    private record Created(ObjectNode refund, List&lt;ObjectNode&gt; events, boolean before, boolean after) {}</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SimulationClock.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">ledgerlab-simulator</a> &gt; <a href="index.source.html" class="el_package">dev.ledgerlab.sim.processor</a> &gt; <span class="el_source">SimulationClock.java</span></div><h1>SimulationClock.java</h1><pre class="source lang-java linenums">package dev.ledgerlab.sim.processor;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.util.Comparator;
+import java.util.PriorityQueue;
+
+/** A frozen, controllable scenario clock, independent from webhook signing time. */
+public final class SimulationClock extends Clock {
+    private Instant now;
+    private long sequence;
+<span class="fc" id="L15">    private final java.util.List&lt;Runnable&gt; advanceListeners = new java.util.concurrent.CopyOnWriteArrayList&lt;&gt;();</span>
+<span class="fc" id="L16">    private final PriorityQueue&lt;Scheduled&gt; scheduled =</span>
+<span class="fc" id="L17">            new PriorityQueue&lt;&gt;(Comparator.comparing(Scheduled::at).thenComparingLong(Scheduled::sequence));</span>
+
+<span class="fc" id="L19">    public SimulationClock(Instant start) {</span>
+<span class="fc" id="L20">        now = start;</span>
+<span class="fc" id="L21">    }</span>
+
+    public synchronized Instant instant() {
+<span class="fc" id="L24">        return now;</span>
+    }
+
+    @Override
+    public ZoneId getZone() {
+<span class="fc" id="L29">        return ZoneOffset.UTC;</span>
+    }
+
+    @Override
+    public Clock withZone(ZoneId zone) {
+<span class="fc" id="L34">        java.util.Objects.requireNonNull(zone);</span>
+<span class="fc" id="L35">        return new Clock() {</span>
+            @Override
+            public ZoneId getZone() {
+<span class="fc" id="L38">                return zone;</span>
+            }
+
+            @Override
+            public Clock withZone(ZoneId other) {
+<span class="fc" id="L43">                return SimulationClock.this.withZone(other);</span>
+            }
+
+            @Override
+            public Instant instant() {
+<span class="fc" id="L48">                return SimulationClock.this.instant();</span>
+            }
+        };
+    }
+
+    public void advance(Duration duration) {
+<span class="fc bfc" id="L54" title="All 2 branches covered.">        if (duration.isNegative()) throw new IllegalArgumentException(&quot;Cannot move simulation time backwards&quot;);</span>
+<span class="fc" id="L55">        synchronized (this) {</span>
+<span class="fc" id="L56">            now = now.plus(duration);</span>
+<span class="fc" id="L57">        }</span>
+<span class="fc" id="L58">        runDue();</span>
+<span class="fc" id="L59">        advanceListeners.forEach(Runnable::run);</span>
+<span class="fc" id="L60">    }</span>
+
+    public void onAdvance(Runnable listener) {
+<span class="fc" id="L63">        advanceListeners.add(listener);</span>
+<span class="fc" id="L64">    }</span>
+
+    public void schedule(Duration delay, Runnable task) {
+<span class="pc bpc" id="L67" title="1 of 2 branches missed.">        if (delay.isNegative()) throw new IllegalArgumentException(&quot;Negative delay&quot;);</span>
+<span class="fc" id="L68">        synchronized (this) {</span>
+<span class="fc" id="L69">            scheduled.add(new Scheduled(now.plus(delay), ++sequence, task));</span>
+<span class="fc" id="L70">        }</span>
+<span class="fc" id="L71">        runDue();</span>
+<span class="fc" id="L72">    }</span>
+
+    private void runDue() {
+        while (true) {
+            Scheduled next;
+<span class="fc" id="L77">            synchronized (this) {</span>
+<span class="fc bfc" id="L78" title="All 4 branches covered.">                if (scheduled.isEmpty() || scheduled.element().at().isAfter(now)) return;</span>
+<span class="fc" id="L79">                next = scheduled.remove();</span>
+<span class="fc" id="L80">            }</span>
+            // Callbacks may perform HTTP and query the clock; never hold the clock monitor here.
+<span class="fc" id="L82">            next.task().run();</span>
+<span class="fc" id="L83">        }</span>
+    }
+
+<span class="fc" id="L86">    private record Scheduled(Instant at, long sequence, Runnable task) {}</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

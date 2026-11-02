@@ -1,0 +1,292 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>OutgoingPayments.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">ledgerlab-simulator</a> &gt; <a href="index.source.html" class="el_package">dev.ledgerlab.sim.bank</a> &gt; <span class="el_source">OutgoingPayments.java</span></div><h1>OutgoingPayments.java</h1><pre class="source lang-java linenums">package dev.ledgerlab.sim.bank;
+
+import java.sql.Timestamp;
+import java.time.Clock;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.List;
+import java.util.Optional;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+
+/** Bank-owned payment state; every operation runs in Bank's transaction under its account lock. */
+public final class OutgoingPayments {
+<span class="fc" id="L15">    static final List&lt;String&gt; FAULTS = List.of(</span>
+            &quot;TIMEOUT&quot;,
+            &quot;EXECUTE_DROP_RESPONSE&quot;,
+            &quot;UNAVAILABLE&quot;,
+            &quot;REJECT&quot;,
+            &quot;REJECT_ON_QUERY&quot;,
+            &quot;EXECUTE_AFTER_REJECT&quot;,
+            &quot;RETURN_AFTER_DAYS&quot;);
+    private static final String ACCOUNT = &quot;SIM-CAD-001&quot;;
+    private final JdbcClient jdbc;
+    private final Clock clock;
+<span class="fc" id="L26">    private final BankCalendar calendar = new BankCalendar();</span>
+<span class="fc" id="L27">    private final JsonMapper json = JsonMapper.builder().build();</span>
+
+<span class="fc" id="L29">    OutgoingPayments(JdbcClient jdbc, Clock clock) {</span>
+<span class="fc" id="L30">        this.jdbc = jdbc;</span>
+<span class="fc" id="L31">        this.clock = clock;</span>
+<span class="fc" id="L32">    }</span>
+
+    Result submit(JsonNode request) {
+<span class="pc bpc" id="L35" title="1 of 2 branches missed.">        if (!request.isObject()</span>
+<span class="pc bpc" id="L36" title="1 of 2 branches missed.">                || !List.of(&quot;requestId&quot;, &quot;amount&quot;, &quot;currency&quot;, &quot;destination&quot;).containsAll(request.propertyNames())</span>
+<span class="pc bpc" id="L37" title="1 of 2 branches missed.">                || !request.path(&quot;requestId&quot;).isString()</span>
+<span class="pc bpc" id="L38" title="1 of 2 branches missed.">                || !request.path(&quot;requestId&quot;).asText().matches(&quot;mpo_.+&quot;)</span>
+<span class="fc bfc" id="L39" title="All 2 branches covered.">                || !request.path(&quot;amount&quot;).isIntegralNumber()</span>
+<span class="fc bfc" id="L40" title="All 2 branches covered.">                || !request.path(&quot;amount&quot;).canConvertToLong()</span>
+<span class="fc bfc" id="L41" title="All 2 branches covered.">                || request.path(&quot;amount&quot;).asLong() &lt; 1</span>
+<span class="fc bfc" id="L42" title="All 2 branches covered.">                || request.path(&quot;amount&quot;).asLong() &gt; 99999999</span>
+<span class="pc bpc" id="L43" title="1 of 2 branches missed.">                || !request.path(&quot;currency&quot;).isString()</span>
+<span class="pc bpc" id="L44" title="1 of 2 branches missed.">                || !request.path(&quot;destination&quot;).isString()</span>
+<span class="pc bpc" id="L45" title="1 of 2 branches missed.">                || request.path(&quot;destination&quot;).asText().isBlank()) return error(400, &quot;INVALID_REQUEST&quot;);</span>
+<span class="fc" id="L46">        String id = request.path(&quot;requestId&quot;).asText();</span>
+<span class="fc" id="L47">        JsonNode plan = plan(id);</span>
+<span class="fc" id="L48">        truth(plan, id, &quot;PAYMENT_REQUEST&quot;, &quot;NONE&quot;);</span>
+<span class="fc bfc" id="L49" title="All 2 branches covered.">        if (unavailable(plan, id)) return error(503, &quot;UNAVAILABLE&quot;);</span>
+<span class="fc" id="L50">        var existing = find(id);</span>
+<span class="fc bfc" id="L51" title="All 2 branches covered.">        if (existing.isPresent()) {</span>
+<span class="fc" id="L52">            Payment payment = existing.get();</span>
+<span class="fc bfc" id="L53" title="All 2 branches covered.">            if (payment.amount() != request.path(&quot;amount&quot;).asLong()</span>
+<span class="fc bfc" id="L54" title="All 2 branches covered.">                    || !payment.currency().equals(request.path(&quot;currency&quot;).asText())</span>
+<span class="fc bfc" id="L55" title="All 2 branches covered.">                    || !payment.destination().equals(request.path(&quot;destination&quot;).asText()))</span>
+<span class="fc" id="L56">                return error(409, &quot;REQUEST_CONFLICT&quot;);</span>
+<span class="fc" id="L57">            return new Result(200, body(payment), &quot;NONE&quot;);</span>
+        }
+<span class="pc bpc" id="L59" title="1 of 2 branches missed.">        if (!request.path(&quot;currency&quot;).asText().equals(&quot;CAD&quot;)) return error(400, &quot;INVALID_REQUEST&quot;);</span>
+<span class="fc bfc" id="L60" title="All 2 branches covered.">        if (!FAULTS.contains(plan.path(&quot;fault&quot;).asText())</span>
+<span class="fc bfc" id="L61" title="All 2 branches covered.">                || plan.path(&quot;fault&quot;).asText().equals(&quot;UNAVAILABLE&quot;)) {</span>
+<span class="fc" id="L62">            plan = plan.deepCopy();</span>
+<span class="fc" id="L63">            ((tools.jackson.databind.node.ObjectNode) plan).put(&quot;fault&quot;, &quot;NONE&quot;).put(&quot;parameter&quot;, 0);</span>
+        }
+<span class="fc" id="L65">        String fault = plan.path(&quot;fault&quot;).asText();</span>
+<span class="fc bfc" id="L66" title="All 2 branches covered.">        if (fault.equals(&quot;TIMEOUT&quot;)) {</span>
+<span class="fc" id="L67">            truth(plan, id, fault, &quot;PAYOUT_UNRESOLVED&quot;);</span>
+<span class="fc" id="L68">            return new Result(504, error(504, &quot;TIMEOUT&quot;).body(), &quot;TIMEOUT&quot;);</span>
+        }
+<span class="fc" id="L70">        LocalDate execution = calendar.addBusinessDays(</span>
+<span class="fc" id="L71">                clock.instant().atZone(ZoneId.of(&quot;America/Toronto&quot;)).toLocalDate(), 1);</span>
+<span class="fc bfc" id="L72" title="All 2 branches covered.">        LocalDate returned = fault.equals(&quot;RETURN_AFTER_DAYS&quot;)</span>
+<span class="fc" id="L73">                ? calendar.addBusinessDays(execution, plan.path(&quot;parameter&quot;).asLong())</span>
+<span class="fc" id="L74">                : null;</span>
+<span class="fc" id="L75">        boolean rejected = List.of(&quot;REJECT&quot;, &quot;EXECUTE_AFTER_REJECT&quot;).contains(fault);</span>
+<span class="fc" id="L76">        jdbc.sql(&quot;&quot;&quot;</span>
+                insert into sim_bank.outgoing_payment
+                    (request_id,payment_id,account_ref,amount,currency,destination,status,reason,
+                     execution_date,return_due_date,plan,recorded_at)
+                values (?,?,?,?,?,?,?,?,?,?,?::jsonb,?)
+                &quot;&quot;&quot;)
+<span class="fc" id="L82">                .param(id)</span>
+<span class="fc" id="L83">                .param(&quot;bpm_&quot; + id.substring(4))</span>
+<span class="fc" id="L84">                .param(ACCOUNT)</span>
+<span class="fc" id="L85">                .param(request.path(&quot;amount&quot;).asLong())</span>
+<span class="fc" id="L86">                .param(&quot;CAD&quot;)</span>
+<span class="fc" id="L87">                .param(request.path(&quot;destination&quot;).asText())</span>
+<span class="fc bfc" id="L88" title="All 2 branches covered.">                .param(rejected ? &quot;REJECTED&quot; : &quot;ACCEPTED&quot;)</span>
+<span class="fc" id="L89">                .param(</span>
+<span class="fc bfc" id="L90" title="All 2 branches covered.">                        fault.equals(&quot;EXECUTE_AFTER_REJECT&quot;)</span>
+<span class="fc" id="L91">                                ? &quot;BANK_REJECTED&quot;</span>
+<span class="fc bfc" id="L92" title="All 2 branches covered.">                                : rejected ? plan.path(&quot;memo&quot;).asText() : null)</span>
+<span class="fc" id="L93">                .param(execution)</span>
+<span class="fc" id="L94">                .param(returned)</span>
+<span class="fc" id="L95">                .param(plan.toString())</span>
+<span class="fc" id="L96">                .param(now())</span>
+<span class="fc" id="L97">                .update();</span>
+<span class="fc bfc" id="L98" title="All 2 branches covered.">        if (!fault.equals(&quot;NONE&quot;)) truth(plan, id, fault, category(fault));</span>
+<span class="fc bfc" id="L99" title="All 2 branches covered.">        return new Result(201, body(find(id).orElseThrow()), fault.equals(&quot;EXECUTE_DROP_RESPONSE&quot;) ? fault : &quot;NONE&quot;);</span>
+    }
+
+    Result get(String id) {
+<span class="fc bfc" id="L103" title="All 2 branches covered.">        if (unavailable(plan(id), id)) return error(503, &quot;UNAVAILABLE&quot;);</span>
+<span class="fc" id="L104">        var existing = find(id);</span>
+<span class="fc bfc" id="L105" title="All 2 branches covered.">        if (existing.isEmpty()) return error(404, &quot;NOT_FOUND&quot;);</span>
+<span class="fc" id="L106">        Payment payment = existing.get();</span>
+<span class="fc bfc" id="L107" title="All 2 branches covered.">        if (payment.status().equals(&quot;ACCEPTED&quot;)</span>
+<span class="fc bfc" id="L108" title="All 2 branches covered.">                &amp;&amp; payment.plan().path(&quot;fault&quot;).asText().equals(&quot;REJECT_ON_QUERY&quot;)) {</span>
+<span class="fc" id="L109">            change(id, &quot;REJECTED&quot;, payment.plan().path(&quot;memo&quot;).asText());</span>
+<span class="fc" id="L110">            truth(payment.plan(), id, &quot;REJECT_ON_QUERY&quot;, &quot;NONE&quot;);</span>
+        }
+<span class="fc" id="L112">        return new Result(200, body(find(id).orElseThrow()), &quot;NONE&quot;);</span>
+    }
+
+    Result list() {
+<span class="fc bfc" id="L116" title="All 2 branches covered.">        if (unavailable(plan(&quot;*&quot;), &quot;*&quot;)) return error(503, &quot;UNAVAILABLE&quot;);</span>
+<span class="fc" id="L117">        var result = json.createArrayNode();</span>
+<span class="fc bfc" id="L118" title="All 2 branches covered.">        for (String id : jdbc.sql(&quot;select request_id from sim_bank.outgoing_payment order by recorded_at,request_id&quot;)</span>
+<span class="fc" id="L119">                .query(String.class)</span>
+<span class="fc" id="L120">                .list())</span>
+<span class="fc" id="L121">            result.add(body(find(java.util.Objects.requireNonNull(id)).orElseThrow()));</span>
+<span class="fc" id="L122">        return new Result(200, result, &quot;NONE&quot;);</span>
+    }
+
+    private JsonNode plan(String id) {
+<span class="fc" id="L126">        return jdbc.sql(&quot;&quot;&quot;</span>
+                select * from sim_bank.fault_plan where target_ref in (?, '*')
+                order by (target_ref=?) desc limit 1
+                &quot;&quot;&quot;)
+<span class="fc" id="L130">                .param(id)</span>
+<span class="fc" id="L131">                .param(id)</span>
+<span class="fc" id="L132">                .query((row, index) -&gt; json.createObjectNode()</span>
+<span class="fc" id="L133">                        .put(&quot;target_ref&quot;, row.getString(&quot;target_ref&quot;))</span>
+<span class="fc" id="L134">                        .put(&quot;scenario&quot;, row.getString(&quot;scenario&quot;))</span>
+<span class="fc" id="L135">                        .put(&quot;fault&quot;, row.getString(&quot;fault&quot;))</span>
+<span class="fc" id="L136">                        .put(&quot;parameter&quot;, row.getLong(&quot;parameter&quot;))</span>
+<span class="fc" id="L137">                        .put(&quot;memo&quot;, row.getString(&quot;memo&quot;)))</span>
+<span class="fc" id="L138">                .optional()</span>
+<span class="fc" id="L139">                .orElseGet(() -&gt; json.createObjectNode()</span>
+<span class="fc" id="L140">                        .put(&quot;scenario&quot;, &quot;default&quot;)</span>
+<span class="fc" id="L141">                        .put(&quot;fault&quot;, &quot;NONE&quot;)</span>
+<span class="fc" id="L142">                        .put(&quot;parameter&quot;, 0));</span>
+    }
+
+    private boolean unavailable(JsonNode plan, String id) {
+<span class="fc bfc" id="L146" title="All 2 branches covered.">        if (!plan.path(&quot;fault&quot;).asText().equals(&quot;UNAVAILABLE&quot;)</span>
+<span class="fc bfc" id="L147" title="All 2 branches covered.">                || plan.path(&quot;parameter&quot;).asLong() == 0) return false;</span>
+<span class="fc" id="L148">        jdbc.sql(&quot;update sim_bank.fault_plan set parameter=parameter-1 where target_ref=?&quot;)</span>
+<span class="fc" id="L149">                .param(plan.path(&quot;target_ref&quot;).asText())</span>
+<span class="fc" id="L150">                .update();</span>
+<span class="fc" id="L151">        truth(plan, id, &quot;UNAVAILABLE&quot;, &quot;PAYOUT_UNRESOLVED&quot;);</span>
+<span class="fc" id="L152">        return true;</span>
+    }
+
+    private Optional&lt;Payment&gt; find(String id) {
+<span class="fc" id="L156">        return jdbc.sql(&quot;select * from sim_bank.outgoing_payment where request_id=?&quot;)</span>
+<span class="fc" id="L157">                .param(id)</span>
+<span class="fc" id="L158">                .query((row, index) -&gt; new Payment(</span>
+<span class="fc" id="L159">                        row.getString(&quot;request_id&quot;),</span>
+<span class="fc" id="L160">                        row.getString(&quot;payment_id&quot;),</span>
+<span class="fc" id="L161">                        row.getLong(&quot;amount&quot;),</span>
+<span class="fc" id="L162">                        row.getString(&quot;currency&quot;),</span>
+<span class="fc" id="L163">                        row.getString(&quot;destination&quot;),</span>
+<span class="fc" id="L164">                        row.getString(&quot;status&quot;),</span>
+<span class="fc" id="L165">                        Optional.ofNullable(row.getString(&quot;reason&quot;)),</span>
+<span class="fc" id="L166">                        row.getObject(&quot;execution_date&quot;, LocalDate.class),</span>
+<span class="fc" id="L167">                        json.readTree(row.getString(&quot;plan&quot;))))</span>
+<span class="fc" id="L168">                .optional();</span>
+    }
+
+    private JsonNode body(Payment payment) {
+<span class="fc" id="L172">        return json.createObjectNode()</span>
+<span class="fc" id="L173">                .put(&quot;paymentId&quot;, payment.paymentId())</span>
+<span class="fc" id="L174">                .put(&quot;requestId&quot;, payment.id())</span>
+<span class="fc" id="L175">                .put(&quot;status&quot;, payment.status())</span>
+<span class="fc" id="L176">                .put(&quot;executionDate&quot;, payment.execution().toString())</span>
+<span class="fc" id="L177">                .put(&quot;reason&quot;, payment.reason().orElse(null));</span>
+    }
+
+    /** Re-query after each event so a newly executed payment's return joins the chronological queue. */
+    void executeDue(LocalDate today) {
+        while (true) {
+<span class="fc" id="L183">            var next = jdbc.sql(&quot;&quot;&quot;</span>
+                    select request_id,execution_date as due,false as is_return from sim_bank.outgoing_payment p
+                    where execution_date&lt;=? and
+                      ((status='ACCEPTED' and plan-&gt;&gt;'fault'&lt;&gt;'REJECT_ON_QUERY') or
+                       (status='REJECTED' and plan-&gt;&gt;'fault'='EXECUTE_AFTER_REJECT' and reason&lt;&gt;'INSUFFICIENT_FUNDS'))
+                      and not exists (select 1 from sim_bank.txn t where t.request_id=p.request_id and direction='DEBIT')
+                    union all
+                    select request_id,return_due_date,true from sim_bank.outgoing_payment
+                    where status='EXECUTED' and return_due_date&lt;=?
+                    order by due,is_return desc,request_id limit 1
+                    &quot;&quot;&quot;)
+<span class="fc" id="L194">                    .param(today)</span>
+<span class="fc" id="L195">                    .param(today)</span>
+<span class="fc" id="L196">                    .query((row, index) -&gt;</span>
+<span class="fc" id="L197">                            new Due(row.getString(1), row.getObject(2, LocalDate.class), row.getBoolean(3)))</span>
+<span class="fc" id="L198">                    .optional();</span>
+<span class="fc bfc" id="L199" title="All 2 branches covered.">            if (next.isEmpty()) return;</span>
+<span class="fc" id="L200">            Due due = next.get();</span>
+<span class="fc" id="L201">            Payment payment = find(due.id()).orElseThrow();</span>
+<span class="fc bfc" id="L202" title="All 4 branches covered.">            if (!due.returning() &amp;&amp; balanceAt(due.date()) &lt; payment.amount()) {</span>
+<span class="fc" id="L203">                change(payment.id(), &quot;REJECTED&quot;, &quot;INSUFFICIENT_FUNDS&quot;);</span>
+<span class="fc" id="L204">                truth(payment.plan(), payment.id(), &quot;INSUFFICIENT_FUNDS&quot;, &quot;NONE&quot;);</span>
+<span class="fc" id="L205">                continue;</span>
+            }
+<span class="fc" id="L207">            jdbc.sql(&quot;&quot;&quot;</span>
+                    insert into sim_bank.txn (bank_txn_id,account_ref,request_id,direction,amount,currency,
+                        status,reference,booking_date,value_date,visible_date,memo,recorded_at)
+                    values (?,?,?,?,?,'CAD','BOOKED',?,?,?,?,?,?)
+                    &quot;&quot;&quot;)
+<span class="fc bfc" id="L212" title="All 2 branches covered.">                    .param(&quot;bt_&quot; + payment.id() + (due.returning() ? &quot;_R&quot; : &quot;_1&quot;))</span>
+<span class="fc" id="L213">                    .param(ACCOUNT)</span>
+<span class="fc" id="L214">                    .param(payment.id())</span>
+<span class="fc bfc" id="L215" title="All 2 branches covered.">                    .param(due.returning() ? &quot;CREDIT&quot; : &quot;DEBIT&quot;)</span>
+<span class="fc" id="L216">                    .param(payment.amount())</span>
+<span class="fc" id="L217">                    .param(payment.id())</span>
+<span class="fc" id="L218">                    .param(due.date())</span>
+<span class="fc" id="L219">                    .param(due.date())</span>
+<span class="fc" id="L220">                    .param(due.date())</span>
+<span class="fc bfc" id="L221" title="All 2 branches covered.">                    .param(due.returning() ? &quot;RETURN ACCOUNT_CLOSED&quot; : &quot;Payout &quot; + payment.id())</span>
+<span class="fc" id="L222">                    .param(now())</span>
+<span class="fc" id="L223">                    .update();</span>
+<span class="fc bfc" id="L224" title="All 4 branches covered.">            change(payment.id(), due.returning() ? &quot;RETURNED&quot; : &quot;EXECUTED&quot;, due.returning() ? &quot;ACCOUNT_CLOSED&quot; : null);</span>
+<span class="fc bfc" id="L225" title="All 2 branches covered.">            truth(payment.plan(), payment.id(), due.returning() ? &quot;PAYMENT_RETURNED&quot; : &quot;PAYMENT_EXECUTED&quot;, &quot;NONE&quot;);</span>
+<span class="fc" id="L226">        }</span>
+    }
+
+    private long balanceAt(LocalDate date) {
+<span class="fc" id="L230">        long balance = 0;</span>
+        for (long amount :
+<span class="fc bfc" id="L232" title="All 2 branches covered.">                jdbc.sql(&quot;&quot;&quot;</span>
+                select case when direction='CREDIT' then amount else -amount end from sim_bank.txn
+                where account_ref=? and status='BOOKED' and booking_date&lt;=? order by booking_date,bank_txn_id
+<span class="fc" id="L235">                &quot;&quot;&quot;).param(ACCOUNT).param(date).query(Long.class).list())</span>
+<span class="fc" id="L236">            balance = Math.addExact(balance, amount);</span>
+<span class="fc" id="L237">        return balance;</span>
+    }
+
+    private void change(String id, String status, @org.jspecify.annotations.Nullable String reason) {
+<span class="fc" id="L241">        jdbc.sql(&quot;update sim_bank.outgoing_payment set status=?,reason=? where request_id=?&quot;)</span>
+<span class="fc" id="L242">                .param(status)</span>
+<span class="fc" id="L243">                .param(reason)</span>
+<span class="fc" id="L244">                .param(id)</span>
+<span class="fc" id="L245">                .update();</span>
+<span class="fc" id="L246">    }</span>
+
+    private Timestamp now() {
+<span class="fc" id="L249">        return Timestamp.from(clock.instant());</span>
+    }
+
+    private void truth(JsonNode plan, String id, String event, String category) {
+<span class="fc" id="L253">        jdbc.sql(&quot;&quot;&quot;</span>
+                insert into sim_truth.injected_fault (scenario,object_ref,fault,expected_category,recorded_at)
+                values (?,?,?,?,?)
+                &quot;&quot;&quot;)
+<span class="fc" id="L257">                .param(plan.path(&quot;scenario&quot;).asText())</span>
+<span class="fc" id="L258">                .param(id)</span>
+<span class="fc" id="L259">                .param(event)</span>
+<span class="fc" id="L260">                .param(category)</span>
+<span class="fc" id="L261">                .param(now())</span>
+<span class="fc" id="L262">                .update();</span>
+<span class="fc" id="L263">    }</span>
+
+    private static String category(String fault) {
+<span class="fc bfc" id="L266" title="All 3 branches covered.">        return switch (fault) {</span>
+<span class="fc" id="L267">            case &quot;TIMEOUT&quot;, &quot;UNAVAILABLE&quot;, &quot;EXECUTE_DROP_RESPONSE&quot; -&gt; &quot;PAYOUT_UNRESOLVED&quot;;</span>
+<span class="fc" id="L268">            case &quot;EXECUTE_AFTER_REJECT&quot; -&gt; &quot;PAYOUT_STATE_CONFLICT&quot;;</span>
+<span class="fc" id="L269">            default -&gt; &quot;NONE&quot;;</span>
+        };
+    }
+
+    private Result error(int status, String code) {
+<span class="fc" id="L274">        return new Result(status, json.createObjectNode().put(&quot;code&quot;, code), &quot;NONE&quot;);</span>
+    }
+
+<span class="fc" id="L277">    public record Result(int status, JsonNode body, String transport) {}</span>
+
+<span class="fc" id="L279">    private record Due(String id, LocalDate date, boolean returning) {}</span>
+
+<span class="fc" id="L281">    private record Payment(</span>
+            String id,
+            String paymentId,
+            long amount,
+            String currency,
+            String destination,
+            String status,
+            Optional&lt;String&gt; reason,
+            LocalDate execution,
+            JsonNode plan) {}
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

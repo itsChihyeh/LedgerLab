@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: dev.ledgerlab.ledger.CorrectionTablesTest
+-------------------------------------------------------------------------------
+Tests run: 53, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 23.98 s -- in dev.ledgerlab.ledger.CorrectionTablesTest

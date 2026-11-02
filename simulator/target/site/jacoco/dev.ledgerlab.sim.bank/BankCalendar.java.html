@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BankCalendar.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">ledgerlab-simulator</a> &gt; <a href="index.source.html" class="el_package">dev.ledgerlab.sim.bank</a> &gt; <span class="el_source">BankCalendar.java</span></div><h1>BankCalendar.java</h1><pre class="source lang-java linenums">package dev.ledgerlab.sim.bank;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.time.DayOfWeek;
+import java.time.LocalDate;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+/** Independent copy of the simulator contract calendar, with no application dependency. */
+public final class BankCalendar {
+    private final Set&lt;LocalDate&gt; holidays;
+
+<span class="fc" id="L17">    public BankCalendar() {</span>
+<span class="fc" id="L18">        try (var reader = new BufferedReader(new InputStreamReader(</span>
+<span class="fc" id="L19">                Objects.requireNonNull(BankCalendar.class.getResourceAsStream(&quot;/calendar/business-holidays.csv&quot;)),</span>
+                StandardCharsets.UTF_8))) {
+<span class="fc" id="L21">            holidays = reader.lines()</span>
+<span class="fc" id="L22">                    .filter(line -&gt; line.matches(&quot;\\d{4}-.*&quot;))</span>
+<span class="fc" id="L23">                    .map(line -&gt; LocalDate.parse(line.substring(0, 10)))</span>
+<span class="fc" id="L24">                    .collect(Collectors.toUnmodifiableSet());</span>
+<span class="nc" id="L25">        } catch (IOException error) {</span>
+<span class="nc" id="L26">            throw new IllegalStateException(&quot;Cannot read bank calendar&quot;, error);</span>
+<span class="fc" id="L27">        }</span>
+<span class="fc" id="L28">    }</span>
+
+    public LocalDate addBusinessDays(LocalDate start, long days) {
+<span class="fc" id="L31">        check(start);</span>
+<span class="pc bpc" id="L32" title="2 of 4 branches missed.">        if (days &lt; 0 || days &gt; 730) throw new IllegalArgumentException(&quot;Invalid business day count&quot;);</span>
+<span class="fc" id="L33">        LocalDate date = start;</span>
+<span class="fc bfc" id="L34" title="All 2 branches covered.">        while (days &gt; 0) {</span>
+<span class="fc" id="L35">            date = date.plusDays(1);</span>
+<span class="fc" id="L36">            check(date);</span>
+<span class="fc bfc" id="L37" title="All 2 branches covered.">            if (date.getDayOfWeek() != DayOfWeek.SATURDAY</span>
+<span class="fc bfc" id="L38" title="All 2 branches covered.">                    &amp;&amp; date.getDayOfWeek() != DayOfWeek.SUNDAY</span>
+<span class="fc bfc" id="L39" title="All 2 branches covered.">                    &amp;&amp; !holidays.contains(date)) days--;</span>
+        }
+<span class="fc" id="L41">        return date;</span>
+    }
+
+    public static void check(LocalDate date) {
+<span class="fc bfc" id="L45" title="All 4 branches covered.">        if (date.getYear() &lt; 2026 || date.getYear() &gt; 2027)</span>
+<span class="fc" id="L46">            throw new IllegalArgumentException(&quot;Bank calendar covers 2026-2027&quot;);</span>
+<span class="fc" id="L47">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

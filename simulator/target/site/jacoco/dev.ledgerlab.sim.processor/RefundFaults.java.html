@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RefundFaults.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">ledgerlab-simulator</a> &gt; <a href="index.source.html" class="el_package">dev.ledgerlab.sim.processor</a> &gt; <span class="el_source">RefundFaults.java</span></div><h1>RefundFaults.java</h1><pre class="source lang-java linenums">package dev.ledgerlab.sim.processor;
+
+import java.sql.Timestamp;
+import java.time.Clock;
+import java.util.List;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
+
+@Component
+public final class RefundFaults {
+<span class="fc" id="L16">    private static final List&lt;String&gt; COUNTERS =</span>
+<span class="fc" id="L17">            List.of(&quot;timeout_before_create&quot;, &quot;timeout_after_create&quot;, &quot;list_page_timeout&quot;);</span>
+<span class="fc" id="L18">    private static final List&lt;String&gt; FLAGS = List.of(&quot;force_pending&quot;, &quot;suppress_events&quot;, &quot;event_before_response&quot;);</span>
+    private final JdbcClient jdbc;
+    private final Clock clock;
+    private final BalanceTransactions balances;
+    private final TransactionTemplate transaction;
+<span class="fc" id="L23">    private final JsonMapper json = JsonMapper.builder().build();</span>
+
+    public RefundFaults(
+<span class="fc" id="L26">            JdbcClient jdbc, Clock clock, BalanceTransactions balances, PlatformTransactionManager manager) {</span>
+<span class="fc" id="L27">        this.jdbc = jdbc;</span>
+<span class="fc" id="L28">        this.clock = clock;</span>
+<span class="fc" id="L29">        this.balances = balances;</span>
+<span class="fc" id="L30">        this.transaction = new TransactionTemplate(manager);</span>
+<span class="fc" id="L31">    }</span>
+
+    public JsonNode configure(JsonNode request) {
+<span class="fc bfc" id="L34" title="All 2 branches covered.">        if (!request.isObject()) throw RefundError.invalid(&quot;parameter_invalid&quot;, &quot;Fault plan must be an object&quot;);</span>
+<span class="fc" id="L35">        String target = Processor.text(request, &quot;charge&quot;, &quot;*&quot;);</span>
+<span class="pc bpc" id="L36" title="1 of 6 branches missed.">        if (!(target.equals(&quot;*&quot;) || target.startsWith(&quot;ch_&quot;) &amp;&amp; target.length() &gt; 3))</span>
+<span class="fc" id="L37">            throw RefundError.invalid(&quot;parameter_invalid&quot;, &quot;Invalid fault charge&quot;);</span>
+<span class="fc" id="L38">        ObjectNode plan = json.createObjectNode();</span>
+<span class="fc bfc" id="L39" title="All 2 branches covered.">        for (var entry : request.properties()) {</span>
+<span class="fc" id="L40">            String name = entry.getKey();</span>
+<span class="fc bfc" id="L41" title="All 2 branches covered.">            if (name.equals(&quot;charge&quot;)) continue;</span>
+<span class="fc bfc" id="L42" title="All 2 branches covered.">            if (COUNTERS.contains(name)) {</span>
+<span class="fc" id="L43">                long value = Processor.integer(request, name, null);</span>
+<span class="fc bfc" id="L44" title="All 4 branches covered.">                if (value &lt; 0 || value &gt; Integer.MAX_VALUE) throw RefundError.invalid(&quot;parameter_invalid&quot;, name);</span>
+<span class="fc" id="L45">                plan.put(name, value);</span>
+<span class="fc bfc" id="L46" title="All 2 branches covered.">            } else if (FLAGS.contains(name)) {</span>
+<span class="fc" id="L47">                plan.put(name, Processor.bool(request, name, false));</span>
+<span class="fc bfc" id="L48" title="All 2 branches covered.">            } else if (name.equals(&quot;fail_next&quot;)) {</span>
+<span class="fc" id="L49">                String reason = Processor.text(request, name, &quot;&quot;);</span>
+<span class="fc bfc" id="L50" title="All 2 branches covered.">                if (reason.isBlank()) throw RefundError.invalid(&quot;parameter_invalid&quot;, name);</span>
+<span class="fc" id="L51">                plan.put(name, reason);</span>
+<span class="fc" id="L52">            } else throw RefundError.invalid(&quot;parameter_unknown&quot;, name);</span>
+<span class="fc" id="L53">        }</span>
+<span class="fc" id="L54">        transaction.executeWithoutResult(status -&gt; {</span>
+<span class="fc" id="L55">            balances.lock();</span>
+<span class="fc" id="L56">            save(target, plan);</span>
+<span class="fc" id="L57">            balances.fault(&quot;refund:&quot; + target, request);</span>
+<span class="fc" id="L58">        });</span>
+<span class="fc" id="L59">        return plan;</span>
+    }
+
+    ObjectNode effective(String charge) {
+<span class="fc" id="L63">        ObjectNode result = read(&quot;*&quot;);</span>
+<span class="fc" id="L64">        result.setAll(read(charge));</span>
+<span class="fc" id="L65">        return result;</span>
+    }
+
+    // Caller holds the common funds lock, including while consuming a global counter.
+    boolean consume(String charge, String name) {
+<span class="fc bfc" id="L70" title="All 2 branches covered.">        String target = read(charge).has(name) ? charge : &quot;*&quot;;</span>
+<span class="fc" id="L71">        ObjectNode plan = read(target);</span>
+<span class="fc bfc" id="L72" title="All 2 branches covered.">        if (plan.path(name).asLong() &lt;= 0) return false;</span>
+<span class="fc" id="L73">        plan.put(name, Math.subtractExact(plan.path(name).asLong(), 1));</span>
+<span class="fc" id="L74">        save(target, plan);</span>
+<span class="fc" id="L75">        return true;</span>
+    }
+
+    void consumeFailure(String charge) {
+<span class="fc bfc" id="L79" title="All 2 branches covered.">        String target = read(charge).has(&quot;fail_next&quot;) ? charge : &quot;*&quot;;</span>
+<span class="fc" id="L80">        ObjectNode plan = read(target);</span>
+<span class="fc" id="L81">        plan.remove(&quot;fail_next&quot;);</span>
+<span class="fc" id="L82">        save(target, plan);</span>
+<span class="fc" id="L83">    }</span>
+
+    private ObjectNode read(String target) {
+<span class="fc" id="L86">        return jdbc.sql(&quot;select plan::text from sim_processor.refund_faults where target=?&quot;)</span>
+<span class="fc" id="L87">                .param(target)</span>
+<span class="fc" id="L88">                .query(String.class)</span>
+<span class="fc" id="L89">                .optional()</span>
+<span class="fc" id="L90">                .map(value -&gt; (ObjectNode) json.readTree(value))</span>
+<span class="fc" id="L91">                .orElseGet(json::createObjectNode);</span>
+    }
+
+    private void save(String target, ObjectNode plan) {
+<span class="fc" id="L95">        jdbc.sql(&quot;&quot;&quot;</span>
+                insert into sim_processor.refund_faults(target,plan,recorded_at) values (?,?::jsonb,?)
+                on conflict (target) do update set plan=excluded.plan, recorded_at=excluded.recorded_at
+                &quot;&quot;&quot;)
+<span class="fc" id="L99">                .param(target)</span>
+<span class="fc" id="L100">                .param(json.writeValueAsString(plan))</span>
+<span class="fc" id="L101">                .param(Timestamp.from(clock.instant()))</span>
+<span class="fc" id="L102">                .update();</span>
+<span class="fc" id="L103">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

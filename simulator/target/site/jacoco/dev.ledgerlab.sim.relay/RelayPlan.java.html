@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RelayPlan.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">ledgerlab-simulator</a> &gt; <a href="index.source.html" class="el_package">dev.ledgerlab.sim.relay</a> &gt; <span class="el_source">RelayPlan.java</span></div><h1>RelayPlan.java</h1><pre class="source lang-java linenums">package dev.ledgerlab.sim.relay;
+
+import java.util.ArrayList;
+import java.util.List;
+import org.jspecify.annotations.Nullable;
+import tools.jackson.databind.JsonNode;
+
+/** Ordered, immutable rules. Parsing is strict so a rejected plan never replaces the active one. */
+public record RelayPlan(List&lt;Rule&gt; rules) {
+<span class="fc" id="L10">    public RelayPlan {</span>
+<span class="fc" id="L11">        rules = List.copyOf(rules);</span>
+<span class="fc" id="L12">    }</span>
+
+<span class="fc" id="L14">    public enum Action {</span>
+<span class="fc" id="L15">        PASS,</span>
+<span class="fc" id="L16">        DUPLICATE,</span>
+<span class="fc" id="L17">        DELAY,</span>
+<span class="fc" id="L18">        HOLD_AND_REORDER,</span>
+<span class="fc" id="L19">        DROP</span>
+    }
+
+<span class="fc" id="L22">    public record Rule(@Nullable String eventId, @Nullable String eventType, Action action, int count) {</span>
+        boolean matches(@Nullable String id, @Nullable String type) {
+<span class="pc bpc" id="L24" title="1 of 8 branches missed.">            return (eventId == null || eventId.equals(id)) &amp;&amp; (eventType == null || eventType.equals(type));</span>
+        }
+    }
+
+    public Rule match(@Nullable String id, @Nullable String type) {
+<span class="fc" id="L29">        return rules.stream()</span>
+<span class="fc" id="L30">                .filter(rule -&gt; rule.matches(id, type))</span>
+<span class="fc" id="L31">                .findFirst()</span>
+<span class="fc" id="L32">                .orElse(new Rule(null, null, Action.PASS, 1));</span>
+    }
+
+    public static RelayPlan parse(JsonNode input) {
+<span class="pc bpc" id="L36" title="2 of 4 branches missed.">        if (!input.isObject() || !input.path(&quot;rules&quot;).isArray())</span>
+<span class="nc" id="L37">            throw new IllegalArgumentException(&quot;rules must be an array&quot;);</span>
+<span class="fc" id="L38">        List&lt;Rule&gt; rules = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L39" title="All 2 branches covered.">        for (JsonNode node : input.path(&quot;rules&quot;)) {</span>
+<span class="fc" id="L40">            Action action = Action.valueOf(node.path(&quot;action&quot;).asText());</span>
+<span class="fc bfc" id="L41" title="All 4 branches covered.">            int count = switch (action) {</span>
+<span class="fc" id="L42">                case DUPLICATE -&gt; integer(node, &quot;copies&quot;, 2);</span>
+<span class="fc" id="L43">                case DELAY -&gt; integer(node, &quot;delay_seconds&quot;, 0);</span>
+<span class="fc" id="L44">                case HOLD_AND_REORDER -&gt; integer(node, &quot;after_events&quot;, 1);</span>
+<span class="fc" id="L45">                default -&gt; 1;</span>
+            };
+<span class="fc bfc" id="L47" title="All 4 branches covered.">            if (action == Action.DELAY &amp;&amp; count &gt; 240)</span>
+<span class="fc" id="L48">                throw new IllegalArgumentException(&quot;更长的延迟用 fake Stripe 的 redeliver 模拟&quot;);</span>
+<span class="fc" id="L49">            rules.add(new Rule(text(node, &quot;event_id&quot;), text(node, &quot;event_type&quot;), action, count));</span>
+<span class="fc" id="L50">        }</span>
+<span class="fc" id="L51">        return new RelayPlan(rules);</span>
+    }
+
+    private static int integer(JsonNode node, String field, int minimum) {
+<span class="fc" id="L55">        JsonNode value = node.path(field);</span>
+<span class="pc bpc" id="L56" title="1 of 6 branches missed.">        if (!value.isIntegralNumber() || !value.canConvertToInt() || value.asInt() &lt; minimum)</span>
+<span class="fc" id="L57">            throw new IllegalArgumentException(&quot;Invalid &quot; + field);</span>
+<span class="fc" id="L58">        return value.asInt();</span>
+    }
+
+    private static @Nullable String text(JsonNode node, String field) {
+<span class="fc" id="L62">        JsonNode value = node.path(field);</span>
+<span class="fc bfc" id="L63" title="All 2 branches covered.">        if (value.isMissingNode()) return null;</span>
+<span class="pc bpc" id="L64" title="1 of 4 branches missed.">        if (!value.isString() || value.asText().isBlank()) throw new IllegalArgumentException(&quot;Invalid &quot; + field);</span>
+<span class="fc" id="L65">        return value.asText();</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>WebhookSender.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">ledgerlab-simulator</a> &gt; <a href="index.source.html" class="el_package">dev.ledgerlab.sim.processor</a> &gt; <span class="el_source">WebhookSender.java</span></div><h1>WebhookSender.java</h1><pre class="source lang-java linenums">package dev.ledgerlab.sim.processor;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.sql.Timestamp;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.HexFormat;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import org.jspecify.annotations.Nullable;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.stereotype.Component;
+
+@Component
+public final class WebhookSender implements EventDelivery {
+    private final JdbcClient jdbc;
+    private final HttpClient client;
+    private final Clock clock;
+    private final URI target;
+    private final String secret;
+
+    public WebhookSender(
+            JdbcClient jdbc,
+            HttpClient client,
+            Clock clock,
+            @Value(&quot;${sim.stripe.webhook-url}&quot;) String target,
+<span class="fc" id="L34">            @Value(&quot;${sim.stripe.webhook-secret}&quot;) String secret) {</span>
+<span class="pc bpc" id="L35" title="1 of 2 branches missed.">        if (secret.isBlank()) throw new IllegalArgumentException(&quot;Webhook secret is required&quot;);</span>
+<span class="fc" id="L36">        this.jdbc = jdbc;</span>
+<span class="fc" id="L37">        this.client = client;</span>
+<span class="fc" id="L38">        this.clock = clock;</span>
+<span class="fc" id="L39">        this.target = URI.create(target);</span>
+<span class="fc" id="L40">        this.secret = secret;</span>
+<span class="pc bpc" id="L41" title="3 of 4 branches missed.">        if (!(&quot;http&quot;.equals(this.target.getScheme()) || &quot;https&quot;.equals(this.target.getScheme()))</span>
+<span class="pc bpc" id="L42" title="1 of 2 branches missed.">                || this.target.getHost() == null) throw new IllegalArgumentException(&quot;Invalid webhook URL&quot;);</span>
+<span class="fc" id="L43">    }</span>
+    // Single simulator process: serialize delivery to keep each event's signature timestamp increasing.
+    @Override
+    public synchronized void deliver(String eventId, String payload) {
+<span class="fc" id="L47">        long previous = jdbc.sql(</span>
+                        &quot;select coalesce(max(signed_at), 0) from sim_processor.webhook_delivery where event_id = ?&quot;)
+<span class="fc" id="L49">                .param(eventId)</span>
+<span class="fc" id="L50">                .query(Long.class)</span>
+<span class="fc" id="L51">                .single();</span>
+<span class="fc" id="L52">        long signedAt = Math.max(clock.instant().getEpochSecond(), previous + 1);</span>
+<span class="fc" id="L53">        byte[] body = payload.getBytes(StandardCharsets.UTF_8);</span>
+<span class="fc" id="L54">        var request = HttpRequest.newBuilder(target)</span>
+<span class="fc" id="L55">                .timeout(Duration.ofSeconds(10))</span>
+<span class="fc" id="L56">                .header(&quot;Content-Type&quot;, &quot;application/json&quot;)</span>
+<span class="fc" id="L57">                .header(&quot;Stripe-Signature&quot;, signature(signedAt, body))</span>
+<span class="fc" id="L58">                .POST(HttpRequest.BodyPublishers.ofByteArray(body))</span>
+<span class="fc" id="L59">                .build();</span>
+<span class="fc" id="L60">        Integer status = null;</span>
+<span class="fc" id="L61">        String error = null;</span>
+        try {
+<span class="fc" id="L63">            status =</span>
+<span class="fc" id="L64">                    client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();</span>
+<span class="fc" id="L65">        } catch (IOException e) {</span>
+<span class="fc" id="L66">            error = e.getClass().getSimpleName();</span>
+<span class="nc" id="L67">        } catch (InterruptedException e) {</span>
+<span class="nc" id="L68">            Thread.currentThread().interrupt();</span>
+<span class="nc" id="L69">            error = &quot;InterruptedException&quot;;</span>
+<span class="fc" id="L70">        }</span>
+<span class="fc" id="L71">        record(eventId, signedAt, status, error);</span>
+<span class="fc" id="L72">    }</span>
+
+    private void record(String id, long signedAt, @Nullable Integer status, @Nullable String error) {
+<span class="fc" id="L75">        jdbc.sql(&quot;&quot;&quot;</span>
+                insert into sim_processor.webhook_delivery
+                    (event_id, target_url, signed_at, http_status, error, recorded_at)
+                values (?, ?, ?, ?, ?, ?)
+                &quot;&quot;&quot;)
+<span class="fc" id="L80">                .param(id)</span>
+<span class="fc" id="L81">                .param(target.toString())</span>
+<span class="fc" id="L82">                .param(signedAt)</span>
+<span class="fc" id="L83">                .param(status)</span>
+<span class="fc" id="L84">                .param(error)</span>
+<span class="fc" id="L85">                .param(Timestamp.from(clock.instant()))</span>
+<span class="fc" id="L86">                .update();</span>
+<span class="fc" id="L87">    }</span>
+
+    private String signature(long timestamp, byte[] payload) {
+        try {
+<span class="fc" id="L91">            Mac mac = Mac.getInstance(&quot;HmacSHA256&quot;);</span>
+<span class="fc" id="L92">            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), &quot;HmacSHA256&quot;));</span>
+<span class="fc" id="L93">            mac.update((timestamp + &quot;.&quot;).getBytes(StandardCharsets.UTF_8));</span>
+<span class="fc" id="L94">            return &quot;t=&quot; + timestamp + &quot;,v1=&quot; + HexFormat.of().formatHex(mac.doFinal(payload));</span>
+<span class="nc" id="L95">        } catch (GeneralSecurityException e) {</span>
+<span class="nc" id="L96">            throw new IllegalStateException(&quot;HMAC-SHA256 unavailable&quot;, e);</span>
+        }
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

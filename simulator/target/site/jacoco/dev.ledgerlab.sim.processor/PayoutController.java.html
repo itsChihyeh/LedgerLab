@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PayoutController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">ledgerlab-simulator</a> &gt; <a href="index.source.html" class="el_package">dev.ledgerlab.sim.processor</a> &gt; <span class="el_source">PayoutController.java</span></div><h1>PayoutController.java</h1><pre class="source lang-java linenums">package dev.ledgerlab.sim.processor;
+
+import dev.ledgerlab.sim.bank.Bank;
+import java.time.DateTimeException;
+import java.time.Duration;
+import java.util.Map;
+import org.jspecify.annotations.Nullable;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+
+@RestController
+public final class PayoutController {
+    private final Payouts payouts;
+    private final SimulationClock clock;
+    private final String key;
+    private final Bank bank;
+<span class="fc" id="L28">    private final JsonMapper json = JsonMapper.builder().build();</span>
+
+    public PayoutController(
+<span class="fc" id="L31">            Payouts payouts, SimulationClock clock, @Value(&quot;${sim.stripe.api-key:}&quot;) String key, Bank bank) {</span>
+<span class="fc bfc" id="L32" title="All 6 branches covered.">        if (!key.isEmpty() &amp;&amp; !(key.startsWith(&quot;sk_test_&quot;) || key.startsWith(&quot;rk_test_&quot;)))</span>
+<span class="fc" id="L33">            throw new IllegalArgumentException(&quot;Simulator API key must be a test key&quot;);</span>
+<span class="fc" id="L34">        this.payouts = payouts;</span>
+<span class="fc" id="L35">        this.clock = clock;</span>
+<span class="fc" id="L36">        this.key = key;</span>
+<span class="fc" id="L37">        this.bank = bank;</span>
+<span class="fc" id="L38">    }</span>
+
+    @PostMapping(&quot;/sim/payouts&quot;)
+    public Map&lt;String, Object&gt; create(@RequestBody(required = false) @Nullable JsonNode request) {
+<span class="pc bpc" id="L42" title="1 of 2 branches missed.">        return payouts.create(request == null ? json.createObjectNode() : request);</span>
+    }
+
+    @PostMapping(&quot;/sim/payouts/{id}/{action:reconcile|paid|failed}&quot;)
+    public Map&lt;String, Object&gt; transition(
+            @PathVariable String id,
+            @PathVariable String action,
+            @RequestBody(required = false) @Nullable JsonNode request) {
+<span class="pc bpc" id="L50" title="1 of 2 branches missed.">        return payouts.transition(id, action, request == null ? json.createObjectNode() : request);</span>
+    }
+
+    @PostMapping(&quot;/sim/payouts/{id}/faults&quot;)
+    public JsonNode faults(@PathVariable String id, @RequestBody JsonNode request) {
+<span class="fc" id="L55">        return payouts.faults(id, request);</span>
+    }
+
+    @GetMapping(&quot;/sim/clock&quot;)
+    public Map&lt;String, Object&gt; clock() {
+<span class="fc" id="L60">        return Map.of(&quot;now&quot;, clock.instant().toString());</span>
+    }
+
+    @PostMapping(&quot;/sim/clock/advance&quot;)
+    public Map&lt;String, Object&gt; advance(@RequestBody JsonNode request) {
+<span class="fc" id="L65">        long seconds = Processor.integer(request, &quot;seconds&quot;, null);</span>
+<span class="fc bfc" id="L66" title="All 2 branches covered.">        if (seconds &lt; 0) throw Processor.badRequest(&quot;seconds&quot;);</span>
+<span class="fc" id="L67">        clock.advance(Duration.ofSeconds(seconds));</span>
+<span class="fc" id="L68">        bank.advance();</span>
+<span class="fc" id="L69">        return clock();</span>
+    }
+
+    @GetMapping(&quot;/v1/payouts/{id}&quot;)
+    public JsonNode get(
+            @PathVariable String id,
+            @RequestHeader(value = &quot;Authorization&quot;, required = false) @Nullable String authorization) {
+<span class="fc" id="L76">        authenticate(authorization);</span>
+<span class="fc" id="L77">        return payouts.get(id);</span>
+    }
+
+    @GetMapping(&quot;/v1/payouts&quot;)
+    public JsonNode list(
+            @RequestParam Map&lt;String, String&gt; parameters,
+            @RequestHeader(value = &quot;Authorization&quot;, required = false) @Nullable String authorization) {
+<span class="fc" id="L84">        authenticate(authorization);</span>
+<span class="fc" id="L85">        return payouts.list(parameters);</span>
+    }
+
+    @GetMapping(&quot;/v1/balance_transactions&quot;)
+    public JsonNode lines(
+            @RequestParam Map&lt;String, String&gt; parameters,
+            @RequestHeader(value = &quot;Authorization&quot;, required = false) @Nullable String authorization) {
+<span class="fc" id="L92">        authenticate(authorization);</span>
+<span class="fc" id="L93">        String id = parameters.get(&quot;payout&quot;);</span>
+<span class="pc bpc" id="L94" title="2 of 4 branches missed.">        if (id == null || id.isBlank()) throw Processor.badRequest(&quot;payout&quot;);</span>
+<span class="fc" id="L95">        return payouts.lines(id, parameters);</span>
+    }
+
+    private void authenticate(@Nullable String authorization) {
+<span class="fc bfc" id="L99" title="All 4 branches covered.">        if (key.isEmpty() || !(&quot;Bearer &quot; + key).equals(authorization))</span>
+<span class="fc" id="L100">            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);</span>
+<span class="fc" id="L101">    }</span>
+
+    @ExceptionHandler({ArithmeticException.class, DateTimeException.class, IllegalArgumentException.class})
+    public org.springframework.http.ResponseEntity&lt;Map&lt;String, String&gt;&gt; invalidRange(RuntimeException error) {
+<span class="fc" id="L105">        return org.springframework.http.ResponseEntity.badRequest()</span>
+<span class="fc" id="L106">                .body(Map.of(&quot;error&quot;, &quot;Invalid numeric or time range&quot;));</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

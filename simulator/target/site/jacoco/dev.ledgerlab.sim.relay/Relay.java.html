@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Relay.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">ledgerlab-simulator</a> &gt; <a href="index.source.html" class="el_package">dev.ledgerlab.sim.relay</a> &gt; <span class="el_source">Relay.java</span></div><h1>Relay.java</h1><pre class="source lang-java linenums">package dev.ledgerlab.sim.relay;
+
+import dev.ledgerlab.sim.processor.SimulationClock;
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.sql.Timestamp;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.UUID;
+import org.jspecify.annotations.Nullable;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.stereotype.Service;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+
+@Service
+public final class Relay {
+    private final JdbcClient jdbc;
+    private final HttpClient client;
+    private final SimulationClock clock;
+    private final URI target;
+<span class="fc" id="L31">    private final JsonMapper json = JsonMapper.builder().build();</span>
+<span class="fc" id="L32">    private RelayPlan plan = new RelayPlan(List.of());</span>
+<span class="fc" id="L33">    private final List&lt;Held&gt; held = new ArrayList&lt;&gt;();</span>
+    private long sequence;
+
+    public Relay(
+            JdbcClient jdbc,
+            HttpClient client,
+            SimulationClock clock,
+<span class="fc" id="L40">            @Value(&quot;${sim.relay.target-url}&quot;) String target) {</span>
+<span class="fc" id="L41">        this.jdbc = jdbc;</span>
+<span class="fc" id="L42">        this.client = client;</span>
+<span class="fc" id="L43">        this.clock = clock;</span>
+<span class="fc" id="L44">        this.target = URI.create(target);</span>
+<span class="pc bpc" id="L45" title="3 of 4 branches missed.">        if (!(&quot;http&quot;.equals(this.target.getScheme()) || &quot;https&quot;.equals(this.target.getScheme()))</span>
+<span class="pc bpc" id="L46" title="1 of 2 branches missed.">                || this.target.getHost() == null) throw new IllegalArgumentException(&quot;Invalid relay target URL&quot;);</span>
+<span class="fc" id="L47">    }</span>
+
+    public synchronized void replace(RelayPlan replacement) {
+<span class="fc" id="L50">        plan = replacement;</span>
+<span class="fc" id="L51">    }</span>
+
+    public synchronized RelayPlan plan() {
+<span class="fc" id="L54">        return plan;</span>
+    }
+
+    // Serialize receipt and completion order; no relay lock is held by the clock while calling us.
+    public synchronized void receive(byte[] bytes, @Nullable String signature) {
+        JsonNode metadata;
+        try {
+<span class="fc" id="L61">            metadata = json.readTree(bytes);</span>
+<span class="fc" id="L62">        } catch (JacksonException e) {</span>
+<span class="fc" id="L63">            metadata = json.createObjectNode();</span>
+<span class="fc" id="L64">        }</span>
+<span class="fc bfc" id="L65" title="All 2 branches covered.">        String id = metadata.path(&quot;id&quot;).isString() ? metadata.path(&quot;id&quot;).asText() : null;</span>
+<span class="fc bfc" id="L66" title="All 2 branches covered.">        String type = metadata.path(&quot;type&quot;).isString() ? metadata.path(&quot;type&quot;).asText() : null;</span>
+<span class="fc" id="L67">        RelayPlan.Rule rule = plan.match(id, type);</span>
+<span class="fc" id="L68">        Packet packet = new Packet(++sequence, UUID.randomUUID(), id, bytes.clone(), signature, hash(bytes));</span>
+<span class="fc" id="L69">        log(packet, rule.action().name(), 0, null, null);</span>
+<span class="pc bpc" id="L70" title="1 of 6 branches missed.">        switch (rule.action()) {</span>
+<span class="fc" id="L71">            case PASS -&gt; forward(packet, &quot;PASS&quot;, 1);</span>
+<span class="fc" id="L72">            case DUPLICATE -&gt; forward(packet, &quot;DUPLICATE&quot;, rule.count());</span>
+<span class="fc" id="L73">            case DROP -&gt; {}</span>
+<span class="fc" id="L74">            case DELAY -&gt; clock.schedule(Duration.ofSeconds(rule.count()), () -&gt; forward(packet, &quot;DELAY&quot;, 1));</span>
+            case HOLD_AND_REORDER -&gt; {
+<span class="fc" id="L76">                Held pending = new Held(packet, rule.count());</span>
+<span class="fc" id="L77">                held.add(pending);</span>
+<span class="fc" id="L78">                clock.schedule(Duration.ofMinutes(4), () -&gt; timeout(pending));</span>
+            }
+        }
+<span class="fc" id="L81">    }</span>
+
+    private synchronized void timeout(Held pending) {
+<span class="fc bfc" id="L84" title="All 2 branches covered.">        if (held.remove(pending)) forward(pending.packet, &quot;HOLD_TIMEOUT_RELEASE&quot;, 1);</span>
+<span class="fc" id="L85">    }</span>
+
+    private synchronized void forward(Packet packet, String action, int copies) {
+<span class="fc bfc" id="L88" title="All 2 branches covered.">        for (int copy = 0; copy &lt; copies; copy++) {</span>
+<span class="fc" id="L89">            var builder = HttpRequest.newBuilder(target)</span>
+<span class="fc" id="L90">                    .timeout(Duration.ofSeconds(10))</span>
+<span class="fc" id="L91">                    .header(&quot;Content-Type&quot;, &quot;application/json&quot;);</span>
+<span class="fc bfc" id="L92" title="All 2 branches covered.">            if (packet.signature != null) builder.header(&quot;Stripe-Signature&quot;, packet.signature);</span>
+<span class="fc" id="L93">            var request = builder.POST(HttpRequest.BodyPublishers.ofByteArray(packet.body))</span>
+<span class="fc" id="L94">                    .build();</span>
+<span class="fc" id="L95">            Integer status = null;</span>
+<span class="fc" id="L96">            String error = null;</span>
+            try {
+<span class="fc" id="L98">                status = client.send(request, HttpResponse.BodyHandlers.discarding())</span>
+<span class="fc" id="L99">                        .statusCode();</span>
+<span class="fc" id="L100">            } catch (IOException e) {</span>
+<span class="fc" id="L101">                error = e.getClass().getSimpleName();</span>
+<span class="nc" id="L102">            } catch (InterruptedException e) {</span>
+<span class="nc" id="L103">                Thread.currentThread().interrupt();</span>
+<span class="nc" id="L104">                error = &quot;InterruptedException&quot;;</span>
+<span class="fc" id="L105">            }</span>
+<span class="fc" id="L106">            log(packet, action, copy + 1, status, error);</span>
+        }
+        // One received event counts once, including failed downstream attempts, never once per copy.
+<span class="fc" id="L109">        List&lt;Held&gt; ready = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L110" title="All 2 branches covered.">        for (Held pending : held) {</span>
+<span class="pc bpc" id="L111" title="1 of 4 branches missed.">            if (pending.packet.sequence &lt; packet.sequence &amp;&amp; --pending.remaining == 0) ready.add(pending);</span>
+<span class="fc" id="L112">        }</span>
+<span class="fc" id="L113">        held.removeAll(ready);</span>
+<span class="fc bfc" id="L114" title="All 2 branches covered.">        for (Held pending : ready) forward(pending.packet, &quot;HOLD_AND_REORDER&quot;, 1);</span>
+<span class="fc" id="L115">    }</span>
+
+    private void log(Packet packet, String action, int attempt, @Nullable Integer status, @Nullable String error) {
+<span class="fc" id="L118">        jdbc.sql(&quot;&quot;&quot;</span>
+                insert into sim_chaos.relay_log
+                (receipt_id,event_id,action,attempt_no,http_status,error,recorded_at,payload_sha256)
+                values (?,?,?,?,?,?,?,?)
+                &quot;&quot;&quot;)
+<span class="fc" id="L123">                .param(packet.receipt)</span>
+<span class="fc" id="L124">                .param(packet.eventId)</span>
+<span class="fc" id="L125">                .param(action)</span>
+<span class="fc" id="L126">                .param(attempt)</span>
+<span class="fc" id="L127">                .param(status)</span>
+<span class="fc" id="L128">                .param(error)</span>
+<span class="fc" id="L129">                .param(Timestamp.from(clock.instant()))</span>
+<span class="fc" id="L130">                .param(packet.hash)</span>
+<span class="fc" id="L131">                .update();</span>
+<span class="fc" id="L132">    }</span>
+
+    private static String hash(byte[] bytes) {
+        try {
+<span class="fc" id="L136">            return HexFormat.of().formatHex(MessageDigest.getInstance(&quot;SHA-256&quot;).digest(bytes));</span>
+<span class="nc" id="L137">        } catch (NoSuchAlgorithmException e) {</span>
+<span class="nc" id="L138">            throw new IllegalStateException(e);</span>
+        }
+    }
+
+    private static final class Held {
+        private final Packet packet;
+        private int remaining;
+
+<span class="fc" id="L146">        private Held(Packet packet, int remaining) {</span>
+<span class="fc" id="L147">            this.packet = packet;</span>
+<span class="fc" id="L148">            this.remaining = remaining;</span>
+<span class="fc" id="L149">        }</span>
+    }
+
+    @SuppressWarnings(&quot;ArrayRecordComponent&quot;)
+<span class="fc" id="L153">    private record Packet(</span>
+            long sequence,
+            UUID receipt,
+            @Nullable String eventId,
+            byte[] body,
+            @Nullable String signature,
+            String hash) {}
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.15.202606040825</span></div></body></html>

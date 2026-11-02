@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: dev.ledgerlab.sim.BankTest
+-------------------------------------------------------------------------------
+Tests run: 40, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 9.694 s -- in dev.ledgerlab.sim.BankTest

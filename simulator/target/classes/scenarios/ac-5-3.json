@@ -1,0 +1,404 @@
+{
+  "format_version": 1,
+  "start_clock": "2026-11-05T16:00:00Z",
+  "seed": 512,
+  "actions": [
+    {
+      "action": "charge",
+      "alias": "P5",
+      "line_alias": "L5",
+      "request": {
+        "amount": 6000,
+        "available_on": 1800000000
+      }
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-10T16:00:00Z"
+    },
+    {
+      "action": "charge",
+      "alias": "P1",
+      "line_alias": "L1",
+      "request": {
+        "amount": 10000
+      }
+    },
+    {
+      "action": "charge",
+      "alias": "P2",
+      "line_alias": "L2",
+      "request": {
+        "amount": 5000,
+        "fee": 205
+      }
+    },
+    {
+      "action": "charge",
+      "alias": "P3",
+      "line_alias": "L3",
+      "request": {
+        "amount": 7000
+      }
+    },
+    {
+      "action": "charge",
+      "alias": "P6",
+      "line_alias": "L6",
+      "request": {
+        "amount": 4000
+      }
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-10T17:00:00Z"
+    },
+    {
+      "action": "payout",
+      "alias": "B1",
+      "request": {}
+    },
+    {
+      "action": "reconcile",
+      "payout": "B1",
+      "request": {}
+    },
+    {
+      "action": "paid",
+      "payout": "B1",
+      "request": {}
+    },
+    {
+      "action": "external_alias",
+      "alias": "P9",
+      "prefix": "ch"
+    },
+    {
+      "action": "processor_fault",
+      "payout": "B1",
+      "request": {
+        "omit_transaction": "$L6",
+        "duplicate_transaction": "$L3",
+        "amount": 23639,
+        "extra_line": {
+          "source": "$P9",
+          "amount": 2500,
+          "fee": 103
+        }
+      }
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-11T04:50:00Z"
+    },
+    {
+      "action": "charge",
+      "alias": "P4",
+      "line_alias": "L4",
+      "request": {
+        "amount": 3000
+      }
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-11T08:00:00Z"
+    },
+    {
+      "action": "snapshot",
+      "business_date": "2026-11-10"
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-12T12:00:00Z"
+    },
+    {
+      "action": "bank_export",
+      "date": "2026-11-12",
+      "aliases": [
+        {
+          "alias": "T1",
+          "payout": "B1",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-12T13:02:00Z"
+    },
+    {
+      "action": "checkpoint",
+      "name": "first"
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-12T16:00:00Z"
+    },
+    {
+      "action": "payout",
+      "alias": "B2",
+      "request": {}
+    },
+    {
+      "action": "reconcile",
+      "payout": "B2",
+      "request": {}
+    },
+    {
+      "action": "paid",
+      "payout": "B2",
+      "request": {}
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-13T08:00:00Z"
+    },
+    {
+      "action": "snapshot",
+      "business_date": "2026-11-12"
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-13T12:00:00Z"
+    },
+    {
+      "action": "bank_export",
+      "date": "2026-11-13"
+    },
+    {
+      "action": "advance",
+      "to": "2026-11-13T13:02:00Z"
+    },
+    {
+      "action": "checkpoint",
+      "name": "second"
+    },
+    {
+      "action": "checkpoint",
+      "name": "replay-first"
+    }
+  ],
+  "checkpoints": [
+    {
+      "name": "first",
+      "cutoff_at": "2026-11-11T05:00:00Z",
+      "evidence_as_of": "2026-11-12T13:00:00Z",
+      "expected_findings": [
+        {
+          "kind": "PROCESSOR",
+          "category": "FEE_MISMATCH",
+          "subject_type": "payment",
+          "subject_id": "$P2",
+          "expected": {
+            "fee": 175
+          },
+          "actual": {
+            "fees": [
+              {
+                "fee": 205
+              }
+            ]
+          }
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "DUPLICATE_STATEMENT_LINE",
+          "subject_type": "statement_line",
+          "subject_id": "$L3",
+          "expected": {
+            "count": 1
+          },
+          "actual": {
+            "count": 2
+          }
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "MISSING_IN_LEDGER",
+          "subject_type": "processor_payment",
+          "subject_id": "$P9"
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "MISSING_IN_STATEMENT",
+          "subject_type": "payment",
+          "subject_id": "$P6"
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "BATCH_TOTAL_MISMATCH",
+          "subject_type": "batch",
+          "subject_id": "$B1",
+          "expected": {
+            "net": 25096
+          },
+          "actual": {
+            "net": 23639,
+            "difference": 1457
+          }
+        },
+        {
+          "kind": "AGING",
+          "category": "PAYMENT_NOT_SETTLED",
+          "subject_type": "payment",
+          "subject_id": "$P5"
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "TIMING_DIFFERENCE",
+          "subject_type": "payment",
+          "subject_id": "$P4",
+          "due_at": "2026-11-14T05:00:00Z"
+        }
+      ]
+    },
+    {
+      "name": "second",
+      "cutoff_at": "2026-11-13T05:00:00Z",
+      "evidence_as_of": "2026-11-13T13:00:00Z",
+      "expected_findings": [
+        {
+          "kind": "PROCESSOR",
+          "category": "FEE_MISMATCH",
+          "subject_type": "payment",
+          "subject_id": "$P2",
+          "expected": {
+            "fee": 175
+          },
+          "actual": {
+            "fees": [
+              {
+                "fee": 205
+              }
+            ]
+          }
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "DUPLICATE_STATEMENT_LINE",
+          "subject_type": "statement_line",
+          "subject_id": "$L3",
+          "expected": {
+            "count": 1
+          },
+          "actual": {
+            "count": 2
+          }
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "MISSING_IN_LEDGER",
+          "subject_type": "processor_payment",
+          "subject_id": "$P9"
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "MISSING_IN_STATEMENT",
+          "subject_type": "payment",
+          "subject_id": "$P6"
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "BATCH_TOTAL_MISMATCH",
+          "subject_type": "batch",
+          "subject_id": "$B1",
+          "expected": {
+            "net": 25096
+          },
+          "actual": {
+            "net": 23639,
+            "difference": 1457
+          }
+        },
+        {
+          "kind": "AGING",
+          "category": "PAYMENT_NOT_SETTLED",
+          "subject_type": "payment",
+          "subject_id": "$P5"
+        }
+      ],
+      "explained": [
+        {
+          "category": "TIMING_DIFFERENCE",
+          "subject_type": "payment",
+          "subject_id": "$P4",
+          "evidence_contains": "$B2"
+        }
+      ]
+    },
+    {
+      "name": "replay-first",
+      "replay_of": "first",
+      "cutoff_at": "2026-11-11T05:00:00Z",
+      "evidence_as_of": "2026-11-12T13:00:00Z",
+      "expected_findings": [
+        {
+          "kind": "PROCESSOR",
+          "category": "FEE_MISMATCH",
+          "subject_type": "payment",
+          "subject_id": "$P2",
+          "expected": {
+            "fee": 175
+          },
+          "actual": {
+            "fees": [
+              {
+                "fee": 205
+              }
+            ]
+          }
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "DUPLICATE_STATEMENT_LINE",
+          "subject_type": "statement_line",
+          "subject_id": "$L3",
+          "expected": {
+            "count": 1
+          },
+          "actual": {
+            "count": 2
+          }
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "MISSING_IN_LEDGER",
+          "subject_type": "processor_payment",
+          "subject_id": "$P9"
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "MISSING_IN_STATEMENT",
+          "subject_type": "payment",
+          "subject_id": "$P6"
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "BATCH_TOTAL_MISMATCH",
+          "subject_type": "batch",
+          "subject_id": "$B1",
+          "expected": {
+            "net": 25096
+          },
+          "actual": {
+            "net": 23639,
+            "difference": 1457
+          }
+        },
+        {
+          "kind": "AGING",
+          "category": "PAYMENT_NOT_SETTLED",
+          "subject_type": "payment",
+          "subject_id": "$P5"
+        },
+        {
+          "kind": "PROCESSOR",
+          "category": "TIMING_DIFFERENCE",
+          "subject_type": "payment",
+          "subject_id": "$P4",
+          "due_at": "2026-11-14T05:00:00Z"
+        }
+      ]
+    }
+  ]
+}

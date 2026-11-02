@@ -1,0 +1,30 @@
+{
+  "format_version" : 1,
+  "aliases" : {
+    "P1" : "ch_6c986eafe3f9b10906304bb55906222a",
+    "L1" : "txn_9ebd9b6d50e67f59b7ba080c3ce85d52",
+    "B1" : "po_00e7c49031e209d6cd50e9d0d381a5d7",
+    "B1-prime" : "po_82694425a9d9cd4c037826aa4e058cd3"
+  },
+  "checkpoints" : [ {
+    "name" : "final",
+    "cutoff_at" : "2026-11-13T05:00:00Z",
+    "evidence_as_of" : "2026-11-13T13:00:00Z",
+    "expected_findings" : [ ],
+    "expected_balances" : {
+      "1101" : 0,
+      "1102" : 0,
+      "1103" : 9680,
+      "2101" : 0,
+      "2102" : 9680,
+      "2103" : 0,
+      "2104" : 0,
+      "2105" : 0
+    },
+    "expected_entries" : [ {
+      "subject_id" : "po_82694425a9d9cd4c037826aa4e058cd3",
+      "entry_type" : "BATCH_SETTLED",
+      "posting_count" : 2
+    } ]
+  } ]
+}

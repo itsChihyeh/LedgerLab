@@ -6,6 +6,7 @@ T02-payout-schema.md
 T03-payout-acceptance-api.md
 T04-payout-outbound.md
 T05-bank-payout-evidence.md
+T04b-returned-api-status.md
 T06-payout-query-api.md
 T07-correction-failed-payout-paid.md
 T08-payout-recon-aging.md
