@@ -29,7 +29,7 @@ Claude 按用户授权定稿。本节是 P5 的设计正本；与上文及 state
 - `core.payout`（数据字典已列字段）补：`currency`（固定 `CAD`）、`reserved_at`、`bank_execution_date` NULL、`paid_at` NULL、`failed_at` NULL、`returned_at` NULL、`return_reason` NULL、`updated_at`。`id` = `mpo_` ULID = `bank_request_id`。`merchant_payout_ref` UNIQUE（永久业务编号）。`amount` 1～99999999。
 - `core.payout_status_history`（只追加）：`payout_id`、`from_status` NULL、`to_status`、`evidence_type`（`api`/`bank_api`/`bank_txn`/`correction`/`operator`）、`evidence_id`、`occurred_at`、`recorded_at`。
 - `recon.bank_line` 增加 `matched_payout_id` NULL（FK `core.payout`），`match_status` 增加 `PAYOUT_PAID`（DEBIT 出账已记 `PAYOUT_PAID`）、`PAYOUT_RETURNED`（CREDIT 退回已记 `PAYOUT_RETURNED`）。`app` 可 UPDATE 的列加 `matched_payout_id`。CHECK：这两个状态要求 `matched_payout_id` 非空；`PAYOUT_PAID` 只限 DEBIT、`PAYOUT_RETURNED` 只限 CREDIT。
-- 出站命令 `SUBMIT_PAYOUT`（与受理同事务建，`request_id = subject_id = mpo_…`）和 `QUERY_PAYOUT`（运营查询时建）沿用 `io.outbound_command`，不新增命令表。
+- 出站命令 `SUBMIT_PAYOUT`（与受理同事务建，`request_id = subject_id = mpo_…`）和 `QUERY_PAYOUT`（运营查询时建）沿用 `io.outbound_command`，不新增命令表。`request_id` 原来全局唯一，改为两个部分唯一索引（P5 T02 审查定）：提交类命令（`SUBMIT_*`）按 `request_id` 永久唯一；查询类命令（`QUERY_*`）按 `(kind, request_id)` 只对未完成（`status <> DONE`）的唯一，完成后可再查。
 
 ### 2. 受理 `POST /api/payouts`
 
