@@ -256,3 +256,10 @@ T,1,9680,0,0,9680
 - 正常流水在银行实际 booking_date 的文件里出现；PENDING_FIRST 首次在原定下一个工作日出现，booking_date/value_date 从开始就固定为其**下一日历日**（可以是周末）；次日同一 bank_txn_id 只把 status 变成 BOOKED。第一日 PENDING、第二日 BOOKED 的两份文件各从 v1 开始；不要求两个日期的文件版本递增。重导历史日期仍恢复当日状态，不把旧 PENDING 文件改成 BOOKED。
 - 同一日重导规范内容不变时返回相同版本和字节；内容变化才版本 +1，保留已导出的全部干净版本。明细排序为 booking_date、bank_txn_id；文件版本持久化，进程重启后继续计数。
 - 可选 `corrupt=trailer_count|trailer_sum|balance` 分别把尾部行数、入账合计、期末余额加 1，其他内容不动；只损坏响应，不修改银行流水、余额、已存干净文件或版本。未知参数值返回 400。每次坏文件注入记入 sim_truth；T08 按原始文件保留和整份拒绝规则处理。
+
+#### P5 T01 实现备注：出站付款
+
+- 出站接口按 ADR-0006 补充第 3 节实现。POST 和详情 GET 的付款对象为 `{paymentId, requestId, status, executionDate, reason}`，无原因时 reason 为 null；列表 GET 返回同形对象的 JSON 数组，按 recorded_at、request_id 排序，不触发 REJECT_ON_QUERY。错误体为 `{code}`（REQUEST_CONFLICT、NOT_FOUND、UNAVAILABLE、INVALID_REQUEST）。重复 POST 返回当前状态，后设 TIMEOUT/EXECUTE_DROP_RESPONSE 不影响已经受理的幂等重试；UNAVAILABLE 仍作用于每次 POST/GET。
+- `sim.bank.timeout` / `SIM_BANK_TIMEOUT` 控制 TIMEOUT 挂起上限，默认 PT30S；使用异步响应，等待期间不持有事务或银行账户锁，上限到达返回 504 TIMEOUT。客户端应设置更短的读超时。
+- EXECUTE_DROP_RESPONSE 在事务提交后关闭响应流且不写响应体；声明未完成的 Content-Length 并关闭连接，使真实 HTTP 客户端报截断连接错误。只在首次受理时注入，同 requestId 重试返回 200。
+- 到期出账为 `bt_{requestId}_1`、DEBIT、memo `Payout {requestId}`；到期退回为 `bt_{requestId}_R`、CREDIT、memo `RETURN ACCOUNT_CLOSED`。均为 CAD/BOOKED，reference 为 mpo_ 请求号，booking_date/value_date/visible_date 为执行或退回日，日报沿用原格式与合计规则。

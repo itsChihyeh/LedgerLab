@@ -423,6 +423,15 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 处理方和银行的状态分开存、分开推进，避免两边共享同一个错误（I6）。
 
+### P5 T01 实现备注（模拟器 V6）
+
+- `sim_bank.outgoing_payment`：`request_id text PK`（mpo_）、`payment_id text UNIQUE`（bpm_ 加请求号去掉 mpo_ 的后缀，确定性外部编号）、`account_ref FK account`、`amount bigint`（1～99999999）、`currency`（CAD）、非空 `destination`、`status`（ACCEPTED/EXECUTED/REJECTED/RETURNED）、可空 `reason`、`execution_date date`、可空 `return_due_date date`、冻结的 `plan jsonb` 对象、`recorded_at timestamptz`。新表由 simulator 拥有，PUBLIC、migrator、app、readonly 无权限。
+- `txn.payout_ref` 改为可空，增加 `request_id FK outgoing_payment`；CHECK 要求两个来源恰好一个非空，既有入账外键保留。出账/退回编号为 `bt_{requestId}_1` / `bt_{requestId}_R`，reference 均为 requestId。
+- `fault_plan` 扩展七种出站故障；HTTP 计划兼容 `payout_ref`，也接受 `target_ref`（两者不可同时出现），支持 mpo_ 或 *。UNAVAILABLE 的 parameter 是持久化剩余次数，每次 POST/GET 在账户锁内递减；列表 GET 消费全局 * 规则。其余执行计划在受理时冻结。TIMEOUT 不建付款行，但请求与故障真值仍记录。
+- 账户锁同时串行化付款去重、计划计数、执行与退回。推进按事件日期、退回优先、请求号顺序处理；可用银行余额只累计执行日期及以前的 BOOKED 流水。REJECT_ON_QUERY 永不执行；EXECUTE_AFTER_REJECT 仅在没有执行流水时尝试一次，余额不足后不再尝试。
+- 通配计划按入账/出账故障类型隔离：对当前方向不适用的故障冻结为 NONE，不记伪故障真值。EXECUTE_AFTER_REJECT 的初始拒绝原因固定为 BANK_REJECTED（memo 原因码仅供 REJECT/REJECT_ON_QUERY），与实际执行时的 INSUFFICIENT_FUNDS 区分。
+- 请求、执行、退回真值复用 `sim_truth.injected_fault`，fault 分别为 PAYMENT_REQUEST、PAYMENT_EXECUTED、PAYMENT_RETURNED；实际故障另记原故障名，正常事件 expected_category 为 NONE。全部时间取注入的模拟 Clock。
+
 ### P3 T06 实现备注（模拟器 V5）
 
 - 新表仍由 `simulator` 迁移、拥有；PUBLIC、migrator、app、readonly 的表和序列权限全部显式撤销。业务时间取 SimulationClock，`recorded_at` 取注入的审计 Clock；REST 时间转换为 Unix 秒。

@@ -22,11 +22,12 @@ public final class Bank implements IncomingTransfers {
     private static final String ACCOUNT = "SIM-CAD-001";
     private static final long LINE_MAX = 99999999;
     private static final ZoneId TORONTO = ZoneId.of("America/Toronto");
-    private static final List<String> FAULTS = List.of(
+    private static final List<String> INCOMING_FAULTS = List.of(
             "NONE", "SHORT", "DUPLICATE", "SPLIT", "DELAY_DAYS", "PENDING_FIRST", "FOREIGN_CURRENCY", "UNKNOWN_CREDIT");
     private final JdbcClient jdbc;
     private final TransactionTemplate transaction;
     private final Clock clock;
+    private final OutgoingPayments outgoing;
     private final BankCalendar calendar = new BankCalendar();
     private final JsonMapper json = JsonMapper.builder().build();
 
@@ -34,6 +35,7 @@ public final class Bank implements IncomingTransfers {
         this.jdbc = jdbc;
         this.transaction = new TransactionTemplate(manager);
         this.clock = clock;
+        this.outgoing = new OutgoingPayments(jdbc, clock);
     }
 
     private LocalDate today() {
@@ -57,14 +59,16 @@ public final class Bank implements IncomingTransfers {
 
     public JsonNode plan(JsonNode request) {
         if (!request.isObject()
-                || !List.of("payout_ref", "scenario", "fault", "parameter", "memo")
+                || !List.of("payout_ref", "target_ref", "scenario", "fault", "parameter", "memo")
                         .containsAll(request.propertyNames())) throw invalid("plan fields");
-        String target = text(request, "payout_ref", "*");
+        if (request.has("payout_ref") && request.has("target_ref")) throw invalid("duplicate target");
+        String target = text(request, "target_ref", text(request, "payout_ref", "*"));
         String scenario = text(request, "scenario", "manual");
         String fault = text(request, "fault", "NONE");
         String memo = text(request, "memo", "Simulated bank transfer");
-        if (!(target.equals("*") || target.startsWith("po_")) || scenario.isBlank() || !FAULTS.contains(fault))
-            throw invalid("plan");
+        if (!(target.equals("*") || target.startsWith("po_") || target.startsWith("mpo_"))
+                || scenario.isBlank()
+                || !(INCOMING_FAULTS.contains(fault) || OutgoingPayments.FAULTS.contains(fault))) throw invalid("plan");
         JsonNode parameter = request.path("parameter");
         if (!parameter.isMissingNode() && (!parameter.isIntegralNumber() || !parameter.canConvertToLong()))
             throw invalid("parameter must be an integer");
@@ -72,9 +76,11 @@ public final class Bank implements IncomingTransfers {
         if (value < 0
                 || value > LINE_MAX
                 || ((fault.equals("SHORT") || fault.equals("UNKNOWN_CREDIT")) && value == 0)
-                || (fault.equals("DELAY_DAYS") && (value < 1 || value > 730))
-                || (!List.of("SHORT", "UNKNOWN_CREDIT", "DELAY_DAYS").contains(fault) && value != 0))
-            throw invalid("parameter range");
+                || (List.of("DELAY_DAYS", "RETURN_AFTER_DAYS").contains(fault) && (value < 1 || value > 730))
+                || (fault.equals("UNAVAILABLE") && value < 1)
+                || (!List.of("SHORT", "UNKNOWN_CREDIT", "DELAY_DAYS", "RETURN_AFTER_DAYS", "UNAVAILABLE")
+                                .contains(fault)
+                        && value != 0)) throw invalid("parameter range");
         var normalized = json.createObjectNode()
                 .put("payout_ref", target)
                 .put("scenario", scenario)
@@ -131,6 +137,10 @@ public final class Bank implements IncomingTransfers {
                             .put("fault", "NONE")
                             .put("parameter", 0)
                             .put("memo", "Simulated bank transfer"));
+            if (!INCOMING_FAULTS.contains(plan.path("fault").asText()))
+                ((tools.jackson.databind.node.ObjectNode) plan)
+                        .put("fault", "NONE")
+                        .put("parameter", 0);
             String fault = plan.path("fault").asText();
             long parameter = plan.path("parameter").asLong();
             if ((fault.equals("SHORT") && parameter >= amount) || (fault.equals("SPLIT") && amount < 2))
@@ -177,6 +187,27 @@ public final class Bank implements IncomingTransfers {
         });
     }
 
+    public OutgoingPayments.Result submitPayment(JsonNode request) {
+        return Objects.requireNonNull(transaction.execute(status -> {
+            lock();
+            return outgoing.submit(request);
+        }));
+    }
+
+    public OutgoingPayments.Result payment(String requestId) {
+        return Objects.requireNonNull(transaction.execute(status -> {
+            lock();
+            return outgoing.get(requestId);
+        }));
+    }
+
+    public OutgoingPayments.Result payments() {
+        return Objects.requireNonNull(transaction.execute(status -> {
+            lock();
+            return outgoing.list();
+        }));
+    }
+
     private void executeDue() {
         var due = jdbc.sql(
                         "select payout_ref,claimed_amount,plan::text,due_date from sim_bank.incoming_transfer where not executed and due_date<=? order by due_date,payout_ref")
@@ -196,6 +227,7 @@ public final class Bank implements IncomingTransfers {
         jdbc.sql("update sim_bank.txn set status='BOOKED' where status='PENDING' and booking_date<=?")
                 .param(today())
                 .update();
+        outgoing.executeDue(today());
         long balance = 0;
         for (Line line : rows()) {
             if (line.status().equals("BOOKED"))
@@ -229,7 +261,9 @@ public final class Bank implements IncomingTransfers {
         while (amount > 0) {
             long part = Math.min(amount, LINE_MAX);
             jdbc.sql("""
-                    insert into sim_bank.txn values (?,?,?,'CREDIT',?,?,?,?,?,?,?,?,?)
+                    insert into sim_bank.txn (bank_txn_id,account_ref,payout_ref,direction,amount,currency,status,
+                        reference,booking_date,value_date,visible_date,memo,recorded_at)
+                    values (?,?,?,'CREDIT',?,?,?,?,?,?,?,?,?)
                     """)
                     .param("bt_" + transfer.id() + "_" + sequence)
                     .param(ACCOUNT)

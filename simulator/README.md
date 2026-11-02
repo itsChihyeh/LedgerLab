@@ -217,6 +217,33 @@ charge=ch_REPLACE&amount=2000&metadata%5Bledgerlab_refund_id%5D=rfd_demo
 
 每次实际使用非 NONE 计划接收转账时，原子追加 `sim_truth.injected_fault`（场景、payout 号、故障、预期差异类别）；重复通知不重复记真值。设置但未使用的计划不算已注入故障。真值只描述本次注入，不从主应用账本或对账结果倒推；T12 再按场景时点处理延迟升级等派生发现。
 
+### 出站付款（P5 T01）
+
+```http
+POST /sim/bank/payments
+Content-Type: application/json
+
+{"requestId":"mpo_example","amount":9680,"currency":"CAD","destination":"MERCHANT-001"}
+```
+
+首次 201 返回 `{paymentId, requestId, status, executionDate, reason}`，默认 ACCEPTED；金额为 1～99999999 整数分。相同 requestId/金额/币种/收款方重试返回 200 和原付款当前状态，内容冲突返回 409 `REQUEST_CONFLICT`。`GET /sim/bank/payments/{requestId}` 查询当前状态，未知号 404 `NOT_FOUND`；`GET /sim/bank/payments` 返回全部付款数组。
+
+推进到下一个银行工作日后写 DEBIT；银行余额不足则 REJECTED / INSUFFICIENT_FUNDS，无出账。付款和退回流水进入既有日报，reference 为请求号。账户需要先通过处理方入账获得余额。
+
+`PUT /sim/bank/plan` 接受 `target_ref: "mpo_example"`（兼容 `payout_ref`，不可同时提供）或 `*`。以下故障只影响出站付款，原入账故障也不会影响出站付款；请求号规则优先，执行计划在受理时冻结。
+
+| fault | 参数与效果 |
+|---|---|
+| TIMEOUT | 不建付款行；异步挂起，默认 30 秒后返回 504。`SIM_BANK_TIMEOUT` / `sim.bank.timeout` 可用 PT1S 等 Duration 配置；客户端用更短超时 |
+| EXECUTE_DROP_RESPONSE | 首次受理提交后中断响应，不写响应体，客户端得到连接错误；仍按执行日出账，重试返回 200 |
+| UNAVAILABLE | parameter 为 1～99999999 次；POST/GET 共享持久计数，前 n 次 503，用完恢复；列表 GET 消费全局规则 |
+| REJECT | 首次 201 REJECTED，memo 为原因码，无出账 |
+| REJECT_ON_QUERY | 首次 ACCEPTED；下一次详情 GET 变成 REJECTED，memo 为原因码；永不执行 |
+| EXECUTE_AFTER_REJECT | 首次 REJECTED / BANK_REJECTED，执行日仍尝试出账，供冲突证据测试 |
+| RETURN_AFTER_DAYS | parameter 为 1～730 工作日；执行后第 n 个工作日 CREDIT 退回，RETURNED / ACCOUNT_CLOSED |
+
+除上述 parameter 外均用 0。TIMEOUT 仅影响尚未受理的请求，EXECUTE_DROP_RESPONSE 仅首次受理触发；UNAVAILABLE 作用于已受理付款的重试与查询。请求、实际执行、退回和故障均记入 sim_truth。接口及 CSV 的实现口径见 [contracts 4.1](../docs/design/contracts.md#41-银行-csv-文件格式p2-t07t08-解析契约)，`BankPaymentTest` 使用真实 HTTP 与 PostgreSQL 验证这些场景。
+
 ### 银行流水 CSV
 
 规范与 [contracts 第 4.1 节](../docs/design/contracts.md#41-银行-csv-文件格式p2-t07t08-解析契约) 一致，T08 按此解析：
