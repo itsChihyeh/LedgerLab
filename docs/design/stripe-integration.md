@@ -206,6 +206,9 @@ P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at`
 8. 测试模式的自动 payout 会走到 `reconciliation_status=completed` 并发出 `payout.reconciliation_completed`。这一条决定 P2 的批次触发方式：P2 先按官方文档在 fake Stripe 里实现；如果那时测试账号已经注册，就在 P2 开工前先验证这一条，否则 P6 接账号后第一个验证。
 9. 用 Stripe 的 default test-mode sandbox 还是新建的独立 sandbox：接账号时选定一种并写在这里，文档里统一称“测试模式”。
    **已定（2026-10-23）**：用户注册了加拿大账号，使用 Stripe 自带的默认测试沙盒（Dashboard 显示“测试企业 沙盒”），不另建 sandbox。开发用受限密钥 `ledgerlab-dev`（`rk_test_…`，只放在本地 `.env` 的 `STRIPE_API_KEY`），权限：Balance、Balance Transaction Sources、Events、Payouts 读取；Charges and Refunds、Payment Intents 写入，其余全部无。第 1～8 条尚未实测。第 8 条原定 P2 开工前实测；2026-10-23 改为 P2 期间做（新账号的首次自动 payout 要等 Stripe 的初始等待期，开工前等不到），P2 先按官方文档在 fake Stripe 里实现 `reconciliation_completed` 触发，并保留“查询 payout 对象看到 `completed`”的后备路径，所以实测结果即使相反也只改触发方式、不改批次核对。
+10. 受限密钥能否用于 `stripe listen`（`--api-key rk_test_…`）；不能则用户本人 `stripe login` 一次。
+11. `stripe events resend evt_…` 能否把事件重投给正在运行的 `stripe listen`（9.2 补投依赖它）。
+12. 真实事件的 `api_version` 是否等于第 8 节固定的版本；不同就按第 8 节“升级 API 版本是一次单独的改动”处理，P6 先如实记录。
 
 ## 8. 协议版本（P1 开工前固定）
 
@@ -215,3 +218,67 @@ P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at`
 - 验签：用原始请求体按 Stripe 方案算 HMAC；时间窗口**两侧**都检查（`|now − t| ≤ 300 秒`）。SDK 的验签函数只拒绝过旧的时间戳，未来时间要我们自己补检查。
 - P1b 配置为 `ledgerlab.stripe.webhook-secret`（`STRIPE_WEBHOOK_SECRET`，必填且以 `whsec_` 开头）和 `ledgerlab.stripe.api-key`（`STRIPE_API_KEY`，可空，非空须以 `sk_test_` 或 `rk_test_` 开头）；启动时校验且错误不包含密钥值。签名有效但 JSON 不合法或缺少 `id/type/api_version/livemode/created` 时返回 400、不入库。
 - P1 的 fake Stripe 只需要 `charge.succeeded`；事件 JSON 按上述版本的官方对象定义写，P6 用真实录制夹具对照（第 6 节）。
+
+## 9. P6 真实沙箱运行（开工设计，2026-11-02）
+
+本节是 P6 的设计正本，补齐第 1 节“真实沙箱运行”一列没讲清的部分。原则不变（ADR-0016）：真实沙箱是**运行模式**，不进每次 CI；CI 只跑录制夹具的契约测试。只用测试模式；`livemode=true`、`sk_live_`/`rk_live_` 一律拒绝。
+
+### 9.1 运行形态
+
+- **一套长期运行的本机栈**：Compose 项目名固定 `ledgerlab-sandbox`，profile `sandbox`，**持久卷**（自动 payout 要等一到几天，栈要能跨天、跨重启继续）。服务：postgres、simulator（只用 chaos relay、模拟银行和 9.3 的沙箱桥；fake Stripe 接口在但不用）、app。和冒烟用的一次性项目完全分开，端口也分开（app 18080、simulator 18081、postgres 15432，只绑 127.0.0.1）。
+- **入站**：`stripe listen --forward-to http://127.0.0.1:18081/relay/stripe --events <第 2 节订阅列表＋charge.dispute.created>` → chaos relay → app `POST /webhooks/stripe`。relay 原样转发，签名是 Stripe 的真实签名。`stripe listen` 由脚本作为后台进程管理（pid 和日志在 `.sandbox/`），签名密钥用 `stripe listen --print-secret` 取得。
+- **出站**：app 的 `STRIPE_API_BASE_URL` 指向 relay 的出站代理 `http://simulator:8081/relay/stripe-api`（9.4），代理再转发到 `https://api.stripe.com`。所有读（payout、balance transactions、退款查询、对账快照）和写（退款）都经过它，故障注入和录制都在这一处。
+- **密钥**：`STRIPE_API_KEY` 只从本机 `.env` 读，脚本 `scripts/sandbox/env.sh` 只做 `export`，绝不 echo；前缀必须是 `rk_test_`（或 `sk_test_`），否则退出。`stripe listen` 给的 `whsec_` 写进 `.sandbox/secrets.env`（`.gitignore` 忽略整个 `.sandbox/`），app 启动时注入。日志、报告、夹具里不出现任何密钥（gitleaks 兜底）。Stripe CLI 用 `--api-key` 传同一把受限密钥；如果实测（第 7 节第 10 条）受限密钥不能 `listen`，需要用户本人执行一次 `stripe login`，这是 P6 唯一可能需要用户动手的地方。
+- **运行编号**：每次运行有 `run_id`（`sbx_` + UTC 时间）和开始时刻，写进 `.sandbox/run.json`；流量生成器给 PaymentIntent 的 `metadata[ledgerlab_run_id]` 带上它，报告按它和时间窗统计。
+- **模拟时钟跟随现实**：simulator 在 sandbox profile 下打开 `sim.clock.follow-wall=true`，每秒把模拟时钟推进到现实 UTC（只进不退），relay 的延迟/扣留和模拟银行的入账日因此按现实时间走。默认（测试、冒烟）仍然冻结，行为不变。
+
+### 9.2 漏收补投
+
+本机会休眠，`stripe listen` 会断，测试模式的自动重试也不可靠（第 7 节第 6 条）。所以每次运行和每次恢复都先做补投：
+
+1. 用 Events API `GET /v1/events?created[gte]=<窗口起点>&types[]=…` 翻完全部分页（任何一页失败都算“不完整”，不据此下结论），得到订阅类型的事件编号。
+2. 对照 app 已收到的事件（`GET /api/events/{eventId}`，404 = 没收到）。
+3. 缺的用 `stripe events resend evt_…` 让 Stripe 重新签名投递（实测第 7 节第 11 条确定 CLI 监听会不会收到重投）。**不伪造签名，不绕过 relay 直接写 inbox。**
+4. 重投后仍缺的事件列进运行报告“漏收”一栏。payout 的明细就绪本来就有兜底轮询（第 2 节 T05 备注），不依赖补投。
+
+窗口起点默认取运行开始时刻，可用参数改早（例如覆盖 P6 实测时产生的对象）。
+
+### 9.3 沙箱桥（simulator 的 `sandbox` 包，只在 sandbox profile 装配）
+
+- **流量生成器** `POST /sim/sandbox/payments {"count":20,"card":"pm_card_bypassPending","seed":1}`：按种子生成 500～20000 分的金额，逐笔 `POST /v1/payment_intents`（`amount`、`currency=cad`、`payment_method=<测试 PaymentMethod>`、`payment_method_types[]=card`、`confirm=true`、`metadata[ledgerlab_run_id]`），`Idempotency-Key = <run_id>:pay:<序号>`，所以重跑同一批不会多扣。只走自动请款。卡：`pm_card_bypassPending`（资金立即可用，便于尽快产生 payout）和加拿大国内卡（验证第 7 节第 3 条费率）。每笔结果追加进 simulator 自己的表（`sim_sandbox` schema，主应用不读）。
+- **模拟银行对接真实 payout** `POST /sim/sandbox/bank/sync`：列出窗口内 `status=paid` 的 payout（翻完全部分页），对 `automatic=true`、`method=standard`、`currency=cad`、`amount>0` 的调用已有的 `IncomingTransfers.receive(po_…, amount)`（已有幂等，重复同步不重复入账）；入账日仍由模拟银行自己的日历和计划决定（第 1 节）。simulator 只读 Stripe，不读主应用的库。
+- 两个接口都用同一把 `STRIPE_API_KEY`，启动时同样拒绝 live 前缀；请求也经过 9.4 的出站代理，以便录制。
+
+### 9.4 chaos relay 的出站代理
+
+- `ANY /relay/stripe-api/**` 原样转发到 `sim.relay.upstream-api-url`（默认 `https://api.stripe.com`；测试用 loopback）：方法、路径、查询串、请求体，以及 `Authorization`、`Stripe-Version`、`Idempotency-Key`、`Content-Type` 头；响应状态、正文和 `Content-Type`、`Request-Id` 原样返回。`Authorization` 带 live 前缀的直接 403，不转发。不跟随重定向。
+- relay 计划增加出站规则：`{"direction":"OUTBOUND","method":"POST","path_prefix":"/v1/refunds","action":"DROP_RESPONSE","times":1}`。动作：`PASS`；`DROP_RESPONSE`（请求照发、等上游响应完成，然后给调用方 504，制造“对方已执行、我们不知道”）；`FAIL_BEFORE_SEND`（不转发，直接 503）。`times` 用完后回到 PASS。原有入站规则不带 `direction`，含义不变。
+- 出站日志进新表（只追加）：方法、路径（不含查询串里的值以外的头）、上游状态、动作、耗时、请求与响应正文的 SHA-256；**正文只在录制开关打开时保存**（9.5），头一律不存。
+- `GET /sim/relay/stats?since=…` 返回两个方向各动作的次数，供运行报告用。
+
+### 9.5 录制与脱敏
+
+- 录制开关在 sandbox profile 下默认打开：入站 webhook 原文（relay 收到的请求体）和出站交换的请求/响应正文存进 simulator 的录制表。
+- `scripts/sandbox/record-fixtures` 按场景导出夹具到 `src/test/resources/contracts/stripe-sandbox/<场景>/`，带 `manifest.json`（场景、顺序、类型、API 版本、录制时间、run_id）。导出时脱敏（simulator 里的 Java 代码，有单测）：账号号 `acct_…` → `acct_REDACTED`；邮箱、姓名、地址、电话、`billing_details`、`receipt_url`、`client_secret`、卡 `fingerprint` 置空或去掉；对象编号（`ch_`/`pi_`/`re_`/`po_`/`txn_`/`evt_`）、金额、币种、时间、状态保留。导出后再扫一遍：出现 `sk_`、`rk_`、`whsec_`、`_secret_`、`@` 即失败。
+- 场景固定为：S1 支付成功（charge.succeeded＋其 balance transaction）；S2 退款成功（POST /v1/refunds 响应＋refund.created/updated）；S3 退款 pending（余额不足时，能复现才录）；S4 payout（payout.created → reconciliation_completed → paid，及 `balance_transactions?payout=` 分页）；S5 签名错误（本地篡改，不需要录制）。
+
+### 9.6 契约测试（AC-8.3，进 CI，不联网）
+
+- 主应用：录制的 webhook 喂给 `StripeEventParser`、请款准入、退款解析、payout 解析；录制的 API 响应由 loopback HttpServer 回放给 `RestStripeReader`、`StripeRefundAdapter`。断言映射出的字段等于 manifest 里写的期望。
+- “我们用到的字段”只在一个地方定义：`contracts/stripe-sandbox/used-fields.json`（按对象类型列字段路径）。simulator 侧测试让 fake Stripe 跑同样的场景，比较事件类型序列和这些字段的存在性与类型；夹具在 simulator 测试资源里放一份逐字节相同的副本（沿用 P3 `refund-updated-failed.json` 的做法，主应用侧有测试检查两份哈希一致）。差异以真实 Stripe 为准修 fake；修不了的（例如真实的 pending 调度）写进本节“已知差异”表和运行报告。
+
+### 9.7 对账接真实数据（AC-8.9）与运行报告（AC-8.10）
+
+- 对账沿用 P2 的 `RECON_SNAPSHOT` 路径，只是 base URL 指向出站代理；输入存档、哈希和截止时点照旧。差异里的 subject 必须是 Stripe 对象编号（`po_`、`txn_`、`ch_`、`re_`），报告逐条列出。
+- `scripts/sandbox/report` 只用公开 HTTP 接口（app 的 `/api/*`、simulator 的 `/sim/*`）和 Stripe 只读列表生成 `docs/runs/sandbox-<run_id>.md` 与同名 `.json`（脱敏后提交）：支付/退款/payout 数量（Stripe 侧和本地两边）、各状态分布、relay 两个方向各动作次数、`stripe events resend` 次数、漏收事件、不变量检查结果（违反次数，必须为 0 才算通过）、对账发现、fake 与真实 Stripe 的已知差异。不变量用账本已有的审计检查；没有 HTTP 入口就在 `investigation` 加只读的 `GET /api/audit/invariants`。
+- 简历和 README 里的数字只能引用这些报告。
+
+### 9.8 沙箱验收脚本
+
+`scripts/sandbox/` 下（Git Bash／POSIX sh，Python 3 做 HTTP 断言，和冒烟脚本同一风格）：`up`、`down`（保留卷）、`status`、`catchup`（9.2＋银行同步＋银行流水导入）、`traffic`、`accept`（AC-8.4、8.5、8.6、8.9 的顺序断言）、`check-payout`（AC-8.8，payout 走完才通过，没走完输出“等待中”并以 75 退出）、`record-fixtures`、`report`。这些脚本需要密钥，不进 CI。
+
+### 9.9 已知差异（随实测补充）
+
+| 项目 | fake Stripe | 真实 Stripe 测试模式 |
+|---|---|---|
+| （待 P6 实测填写） | | |

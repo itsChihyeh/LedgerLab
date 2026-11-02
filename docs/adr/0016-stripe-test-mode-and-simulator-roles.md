@@ -30,3 +30,10 @@
 - 后果里“幂等键会在 24 小时后过期”改为：Stripe 的幂等键**至少保留 24 小时**，之后可能被清理。
 - Stripe API 版本、SDK 版本和事件格式在 P1 开工前固定（design/stripe-integration.md 第 8 节），不等到 P6。
 - fake Stripe 要按 Stripe 的规则维护可用余额（退款不够时 pending）和 payout 明细就绪（`reconciliation_status`），否则模拟器测过的行为和真实 Stripe 不一致。
+
+## 补充（2026-11-02，P6 开工）
+- 真实沙箱运行是本机一套长期运行、持久卷的独立栈（`ledgerlab-sandbox`），因为自动 payout 要跨天；冒烟仍用一次性栈。
+- 出站故障注入落在 chaos relay 的出站代理上（同一进程、同一计划格式），录制也在这里做；主应用只是把 base URL 指过去，没有沙箱专用分支。
+- 漏收的事件只能让 Stripe 重新签名投递（`stripe events resend`），不伪造签名、不绕过 webhook 入口；补不回来的如实写进运行报告。
+- 流量生成器和“模拟银行接真实 payout”放在 simulator 的 sandbox 包里，主应用不知道它们存在。
+- 细节见 design/stripe-integration.md 第 9 节。
