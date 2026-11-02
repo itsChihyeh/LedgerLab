@@ -297,6 +297,12 @@ MA 不再增加：这笔钱在 B1 确认时已经转过可用。
 - expected 为银行 closing_balance，actual 为账上 cash、`difference = closing_balance - cash` 和该期间 WAITING 合计；均 long 精确运算，汇总检查 JSON 安全整数范围。差额非零且恰等于期间 WAITING 合计时报 TIMING_DIFFERENCE，due_at 取其中最早 wait_until；否则报 BANK_BALANCE_MISMATCH。
 - 银行报表差异 subject 为 `bank_statement`、`账户:period_start:period_end`，具体文件版本留在证据引用中；因此新版本能解释同一期间的旧差异。流水身份选择证据时点前、选定输入中的最高行版本；重复文件中的原样行沿用原行身份，不重复累计现金。未选入输入的银行文件不能解释批次，但本地账本现金仍按可见全部分录核对。
 
+### P5 T08 实现备注：提现对账的不变量与现金归期
+
+- INV-11 的 1103 汇总加入 `PAYOUT_PAID`（贷）、`PAYOUT_RETURNED`（借）和纠错⑤ `CONFIRM_FAILED_PAYOUT_PAID` 的 `CORRECTION`（贷）。普通提现银行分录的 subject 为 payout，按不可变 `source_key=bank_txn:{id}` 找流水；纠错按关联 correction 的 `params.bankTxnId` 找流水。均按该流水的 booking_date 归期，不按纠错或导入时间归期。
+- 分录、纠错、提现历史和银行文件／行均只取 `recorded_at < evidence_as_of` 的证据；文件另检查 received_at。银行现金延续 P2 的全体可见分录口径，匹配则仅使用本次选定输入。旧时点不会借用当前 payout 状态、bank_txn_id、return_bank_txn_id、match_status 或账户余额；差额仍为银行期末减账本现金，失败后出账 9680 未记账时显示 −9680，纠错后归零。
+- `PayoutReconTest` 在受理、非终态、失败、出账、退回及纠错检查点增加 INV-9：2104 = Σ RESERVED／SUBMITTED／UNKNOWN／ACCEPTED 的提现金额，并同时运行既有账本不变量。未新增汇总差异类别；提现 jqwik 动作仍属 T09。定向真库测试覆盖 AC-7.7、AC-7.11、AC-7.18 和 AC-6.15 留给 T08 的银行余额断言。
+
 | 立项稿 | 现在 | 原因 |
 |---|---|---|
 | 批次结算直接借“结算现金” | 先借“结算在途”，银行流水到了才转现金 | S2 |

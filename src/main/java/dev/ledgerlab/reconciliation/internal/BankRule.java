@@ -33,7 +33,7 @@ public final class BankRule implements ReconRule {
 
     @Override
     public String version() {
-        return "p4-v2";
+        return "p5-v1";
     }
 
     @Override
@@ -51,6 +51,23 @@ public final class BankRule implements ReconRule {
         var snapshot = evidence.read(context);
         Instant cutoff = context.request().cutoffAt();
         var date = calendar.businessDateOf(cutoff);
+        for (var payout : PayoutEvidence.read(jdbc, context.request().evidenceAsOf())) {
+            if (!payout.reserved().isBefore(cutoff)
+                    || !List.of("PAID", "RETURNED").contains(payout.status())) continue;
+            boolean paid = payout.matches(snapshot.lines(), payout.paidTxn(), "DEBIT");
+            boolean returned = !payout.status().equals("RETURNED")
+                    || payout.matches(snapshot.lines(), payout.returnedTxn(), "CREDIT");
+            result.check(
+                    "PAYOUT_STATE_CONFLICT",
+                    "payout",
+                    payout.id(),
+                    !paid || !returned,
+                    Map.of("status", payout.status(), "amount", payout.amount(), "matched", true),
+                    Map.of("paid_matched", paid, "returned_matched", returned),
+                    payout.references(snapshot),
+                    null,
+                    "Payout bank evidence matched: " + payout.id());
+        }
         for (var batch : snapshot.batches()) {
             boolean missing = !batch.status().equals("PAYOUT_FAILED") && !snapshot.matched(batch);
             Instant due = calendar.dueAt(batch.occurred(), policy.depositBusinessDays());

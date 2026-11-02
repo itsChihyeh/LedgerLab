@@ -47,6 +47,8 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。对应复核 I
 | 提现结果未知或已受理还没出账 | 提交时刻 | 1 个工作日 | `PAYOUT_UNRESOLVED` |
 | 入站事件停在 `PARKED` | `received_at` | 1 小时，`ledgerlab.recon.aging.parked-event` | `EVENT_PARKED_AGED` |
 
+P5 T08 实现备注：提现起点按 ADR-0006 第 6 节取首次 SUBMITTED／UNKNOWN／ACCEPTED 历史的最早 occurred_at，无上述历史（包括 RESERVED 未发送）则取初始 RESERVED 历史。配置 `ledgerlab.recon.aging.payout-business-days` 默认 1、必须为正；和退款本地操作一样按 evidence_as_of 判断到期，达到 due_at 即报告，不因重试重置。BANK／AGING 当前版本为 `p5-v1`，旧报告仍可读取。
+
 老化逐笔检查每一笔未了结的义务，而不是看账户总额（修订 R1）。
 
 ### P3 T11 实现备注：退款对账与老化

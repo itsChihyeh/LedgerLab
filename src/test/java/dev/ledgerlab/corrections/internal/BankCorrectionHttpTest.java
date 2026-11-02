@@ -454,7 +454,7 @@ class BankCorrectionHttpTest {
                         dev.ledgerlab.reconciliation.internal.RunRequest.Kind.BANK,
                         cutoff,
                         cutoff.plusSeconds(1),
-                        "p4-v2",
+                        "p5-v1",
                         List.copyOf(inputs.keySet()),
                         true),
                 inputs);

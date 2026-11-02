@@ -255,6 +255,13 @@ V15 已同步放宽 inbox_event 与 inbox_status_history 的 result CHECK，本�
 
 ## 7. 对账差异 Reconciliation issue
 
+### P5 T08 实现备注：提现银行匹配与老化
+
+- BANK／AGING 版本升为 `p5-v1`，PROCESSOR 保持 `processor-v2`。旧版本报告直接读取保存的 run／finding，仍可原样查看；新运行只执行当前规则版本，不用新算法重算旧报告。
+- 提现状态从 evidence_as_of 前最后一条 payout_status_history 还原（同刻按 id 排序），受理时刻取初始 RESERVED 历史。BANK 检查受理时刻早于 cutoff 的 PAID／RETURNED 提现：PAID 必须有对应出账，RETURNED 同时要求原出账和退回。流水号来自历史 bank_txn 证据；纠错 PAID 来自该历史指向的 correction.params.bankTxnId。选定输入内的行必须逐项满足同一流水号、reference=提现号、金额相等、CAD、BOOKED 和正确方向，否则发现 PAYOUT_STATE_CONFLICT。匹配证据可晚于 cutoff，但必须早于 evidence_as_of。
+- PAYOUT_UNRESOLVED 沿用本地退款老化的 evidence_as_of 时钟：RESERVED／SUBMITTED／UNKNOWN／ACCEPTED 在阈值到期、且选定输入无精确 BOOKED/CAD 出账时报告。起点为证据时点前首次进入 SUBMITTED／UNKNOWN／ACCEPTED 的最早 occurred_at，没有则用初始 RESERVED；重复状态及后续重试不重置起点。`ledgerlab.recon.aging.payout-business-days` 默认 1，必须为正，使用既有多伦多工作日日历（含周末、11 月 11 日假日）。
+- 未完成操作包含终态在 checkedScope 中，以便后续证据解释旧差异。银行导入已按 T05 将 OPEN PAYOUT_UNRESOLVED 转 RESOLVED；失败等后续证据由 AGING 转 EXPLAINED，BANK 精确匹配恢复后解释自身冲突。INGESTION 的差异归属、人工关闭、指纹重开及旧 finding 不变等规则沿用 7.1。老化只读业务与账本，不释放 2104、不改变提现或命令状态；dry run 不写处置。
+
 ### P4 T05b 实现备注：银行纠错后的发现与解释
 
 - BANK／AGING 共用 `BankEvidence`，按证据时点读取 `APPLY_UNAPPLIED_CASH`／`RESTORE_FAILED_PAYOUT` 的纠错及 `APPLIED` 目标。已归位的原 `UNAPPLIED_CASH_RECEIVED` 分录不再计入该流水的未清款；不读取当前可变 `match_status` 或差异处置来推断历史。

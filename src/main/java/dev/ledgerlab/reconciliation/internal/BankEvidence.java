@@ -117,7 +117,13 @@ public final class BankEvidence {
                 if (p.account() == 1103
                         && date != null
                         && !date.isAfter(end)
-                        && List.of("BANK_DEPOSIT_RECEIVED", "UNAPPLIED_CASH_RECEIVED", "UNAPPLIED_CASH_RETURNED")
+                        && List.of(
+                                        "BANK_DEPOSIT_RECEIVED",
+                                        "UNAPPLIED_CASH_RECEIVED",
+                                        "UNAPPLIED_CASH_RETURNED",
+                                        "PAYOUT_PAID",
+                                        "PAYOUT_RETURNED",
+                                        "CORRECTION")
                                 .contains(p.type()))
                     total = Math.addExact(total, p.side().equals("D") ? p.amount() : Math.negateExact(p.amount()));
             }
@@ -257,12 +263,24 @@ public final class BankEvidence {
                                 rs.getLong("closing_balance")))
                         .list();
         List<Posting> postings = jdbc.sql("""
-                SELECT e.id, e.entry_type, e.subject_id, p.account_code, p.side, p.amount
+                SELECT e.id, e.entry_type,
+                    CASE WHEN e.entry_type IN ('PAYOUT_PAID','PAYOUT_RETURNED')
+                        THEN substring(e.source_key FROM length('bank_txn:')+1)
+                        WHEN e.entry_type='CORRECTION' THEN c.params->>'bankTxnId'
+                        ELSE e.subject_id END AS bank_txn_id,
+                    p.account_code, p.side, p.amount
                 FROM ledger.journal_entry e JOIN ledger.posting p ON p.entry_id=e.id
-                WHERE e.recorded_at < ? AND e.subject_type='bank_txn' AND p.account_code IN (1103,2105)
+                LEFT JOIN ledger.correction c ON c.id=e.correction_id
+                    AND c.correction_type='CONFIRM_FAILED_PAYOUT_PAID' AND c.recorded_at < :asOf
+                WHERE e.recorded_at < :asOf AND p.account_code IN (1103,2105)
+                    AND (e.subject_type='bank_txn'
+                        OR (e.subject_type='payout' AND e.entry_type IN ('PAYOUT_PAID','PAYOUT_RETURNED')
+                            AND e.source_key LIKE 'bank_txn:%')
+                        OR (e.subject_type='payout' AND e.entry_type='CORRECTION'
+                            AND c.subject_type='payout' AND c.subject_id=e.subject_id AND c.params->>'bankTxnId' IS NOT NULL))
                 ORDER BY e.id, p.line_no
                 """)
-                .param(asOf)
+                .param("asOf", asOf)
                 .query((rs, n) -> new Posting(
                         rs.getString(1),
                         rs.getString(2),
