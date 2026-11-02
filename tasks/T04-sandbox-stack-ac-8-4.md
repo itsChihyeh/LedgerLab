@@ -17,7 +17,7 @@ stripe-integration.md 第 9.1、9.7（不变量）、9.8 节；`compose.yaml`、
 `sh scripts/sandbox/up.sh` → `sh scripts/sandbox/traffic.sh --count 20 --card pm_card_bypassPending --seed 1` → `sh scripts/sandbox/accept.sh --only ac-8.4`。AC-8.4 要求 20 笔都 CAPTURED。结束后**保持栈运行**。如果 T01 结论是 CLI 需要用户登录且用户还没登录，脚本应明确报“需要用户执行 stripe login”并以 78 退出，此时只提交代码、在问题里写明。
 
 ## 登录账号核对（2026-11-02 补）
-用户 20:56Z 在 `stripe login` 授权页选了“测试企业 沙盒”。`up.sh` 起 listen 之前先核对 CLI 登录的环境和 `STRIPE_API_KEY` 是同一个账号：用 CLI（登录模式）`events resend evt_3UXQCaF5hIinUF490brSX7aS`（T01 用密钥建的 bypass 支付的 charge.succeeded）——成功即同一账号；报“找不到事件/No such event”则不是同一账号，以 78 退出并提示“请用户重新 stripe login，改选另一个沙盒环境（测试模式）”。这一步也顺带完成第 7 节第 11 条的观察（listen 运行时重投能否收到），结论回写。
+用户 20:56Z 在 `stripe login` 授权页选了“测试企业 沙盒”，执行者 2026-11-02 已用 `events retrieve` 核对是同一账号（p6-reports 的 LOGIN.md）。`up.sh` 仍要每次起 listen 前核对一次，判据按 LOGIN.md 的实测：用 CLI（登录模式）`events retrieve evt_3UXQCaF5hIinUF490brSX7aS`，解析输出 JSON——读到该事件即同一账号；`error.code == resource_missing` 则不是同一账号，以 78 退出并提示“请用户重新 stripe login，改选另一个沙盒环境（测试模式）”。**不要靠 CLI 退出码判断**（出错也是 0），也不要用 `resend` 做核对（没有 listen 时必报 for_stripecli）。listen 起来以后再 `events resend` 这条事件，观察本地 relay 是否收到，完成第 7 节第 11 条，结论回写；resend 的成败同样解析输出判断。
 
 ## 可改范围
 `compose.sandbox.yaml`、`scripts/sandbox/**`、`.gitignore`、`src/main/java/dev/ledgerlab/investigation/**` 及其测试、README 命令列表、`docs/design/stripe-integration.md`。
