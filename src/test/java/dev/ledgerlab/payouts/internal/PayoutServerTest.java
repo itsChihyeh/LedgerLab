@@ -8,6 +8,7 @@ import dev.ledgerlab.ledger.EntryType;
 import dev.ledgerlab.ledger.Ledger;
 import dev.ledgerlab.ledger.PostingLine;
 import dev.ledgerlab.ledger.SubjectType;
+import dev.ledgerlab.outbound.internal.OutboundWorker;
 import dev.ledgerlab.testsupport.TestDatabase;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -32,10 +33,20 @@ import tools.jackson.databind.ObjectMapper;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
             "ledgerlab.inbox.scheduling-enabled=false", "ledgerlab.bank.scheduling-enabled=false",
-            "ledgerlab.api.client-id=payout-http-test", "ledgerlab.api.idempotency-lock-timeout=150ms"
+            "ledgerlab.api.client-id=payout-http-test", "ledgerlab.api.idempotency-lock-timeout=150ms",
+            "ledgerlab.bank.payments.enabled=true"
         })
 class PayoutServerTest {
     private static final TestDatabase.Handle DB = TestDatabase.freshBlank();
+    private static final BankHttpServer BANK = bank();
+
+    private static BankHttpServer bank() {
+        try {
+            return new BankHttpServer();
+        } catch (java.io.IOException failure) {
+            throw new java.io.UncheckedIOException(failure);
+        }
+    }
 
     @LocalServerPort
     int port;
@@ -58,6 +69,9 @@ class PayoutServerTest {
     @Autowired
     PayoutApiProperties properties;
 
+    @Autowired
+    OutboundWorker outbound;
+
     @DynamicPropertySource
     static void database(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", DB::url);
@@ -66,10 +80,12 @@ class PayoutServerTest {
         registry.add("LEDGERLAB_READONLY_PASSWORD", () -> TestDatabase.READONLY_PASSWORD);
         registry.add("STRIPE_API_KEY", () -> "");
         registry.add("STRIPE_WEBHOOK_SECRET", () -> "whsec_test_only");
+        registry.add("ledgerlab.bank.payments.base-url", BANK::url);
     }
 
     @AfterAll
     static void cleanup() {
+        BANK.close();
         DB.drop();
     }
 
@@ -128,6 +144,13 @@ class PayoutServerTest {
                     HttpResponse.BodyHandlers.ofString());
             assertThat(conflict.statusCode()).isEqualTo(422);
             assertThat(mapper.readTree(conflict.body()).path("code").asString()).isEqualTo("IDEMPOTENCY_KEY_REUSED");
+            assertThat(outbound.processAvailable()).isEqualTo(1);
+            var detail = get(http, "/api/payouts/" + id);
+            assertThat(detail.path("payout").path("status").asString()).isEqualTo("ACCEPTED");
+            assertThat(detail.path("commands").path(0).path("status").asString())
+                    .isEqualTo("DONE");
+            assertThat(detail.path("attempts").path(0).path("resultCode").asString())
+                    .isEqualTo("HTTP_201");
         }
     }
 

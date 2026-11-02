@@ -84,7 +84,34 @@ final class PayoutQueries {
 
     record PayoutList(List<Payout> payouts, int limit, int offset, AsOf asOf) {}
 
-    record Detail(Payout payout, List<History> history, List<Entry> entries, List<Posting> postings, AsOf asOf) {}
+    record Command(
+            String commandId,
+            String kind,
+            String status,
+            int attempts,
+            Instant nextAttemptAt,
+            @Nullable Instant firstSentAt,
+            Instant createdAt,
+            Instant recordedAt,
+            @Nullable String lastOutcome) {}
+
+    record Attempt(
+            String commandId,
+            int attemptNo,
+            Instant sentAt,
+            Instant finishedAt,
+            Instant recordedAt,
+            @Nullable Integer responseStatus,
+            String resultCode) {}
+
+    record Detail(
+            Payout payout,
+            List<History> history,
+            List<Command> commands,
+            List<Attempt> attempts,
+            List<Entry> entries,
+            List<Posting> postings,
+            AsOf asOf) {}
 
     private static @Nullable Instant instant(java.sql.ResultSet rs, String column) throws java.sql.SQLException {
         var value = rs.getTimestamp(column);
@@ -173,7 +200,35 @@ final class PayoutQueries {
                             rs.getString("side"),
                             rs.getLong("amount")))
                     .list();
-            return new Detail(payout, history, entries, postings, asOf());
+            var commands = jdbc.sql("""
+                    SELECT * FROM core.v_payout_command_summary WHERE payout_id=:id ORDER BY created_at, command_id
+                    """)
+                    .param("id", id)
+                    .query((rs, row) -> new Command(
+                            rs.getString("command_id"),
+                            rs.getString("kind"),
+                            rs.getString("status"),
+                            rs.getInt("attempts"),
+                            rs.getTimestamp("next_attempt_at").toInstant(),
+                            instant(rs, "first_sent_at"),
+                            rs.getTimestamp("created_at").toInstant(),
+                            rs.getTimestamp("recorded_at").toInstant(),
+                            rs.getString("last_outcome")))
+                    .list();
+            var attempts = jdbc.sql("""
+                    SELECT * FROM core.v_payout_attempt_summary WHERE payout_id=:id ORDER BY command_id, attempt_no
+                    """)
+                    .param("id", id)
+                    .query((rs, row) -> new Attempt(
+                            rs.getString("command_id"),
+                            rs.getInt("attempt_no"),
+                            rs.getTimestamp("sent_at").toInstant(),
+                            rs.getTimestamp("finished_at").toInstant(),
+                            rs.getTimestamp("recorded_at").toInstant(),
+                            rs.getObject("response_status", Integer.class),
+                            rs.getString("result_code")))
+                    .list();
+            return new Detail(payout, history, commands, attempts, entries, postings, asOf());
         });
     }
 

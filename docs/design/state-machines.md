@@ -97,6 +97,14 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 - 冲突证据：状态已是 `FAILED`，银行流水却出现出账行 → 不自动记账，开差异 `PAYOUT_STATE_CONFLICT`，走受限纠错。
 - 银行的 API 状态（`ACCEPTED`）和银行流水是两种证据，模拟器里分开产生（I6）；只有流水能移动现金账户。
 
+### P5 T04 实现备注：银行出站与直接受理边
+
+- 按 ADR-0006 补充第 4 节增加 `RESERVED/UNKNOWN → ACCEPTED` 直接边；`SUBMITTED → ACCEPTED` 保留。HTTP `ACCEPTED/EXECUTED` 都只确认受理，保存 `bank_ack_ref/bank_execution_date`，不记 `PAYOUT_PAID`。不人为插入 SUBMITTED 历史，首次 UNKNOWN／ACCEPTED／FAILED 时刻取收到结果时注入 Clock 的时刻，历史 recorded_at 与 updated_at 取写回时刻；重复 UNKNOWN 不追加历史。
+- `SUBMIT_PAYOUT` 复用 P3 worker；首次直接 submit，已有尝试或接管过期 IN_FLIGHT（即使崩溃在首次调用前、attempts=0）先 query。仅协议明确的 404 NOT_FOUND 允许用原 requestId 重发，不设退款的 20 小时期限。查询与重发分别走租约校验并追加 outbound_attempt，业务写回与命令 epoch 校验同事务提交，旧租约写入全部回滚，尝试存档保留。
+- 明确 REJECTED 且 bank_txn_id 为空才记 FAILED、业务分录 PAYOUT_FAILED（无 reverses_entry_id），同事务调用 RefundQueue.release。已有出账证据时不释放；拒绝回执开 PAYOUT_STATE_CONFLICT。409 REQUEST_CONFLICT 仅开差异并完成命令。超时、断连、5xx、无效／身份不匹配响应保持未知、不释放；仅收到 RETURNED API 状态也先按未知保留资金，出账与退回仍等待银行流水。重试上限沿用 worker，停止自动尝试不改变资金占用。
+- `ledgerlab.bank.payments.enabled=true`（或 `LEDGERLAB_BANK_PAYMENTS_ENABLED=true`）启用模拟银行 HTTP 网关；默认关闭时无网关 bean，不注册提现处理器，命令保留 PENDING。`base-url` 默认 `http://localhost:8081`（环境变量 `LEDGERLAB_BANK_PAYMENTS_BASE_URL`），`connect-timeout/read-timeout` 默认 5s/10s；固定 CAD 与 MERCHANT-001，所有调用与响应存档沿用 P3。详情增加 commands／attempts 脱敏摘要，V22 视图与权限见数据字典。
+- 测试沿用 P3 T08 的本地 HTTP 协议替身及真实 PostgreSQL，覆盖 ACCEPTED/EXECUTED、真实读超时、UNAVAILABLE ≥10、五工作日后不释放、丢回执查询恢复、拒绝与退款队列、两个 OutboundHooks 崩溃点、迟到租约回执、PAID 抢先到达及写回回滚。PAID 并发前置使用已封存账本分录模拟 T05 的银行证据边界；本任务不实现银行导入或 PAYOUT_UNRESOLVED 老化。
+
 ## 4. 结算批次 Settlement batch（S2）
 
 | 从 | 到 | 触发 | 分录 |

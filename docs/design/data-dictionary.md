@@ -170,6 +170,11 @@ P3 T04b 实现备注：退款队列通过 `Ledger.balance(Account.MERCHANT_AVAIL
 
 `id mpo_…`（同时是 `bank_request_id`）、`merchant_payout_ref` UNIQUE、`amount` > 0、`status`、`initial_result`、`request_fingerprint`、`bank_ack_ref` NULL、`bank_txn_id` NULL（出账流水）、`return_bank_txn_id` NULL、`failure_reason` NULL、各状态时刻。
 
+### P5 T04 实现备注（V22：提现出站脱敏摘要）
+
+- `core.v_payout_command_summary` 暴露 `command_id/payout_id/kind/status/attempts/next_attempt_at/first_sent_at/created_at/recorded_at/last_outcome`，包含 `SUBMIT_PAYOUT` 与 `QUERY_PAYOUT`。`core.v_payout_attempt_summary` 暴露 `payout_id/command_id/attempt_no/sent_at/finished_at/recorded_at/response_status/result_code`；结果码沿用退款视图的 `HTTP_<状态码>` / `NO_RESPONSE`。
+- migrator 拥有两视图；readonly 仅 SELECT；app 沿用 io 底表的既有最小授权，不额外授视图权限。视图不公开请求、响应原文、错误文本、租约持有人；readonly 仍不能访问 io。详情在既有 REPEATABLE READ 快照中读取两类摘要。
+
 ### P5 T02 实现备注（V21：提现、银行匹配与命令唯一性）
 
 - `core.payout.id` 为 `mpo_` 加 26 位 ULID（首位 0～7），直接作为 `bank_request_id`，不重复存储同值列。`merchant_payout_ref` 为 1～64 位可见 ASCII（0x21～0x7e）且永久唯一；`amount bigint` 为 1～99999999，`currency` 非空且固定 `CAD`。`initial_result jsonb`、`request_fingerprint text` 非空，和身份、金额、币种、`recorded_at` 一样不授 app UPDATE；JSON 内部形状由受理接口负责。
