@@ -95,3 +95,19 @@ Claude 按用户授权定稿，供用户过目。本节是 P4 的设计正本；
 - `core.payment` 给 `app` 增加 UPDATE(`amount`, `expected_fee`)；只能经纠错改的约束靠应用层＋模型测试守，数据库保证 `refunded_amount ≤ amount` 与金额范围。
 - `recon.bank_line.match_status` 增加 `APPLIED`、`RETURNED`、`RETURN_POSTED`，CHECK 相应放宽（`APPLIED` 要求 `matched_batch_id`，`RETURN_POSTED` 只限 `DEBIT`）。
 - 批次 `hold_reason` 增加 `PAYMENT_STATE_CONFLICT`。
+
+## 补充（2026-11-02，P5：提现冲突证据的纠错）
+
+填上第 5 节留空的“提现相关的冲突证据”。
+
+### 8. 第五种类型 `CONFIRM_FAILED_PAYOUT_PAID` 已判失败的提现其实已出账（新 AC-6.15）
+
+- 场景：提现 X 因银行回复拒绝记了 `PAYOUT_FAILED`（借 2104 / 贷 2102，钱回到商户可用），之后银行流水出现 X 的出账行（`UNMATCHED_NO_POSTING`，开了 `PAYOUT_STATE_CONFLICT`）。运营核实钱确实付出去了，银行的拒绝回复是错的。
+- 输入：`payoutId`、`bankTxnId`，`reasonCode ∈ PAYOUT_FAILURE_DISPROVED / OTHER`，`evidence` 至少含该 `bank_txn`。
+- 前置（按此顺序）：payout 不存在 404；不是 `FAILED` → 409 `PAYOUT_NOT_FAILED`；流水当前版本不是 `BOOKED`/`DEBIT`/`CAD`/`UNMATCHED_NO_POSTING` 或 `reference ≠ payoutId` → 409 `BANK_LINE_NOT_PAYOUT_DEBIT`；金额 ≠ payout 金额 → 409 `APPLICATION_AMOUNT_MISMATCH`；`PAYOUT_FAILED` 分录已被冲销 → 409 `ALREADY_REVERSED`。
+- 分录：`REVERSAL`（冲销 `PAYOUT_FAILED`：借 2102 P / 贷 2104 P）＋ `CORRECTION`（借 2104 P / 贷 1103 P）。2102 可以因此变负（商户在“失败”后又把钱提走或退了款），页面显示商户欠款；1103 不能为负，若数据库拒绝 → 409 `CASH_WOULD_GO_NEGATIVE`，无写入。
+- 业务：payout `FAILED → PAID`（新边，只能由此纠错触发；`bank_txn_id`、`paid_at`，历史证据为纠错）；流水 `match_status → PAYOUT_PAID`、`matched_payout_id`。不唤醒退款队列（2102 减少）。自动关闭：以该 payout 或该流水为 subject 的 `PAYOUT_STATE_CONFLICT`、`UNMATCHED_BANK_LINE`。
+- 加锁顺序：资金锁 → payout 行 → 银行行 → 账户 → 差异行。
+- 之后若银行又给这笔提现退回（CREDIT 引用 X），因为 X 已是 `PAID`，按正常 `PAYOUT_RETURNED` 处理。
+- `PAYOUT_FAILED` 加入可作为纠错目标的分录类型，但只能由本类型冲销；第 5 节其余“不支持”保持不变。
+- 遗留第 2 条（`VOIDED` 后又被结算）仍只能人工，P5 不改。
