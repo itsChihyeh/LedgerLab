@@ -5,13 +5,15 @@ const scenario = process.env.LEDGERLAB_E2E_SCENARIO ?? "sample-a-1-3";
 
 export default defineConfig({
   testMatch:
-    scenario === "correction-e"
-      ? "corrections.spec.ts"
-      : scenario.startsWith("refund-")
-        ? "refunds.spec.ts"
-        : scenario === "ac-5-3"
-          ? "recon.spec.ts"
-          : ["payments.spec.ts", "settlement.spec.ts"],
+    scenario === "payout-recovery"
+      ? "payouts.spec.ts"
+      : scenario === "correction-e"
+        ? "corrections.spec.ts"
+        : scenario.startsWith("refund-")
+          ? "refunds.spec.ts"
+          : scenario === "ac-5-3"
+            ? "recon.spec.ts"
+            : ["payments.spec.ts", "settlement.spec.ts"],
   outputDir: `test-results/${scenario}`,
   testDir: "./e2e",
   fullyParallel: false,

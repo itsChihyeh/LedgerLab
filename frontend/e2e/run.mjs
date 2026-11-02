@@ -8,6 +8,7 @@ for (const scenario of [
   "refund-concurrent-5000",
   "refund-retry",
   "correction-e",
+  "payout-recovery",
 ]) {
   const result = spawnSync(
     process.execPath,
@@ -18,6 +19,7 @@ for (const scenario of [
         ...process.env,
         LEDGERLAB_E2E_SCENARIO: scenario,
         VITE_E2E_REFUNDS: "true",
+        VITE_SIMULATOR_MODE: "true",
       },
     },
   );

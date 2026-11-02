@@ -432,6 +432,12 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 ---
 
+### P5 T10 实现备注（提现页面，无新迁移）
+
+- `GET /api/payouts/{id}` 增加 `issues: [{id, category, status}]`，通过 readonly 的 `recon.v_issue` 读取该提现 subject 的差异；与其余详情共用 repeatable-read 快照，不暴露出站请求/响应原文。
+- 前端列表每页 20 条，按既有 reserved_at/id 倒序分页；详情显式刷新。总览直接显示后端的 `payoutInTransit`、`freeCash`，不在浏览器重算资金门槛；商户负可用以正数欠款呈现，零 free_cash 提示新提现暂无现金。
+- 表单以 `VITE_SIMULATOR_MODE=true` 显式启用，默认只读；网络失败保留原幂等键、金额与业务编号，4xx（处理中除外）允许修正后重新提交。此开关只控制界面，不代替服务端授权。AC-7.19 演示和运行说明见 `frontend/README.md`。
+
 ## 5. 模拟器（独立 schema，主应用不可见）
 
 - `sim_processor`（fake Stripe）：charge、refund、balance transaction、payout 的“真实”状态，字段命名跟 Stripe 一致；webhook 投递日志（每次尝试、是否故意重复/乱序/丢失/篡改）；结算单生成记录。

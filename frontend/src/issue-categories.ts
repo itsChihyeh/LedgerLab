@@ -1,4 +1,6 @@
 export const issueCategoryLabels: Record<string, string> = {
+  PAYOUT_UNRESOLVED: "提现结果未确认",
+  PAYOUT_STATE_CONFLICT: "提现状态冲突",
   UNSUPPORTED_BATCH_LINE: "批次含不支持的行",
   REFUND_NOT_IN_STATEMENT: "退款未进入结算单",
   REFUND_NOT_EXECUTED: "退款尚未执行",

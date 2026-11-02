@@ -122,11 +122,23 @@ export function CorrectionContent({ data }: { data: CorrectionDetail }) {
       <dl className="summary">
         <Field name="纠错编号">{c.id}</Field>
         <Field name="类型">{c.type}</Field>
+        {c.type === "CONFIRM_FAILED_PAYOUT_PAID" && (
+          <Field name="提现冲突纠错">
+            确认已失败提现实际出账 · FAILED → PAID
+          </Field>
+        )}
+        {c.subjectType === "payout" && (
+          <Field name="提现">
+            <a href={href("payouts", c.subjectId)}>{c.subjectId}</a>
+          </Field>
+        )}
         <Field name="原因">{c.reasonCode}</Field>
         <Field name="说明">{c.reasonNote}</Field>
         <Field name="提交人">{c.requestedBy}</Field>
         <Field name="时间">{c.recordedAt}</Field>
-        <Field name="支付金额前后值">
+        <Field
+          name={c.subjectType === "payout" ? "金额前后值" : "支付金额前后值"}
+        >
           <AmountChange params={c.params} />
         </Field>
       </dl>

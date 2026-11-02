@@ -33,19 +33,30 @@ public class TestLedgerLabApplication {
         if (scenario.equals("refund-concurrent-6000")
                 || scenario.equals("refund-concurrent-5000")
                 || scenario.equals("refund-retry")
-                || scenario.equals("correction-e")) scenario = "sample-a-1-3";
+                || scenario.equals("correction-e")
+                || scenario.equals("payout-recovery")) scenario = "sample-a-1-3";
         if (!scenario.equals("sample-a-1-3") && !scenario.equals("ac-5-3"))
             throw new IllegalArgumentException("Unsupported E2E scenario");
         return Path.of("src/test/resources/scenarios", scenario);
     }
 
     public static void main(String[] args) throws Exception {
+        boolean payoutDemo = "payout-recovery".equals(System.getenv("LEDGERLAB_E2E_SCENARIO"));
+        var bank = payoutDemo ? new dev.ledgerlab.model.SampleBankProcess("2026-11-12T13:02:00Z", 10000) : null;
+        if (bank != null) Runtime.getRuntime().addShutdownHook(new Thread(bank::close));
         // Conditions on configuration classes are evaluated before DynamicPropertyRegistrar beans run.
-        String[] testArgs = java.util.Arrays.copyOf(args, args.length + 1);
-        testArgs[args.length] = "--ledgerlab.outbound.scheduling-enabled=false";
+        var testArgs = new java.util.ArrayList<>(java.util.Arrays.asList(args));
+        testArgs.add("--ledgerlab.outbound.scheduling-enabled=false");
+        if (bank != null) {
+            testArgs.add("--ledgerlab.bank.payments.enabled=true");
+            testArgs.add("--ledgerlab.bank.payments.base-url=" + bank.url());
+            testArgs.add("--ledgerlab.bank.payments.read-timeout=2s");
+            testArgs.add("--ledgerlab.outbound.base=1s");
+            testArgs.add("--ledgerlab.outbound.cap=1s");
+        }
         var app = SpringApplication.from(LedgerLabApplication::main)
                 .with(E2eConfiguration.class)
-                .run(testArgs)
+                .run(testArgs.toArray(String[]::new))
                 .getApplicationContext();
         var clock = app.getBean(MutableClock.class);
         var processor = app.getBean(ScenarioHttpReplay.class);
@@ -70,7 +81,20 @@ public class TestLedgerLabApplication {
                 String path = exchange.getRequestURI().getPath();
                 String method = exchange.getRequestMethod();
                 String body;
-                if (method.equals("POST") && path.equals("/refund-response-loss")) {
+                if (bank != null && method.equals("GET") && path.equals("/bank-url")) {
+                    body = bank.url();
+                } else if (bank != null && method.equals("POST") && path.equals("/payout-worker")) {
+                    body = Integer.toString(app.getBean(dev.ledgerlab.outbound.internal.OutboundWorker.class)
+                            .processAvailable());
+                } else if (bank != null && method.equals("POST") && path.equals("/payout-execute")) {
+                    // Friday to Monday, controlled clocks; the simulator alone produces the actual debit.
+                    bank.advance(3 * 86400);
+                    clock.set(Instant.parse("2026-11-16T14:00:00Z"));
+                    body = JsonMapper.builder()
+                            .build()
+                            .writeValueAsString(app.getBean(dev.ledgerlab.settlement.BankStatements.class)
+                                    .importBankStatement("payout-demo.csv", bank.statement("2026-11-16")));
+                } else if (method.equals("POST") && path.equals("/refund-response-loss")) {
                     // Forward the real API request and wait for its committed 201, then close without a response.
                     // Neither this proxy nor its route exists in main/ or a production artifact.
                     String key = exchange.getRequestHeaders().getFirst("Idempotency-Key");

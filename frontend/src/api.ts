@@ -247,6 +247,8 @@ export interface Account {
   balance: number;
 }
 export interface Overview {
+  payoutInTransit: number;
+  freeCash: number;
   refund_payable: number;
   awaiting_funds_count: number;
   awaiting_funds_amount: number;
@@ -415,11 +417,83 @@ export interface CorrectionDetail {
     }[];
   }[];
   affected: {
+    payouts: string[];
     payments: string[];
     batches: string[];
     bankLines: string[];
     issues: string[];
   };
+}
+
+export interface Payout {
+  payoutId: string;
+  merchantPayoutRef: string;
+  amount: number;
+  currency: string;
+  status: string;
+  bankRequestId: string;
+  bankAckRef: string | null;
+  bankExecutionDate: string | null;
+  bankTxnId: string | null;
+  returnBankTxnId: string | null;
+  failureReason: string | null;
+  returnReason: string | null;
+  reservedAt: string;
+}
+export interface PayoutList {
+  payouts: Payout[];
+  limit: number;
+  offset: number;
+  asOf: AsOf;
+}
+export interface PayoutDetail {
+  payout: Payout;
+  history: {
+    id: number;
+    fromStatus: string | null;
+    toStatus: string;
+    evidenceType: string;
+    evidenceId: string;
+    occurredAt: string;
+    recordedAt: string;
+  }[];
+  commands: {
+    commandId: string;
+    kind: string;
+    status: string;
+    attempts: number;
+    nextAttemptAt: string;
+    lastOutcome: string | null;
+  }[];
+  attempts: {
+    commandId: string;
+    attemptNo: number;
+    sentAt: string;
+    finishedAt: string;
+    responseStatus: number | null;
+    resultCode: string;
+  }[];
+  bankLines: Pick<
+    BankLine,
+    | "bankTxnId"
+    | "version"
+    | "direction"
+    | "status"
+    | "amount"
+    | "bookingDate"
+    | "matchStatus"
+    | "reference"
+  >[];
+  entries: Pick<Entry, "id" | "entryType" | "correctionId">[];
+  postings: {
+    entryId: string;
+    lineNo: number;
+    accountCode: number;
+    side: string;
+    amount: number;
+  }[];
+  issues: { id: string; category: string; status: string }[];
+  asOf: AsOf;
 }
 
 export interface CorrectionTrace {

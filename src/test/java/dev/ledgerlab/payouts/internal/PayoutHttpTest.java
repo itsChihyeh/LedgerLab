@@ -190,6 +190,37 @@ class PayoutHttpTest {
     }
 
     @Test
+    void ac_7_19_detailLinksOnlyThisPayoutIssuesThroughReadonlyView() throws Exception {
+        s3();
+        String id = mapper.readTree(accept("page-key", 100, "page-ref").getContentAsString())
+                .path("payoutId")
+                .asString();
+        assertThat(new PayoutQueries(db.readonly(), clock).detail(id).issues()).isEmpty();
+        var ids = IdGenerator.seeded(clock, 1010);
+        String issue = ids.next("iss");
+        for (String subject : List.of(id, "mpo_other")) {
+            jdbc.sql("""
+                    INSERT INTO recon.issue (id, category, subject_type, subject_id, detected_by,
+                        status, evidence_refs, recorded_at, updated_at)
+                    VALUES (?, 'PAYOUT_STATE_CONFLICT', 'payout', ?, 'INGESTION', 'OPEN', '[]', ?, ?)
+                    """)
+                    .params(
+                            subject.equals(id) ? issue : ids.next("iss"),
+                            subject,
+                            clock.instant().atOffset(ZoneOffset.UTC),
+                            clock.instant().atOffset(ZoneOffset.UTC))
+                    .update();
+        }
+        var detail = mvc.perform(get("/api/payouts/" + id)).andReturn().getResponse();
+        assertThat(detail.getStatus()).isEqualTo(200);
+        var issues = mapper.readTree(detail.getContentAsString()).path("issues");
+        assertThat(issues.size()).isEqualTo(1);
+        assertThat(issues.get(0).path("id").asString()).isEqualTo(issue);
+        assertThat(issues.get(0).path("category").asString()).isEqualTo("PAYOUT_STATE_CONFLICT");
+        assertThat(issues.get(0).path("status").asString()).isEqualTo("OPEN");
+    }
+
+    @Test
     void ac_7_2_bothGatesFailMerchantReasonWinsAndNoRowsRemain() throws Exception {
         s3();
         var before = snapshot();

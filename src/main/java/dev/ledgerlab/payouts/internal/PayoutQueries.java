@@ -120,6 +120,8 @@ final class PayoutQueries {
             @Nullable String matchedPayoutId,
             Instant recordedAt) {}
 
+    record Issue(String id, String category, String status) {}
+
     record Detail(
             Payout payout,
             List<History> history,
@@ -128,6 +130,7 @@ final class PayoutQueries {
             List<BankLine> bankLines,
             List<Entry> entries,
             List<Posting> postings,
+            List<Issue> issues,
             AsOf asOf) {}
 
     private static @Nullable Instant instant(java.sql.ResultSet rs, String column) throws java.sql.SQLException {
@@ -266,7 +269,14 @@ final class PayoutQueries {
                             rs.getString("matched_payout_id"),
                             rs.getTimestamp("recorded_at").toInstant()))
                     .list();
-            return new Detail(payout, history, commands, attempts, bankLines, entries, postings, asOf());
+            var issues = jdbc.sql("""
+                    SELECT id, category, status FROM recon.v_issue
+                    WHERE subject_type='payout' AND subject_id=:id ORDER BY recorded_at, id
+                    """)
+                    .param("id", id)
+                    .query((rs, row) -> new Issue(rs.getString("id"), rs.getString("category"), rs.getString("status")))
+                    .list();
+            return new Detail(payout, history, commands, attempts, bankLines, entries, postings, issues, asOf());
         });
     }
 

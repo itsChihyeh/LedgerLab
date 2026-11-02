@@ -22,7 +22,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /** Real simulator in a separate JVM/database. Tests communicate exclusively over HTTP. */
-final class SampleBankProcess implements AutoCloseable {
+public final class SampleBankProcess implements AutoCloseable {
     private static boolean built;
     private final TestDatabase.Handle db;
     private final HttpClient client = HttpClient.newHttpClient();
@@ -31,6 +31,11 @@ final class SampleBankProcess implements AutoCloseable {
     private final ObjectMapper mapper = new ObjectMapper();
 
     SampleBankProcess() throws Exception {
+        this("2026-10-20T14:00:00Z", 12909);
+    }
+
+    /** E2E fixtures may align independent simulator cash and time with their replayed opening evidence. */
+    public SampleBankProcess(String start, long chargeAmount) throws Exception {
         build();
         db = TestDatabase.freshBlank();
         boolean windows = System.getProperty("os.name").startsWith("Windows");
@@ -44,7 +49,7 @@ final class SampleBankProcess implements AutoCloseable {
                 "--spring.datasource.password=" + TestDatabase.SIMULATOR_PASSWORD,
                 "--sim.stripe.webhook-secret=synthetic-sample-secret",
                 "--sim.stripe.webhook-url=http://127.0.0.1:1/webhook",
-                "--sim.clock.start=2026-10-20T14:00:00Z",
+                "--sim.clock.start=" + start,
                 "--spring.main.banner-mode=off"));
         process = new ProcessBuilder(command).redirectErrorStream(true).start();
         var ready = new CompletableFuture<Integer>();
@@ -72,9 +77,9 @@ final class SampleBankProcess implements AutoCloseable {
             client.close();
             throw e;
         }
-        // 12909 - contract fee 404 = 12505. Establish actual simulator cash without SQL fixtures.
+        // Establish actual simulator cash via charges and settlement, without SQL fixtures.
         try {
-            json("POST", "/sim/charges", "{\"amount\":12909}");
+            json("POST", "/sim/charges", "{\"amount\":" + chargeAmount + "}");
             String payout =
                     json("POST", "/sim/payouts", "{}").path("payout").path("id").asString();
             assertThat(payout).startsWith("po_");
@@ -109,7 +114,7 @@ final class SampleBankProcess implements AutoCloseable {
         built = true;
     }
 
-    String url() {
+    public String url() {
         return endpoint.toString();
     }
 
@@ -117,11 +122,11 @@ final class SampleBankProcess implements AutoCloseable {
         return mapper.readTree(request(method, path, body));
     }
 
-    byte[] statement(String date) throws Exception {
+    public byte[] statement(String date) throws Exception {
         return request("GET", "/sim/bank/statements/" + date, "").getBytes(StandardCharsets.UTF_8);
     }
 
-    void advance(int seconds) throws Exception {
+    public void advance(int seconds) throws Exception {
         json("POST", "/sim/clock/advance", "{\"seconds\":" + seconds + "}");
     }
 

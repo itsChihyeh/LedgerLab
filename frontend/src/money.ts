@@ -13,6 +13,6 @@ export function parseCad(input: string): number {
   const [dollars, cents] = input.split(".");
   const amount = BigInt(dollars) * 100n + BigInt(cents);
   if (amount < 1n || amount > 99999999n)
-    throw new Error("退款金额须在 CAD 0.01 至 CAD 999999.99 之间");
+    throw new Error("金额须在 CAD 0.01 至 CAD 999999.99 之间");
   return Number(amount);
 }
