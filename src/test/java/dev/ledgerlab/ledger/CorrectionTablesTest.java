@@ -154,6 +154,16 @@ class CorrectionTablesTest {
         assertCommitRejected(correction(Map.of()));
     }
 
+    @Test
+    void ac_6_15_payoutCorrectionTypeIsAcceptedButStillRequiresEntries() throws SQLException {
+        // T02 adds only the type; the deferred consistency check must still reject an empty correction.
+        assertCommitRejected(correction(Map.of(
+                "correction_type", "'CONFIRM_FAILED_PAYOUT_PAID'",
+                "subject_type", "'payout'",
+                "subject_id", "'mpo_00000000000000000000000001'",
+                "reason_code", "'PAYOUT_FAILURE_DISPROVED'")));
+    }
+
     @ParameterizedTest
     @ValueSource(
             strings = {
