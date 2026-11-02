@@ -1,4 +1,0 @@
--------------------------------------------------------------------------------
-Test set: dev.ledgerlab.sim.ProcessorTest
--------------------------------------------------------------------------------
-Tests run: 12, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 36.96 s -- in dev.ledgerlab.sim.ProcessorTest

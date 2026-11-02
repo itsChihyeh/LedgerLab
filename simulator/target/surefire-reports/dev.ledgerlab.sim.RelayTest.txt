@@ -1,4 +1,0 @@
--------------------------------------------------------------------------------
-Test set: dev.ledgerlab.sim.RelayTest
--------------------------------------------------------------------------------
-Tests run: 13, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 5.687 s -- in dev.ledgerlab.sim.RelayTest
