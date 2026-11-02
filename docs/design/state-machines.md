@@ -106,6 +106,14 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 - `ledgerlab.bank.payments.enabled=true`（或 `LEDGERLAB_BANK_PAYMENTS_ENABLED=true`）启用模拟银行 HTTP 网关；默认关闭时无网关 bean，不注册提现处理器，命令保留 PENDING。`base-url` 默认 `http://localhost:8081`（环境变量 `LEDGERLAB_BANK_PAYMENTS_BASE_URL`），`connect-timeout/read-timeout` 默认 5s/10s；固定 CAD 与 MERCHANT-001，所有调用与响应存档沿用 P3。详情增加 commands／attempts 脱敏摘要，V22 视图与权限见数据字典。
 - 测试沿用 P3 T08 的本地 HTTP 协议替身及真实 PostgreSQL，覆盖 ACCEPTED/EXECUTED、真实读超时、UNAVAILABLE ≥10、五工作日后不释放、丢回执查询恢复、拒绝与退款队列、两个 OutboundHooks 崩溃点、迟到租约回执、PAID 抢先到达及写回回滚。PAID 并发前置使用已封存账本分录模拟 T05 的银行证据边界；本任务不实现银行导入或 PAYOUT_UNRESOLVED 老化。
 
+### P5 T06 实现备注：运营查询
+
+- `POST /api/payouts/{id}/query` 返回 202 `{commandId:"cmd_…"}`。复用纠错运营开关 `ledgerlab.corrections.enabled`（默认 true）；公开配置设为 false 时不注册此路由，返回 404，既有只读提现查询仍可用。提现不存在返回 404 `PAYOUT_NOT_FOUND`；仅 UNKNOWN／ACCEPTED／SUBMITTED 可查询，其余返回 409 `PAYOUT_NOT_QUERYABLE`，拒绝不写命令。
+- 入队在同一事务先取资金锁、锁提现行并检查状态；已有未完成 QUERY_PAYOUT（PENDING／IN_FLIGHT／UNKNOWN）返回原命令号，DONE 后可再建，数据库沿用 V21 部分唯一索引。入队不改提现状态或追加状态历史；request_id 与 subject_id 均为提现号，命令时间来自注入 Clock。
+- QUERY_PAYOUT 与 SUBMIT_PAYOUT 共用 T04 的结果映射和写回入口，但每次尝试只调用 query，不调用 submit；无网关时两种处理器均不注册。ACCEPTED／EXECUTED／RETURNED 只确认受理；REJECTED 无出账时记 FAILED 并同事务唤醒退款队列；其余重试、冲突及银行流水抢先到达的规则沿用 T04。
+- 查询明确返回 404 NOT_FOUND 时完成 QUERY_PAYOUT（last_outcome=PAYOUT_NOT_FOUND），提现与资金保持不变。资金锁内锁住对应 SUBMIT_PAYOUT；已 DONE 则开 PAYOUT_STATE_CONFLICT，否则仅把 next_attempt_at 改为注入 Clock 的当前时刻，保留 attempts、first_sent_at、状态和租约，交由原提交处理器按既有重试上限及租约规则处理，不重置次数或绕过上限。上述差异或调度写入与查询命令 epoch 校验同事务，迟到回执的写入回滚，独立尝试存档保留。
+- AC-7.23／AC-7.9 真库与本地 HTTP 测试覆盖命令复用与并发入队、完成后再查、状态拒绝和不存在、运营配置 404、只查不发、拒绝释放与退款队列原子性、404 两分支、查询重试、银行出账抢先到达及旧租约 404 写回回滚。
+
 ## 4. 结算批次 Settlement batch（S2）
 
 | 从 | 到 | 触发 | 分录 |

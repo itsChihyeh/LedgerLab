@@ -90,7 +90,7 @@ class PayoutServerTest {
     }
 
     @Test
-    void ac_7_1_ac_7_4_realHttpWiresReadonlyQueriesOverviewAndSharedIdempotencyNamespace() throws Exception {
+    void ac_7_1_ac_7_4_ac_7_23_realHttpWiresQueriesOverviewAndSharedIdempotencyNamespace() throws Exception {
         tx.executeWithoutResult(s -> {
             ledger.lockFunds();
             ledger.post(new EntryRequest(
@@ -151,6 +151,23 @@ class PayoutServerTest {
                     .isEqualTo("DONE");
             assertThat(detail.path("attempts").path(0).path("resultCode").asString())
                     .isEqualTo("HTTP_201");
+            var query = HttpRequest.newBuilder(uri("/api/payouts/" + id + "/query"))
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .build();
+            var queued = http.send(query, HttpResponse.BodyHandlers.ofString());
+            assertThat(queued.statusCode()).isEqualTo(202);
+            String commandId = mapper.readTree(queued.body()).path("commandId").asString();
+            assertThat(commandId).startsWith("cmd_");
+            assertThat(http.send(query, HttpResponse.BodyHandlers.ofString()).body())
+                    .isEqualTo(queued.body());
+            assertThat(outbound.processAvailable()).isEqualTo(1);
+            assertThat(jdbc.sql("SELECT status FROM io.outbound_command WHERE id=:id")
+                            .param("id", commandId)
+                            .query(String.class)
+                            .single())
+                    .isEqualTo("DONE");
+            assertThat(BANK.requests.stream().map(BankHttpServer.Request::method))
+                    .containsExactly("POST", "GET");
         }
     }
 

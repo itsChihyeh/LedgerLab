@@ -14,21 +14,35 @@ final class PayoutCommandHandler implements CommandHandler {
     private final BankPayoutGateway gateway;
     private final PayoutCommandEvidence evidence;
     private final Clock clock;
+    private final boolean queryOnly;
 
     PayoutCommandHandler(JdbcClient jdbc, BankPayoutGateway gateway, PayoutCommandEvidence evidence, Clock clock) {
+        this(jdbc, gateway, evidence, clock, false);
+    }
+
+    PayoutCommandHandler(
+            JdbcClient jdbc,
+            BankPayoutGateway gateway,
+            PayoutCommandEvidence evidence,
+            Clock clock,
+            boolean queryOnly) {
         this.jdbc = jdbc;
         this.gateway = gateway;
         this.evidence = evidence;
         this.clock = clock;
+        this.queryOnly = queryOnly;
     }
 
     @Override
     public String kind() {
-        return "SUBMIT_PAYOUT";
+        return queryOnly ? "QUERY_PAYOUT" : "SUBMIT_PAYOUT";
     }
 
     @Override
     public CommandResult execute(CommandSnapshot command, CommandExecution execution) {
+        if (queryOnly) {
+            return result(command, execution.call(summary(command, "QUERY"), () -> gateway.query(command.requestId())));
+        }
         if (command.attempts() > 0 || command.retry() || command.firstSentAt() != null) {
             var response = execution.call(summary(command, "QUERY"), () -> gateway.query(command.requestId()));
             if (!(response instanceof BankPayoutGateway.NotFound)) return result(command, response);
@@ -42,6 +56,9 @@ final class PayoutCommandHandler implements CommandHandler {
     }
 
     private CommandResult result(CommandSnapshot command, BankPayoutGateway.Outcome outcome) {
+        if (queryOnly && outcome instanceof BankPayoutGateway.NotFound) {
+            return new CommandResult.Done(new Receipt(outcome), null, "PAYOUT_NOT_FOUND", clock.instant());
+        }
         if (outcome instanceof BankPayoutGateway.Conflict conflict) {
             return new CommandResult.Done(new Receipt(outcome), null, "REQUEST_CONFLICT", conflict.receivedAt());
         }

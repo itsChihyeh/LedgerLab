@@ -52,6 +52,27 @@ final class PayoutCommandEvidence {
                 .param("id", command.subjectId())
                 .query((rs, row) -> new Payout(rs.getString(1), rs.getLong(2), rs.getString(3)))
                 .single();
+        if (outcome instanceof BankPayoutGateway.NotFound) {
+            String submitStatus = jdbc.sql("""
+                    SELECT status FROM io.outbound_command
+                    WHERE kind='SUBMIT_PAYOUT' AND request_id=:id FOR UPDATE
+                    """)
+                    .param("id", command.requestId())
+                    .query(String.class)
+                    .single();
+            if (submitStatus.equals("DONE")) {
+                conflict(command, payout, outcome);
+            } else {
+                jdbc.sql("""
+                        UPDATE io.outbound_command SET next_attempt_at=:now
+                        WHERE kind='SUBMIT_PAYOUT' AND request_id=:id
+                        """)
+                        .param("id", command.requestId())
+                        .param("now", clock.instant().atOffset(ZoneOffset.UTC))
+                        .update();
+            }
+            return;
+        }
         if (outcome instanceof BankPayoutGateway.Conflict) {
             conflict(command, payout, outcome);
             return;

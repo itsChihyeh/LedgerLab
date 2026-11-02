@@ -12,6 +12,14 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 class PayoutCommandConfiguration {
     @Bean
     @Nullable
+    PayoutCommandHandler payoutQueryCommandHandler(
+            JdbcClient jdbc, Optional<BankPayoutGateway> gateway, PayoutCommandEvidence evidence, Clock clock) {
+        return gateway.map(adapter -> new PayoutCommandHandler(jdbc, adapter, evidence, clock, true))
+                .orElse(null);
+    }
+
+    @Bean
+    @Nullable
     PayoutCommandHandler payoutCommandHandler(
             JdbcClient jdbc, Optional<BankPayoutGateway> gateway, PayoutCommandEvidence evidence, Clock clock) {
         // As in P3, resolve after definitions exist, independently of component scan order.
