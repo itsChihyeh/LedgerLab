@@ -53,6 +53,8 @@ final class WorkbenchQueries {
             long merchantAvailable,
             long merchantOwes,
             long unappliedCash,
+            long payoutInTransit,
+            long freeCash,
             long refund_payable,
             long awaiting_funds_count,
             long awaiting_funds_amount,
@@ -78,6 +80,12 @@ final class WorkbenchQueries {
                     available,
                     available < 0 ? Math.negateExact(available) : 0,
                     balance(accounts, 2105),
+                    balance(accounts, 2104),
+                    Math.subtractExact(
+                            Math.subtractExact(
+                                    Math.subtractExact(balance(accounts, 1103), balance(accounts, 2104)),
+                                    balance(accounts, 2105)),
+                            Math.max(0, Math.negateExact(balance(accounts, 1101)))),
                     balance(accounts, 2103),
                     waiting.size(),
                     waitingAmount,

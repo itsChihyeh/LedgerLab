@@ -109,6 +109,23 @@ public class JdbcLedger implements Ledger {
     }
 
     @Override
+    public Map<Account, Long> lockBalances(List<Account> accounts) {
+        assertFundsLocked();
+        var result = new EnumMap<Account, Long>(Account.class);
+        for (Account account : accounts.stream()
+                .distinct()
+                .sorted(java.util.Comparator.comparingInt(Account::code))
+                .toList()) {
+            jdbc.sql("SELECT code FROM ledger.account WHERE code=:code FOR UPDATE")
+                    .param("code", account.code())
+                    .query(Short.class)
+                    .single();
+            result.put(account, balance(account));
+        }
+        return Map.copyOf(result);
+    }
+
+    @Override
     public PostedEntry post(EntryRequest request) {
         requireTransaction();
         if (!TransactionSynchronizationManager.hasResource(fundsLockKey)) {

@@ -127,6 +127,14 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 
 任何一条不满足，返回 `409 INSUFFICIENT_FUNDS`（带具体原因 `MERCHANT_BALANCE` 或 `FREE_CASH`），不记账、不建提现单。第二条的作用是：批次“已确认”但银行流水还没到时，钱不能先提走（S2）。
 
+#### P5 T03 实现备注：提现受理与读取
+
+- `payouts.Payouts.reserve(amount, merchantPayoutRef, fingerprint)` 开启或加入事务，先取资金锁，查永久业务编号，再通过新增的 `Ledger.lockBalances` 按代码升序锁定并读取 1101、1103、2102、2104、2105。原 `Ledger.balance` 行为不变。先判断商户余额，再以 `Math.subtractExact/negateExact` 计算自由现金；两条都不满足时固定返回 `MERCHANT_BALANCE`。
+- 同事务插入 RESERVED 提现、`api` 历史（`evidence_id` 为提现编号）、`PAYOUT_RESERVED`（借 2102／贷 2104，`source_key=payout:{id}:reserved`）及 PENDING `SUBMIT_PAYOUT`。`request_id=subject_id=mpo_…`，所有受理时刻来自注入 Clock。T03 不发送银行请求。
+- POST 请求和 201 响应使用 ADR-0006 的 camelCase 字段；金额只接受 1～99999999 的 JSON 整数 token，业务编号为 1～64 位可见 ASCII。沿用退款的 `(client_id, Idempotency-Key)` 共享命名空间、`ledgerlab.api` 配置、规范指纹、事务局部锁超时和既有缓存清理。`initial_result` 保存 `{status:201,body:…}`，首次与重放均排序序列化原 body；过期清理后仍由业务编号返回原受理结果。业务编号不同金额为 409 `PAYOUT_REF_CONFLICT`，同幂等键不同内容为 422；仍在执行且锁等待超时为 409。所有 4xx 回滚，不留幂等或资金行。
+- 读取端在 payouts 模块内复用 `investigationDataSource` 的 readonly 连接，仅访问既有视图，每次响应使用一个 REPEATABLE READ 快照。列表为 `{payouts,limit,offset,asOf}`，`limit` 默认 50、范围 1～100，`offset` 默认 0、非负；按 `reserved_at DESC,id DESC` 分页。详情为 `{payout,history,entries,postings,asOf}`，不暴露指纹或初始响应；历史按 id、分录按 seq 排序，找不到返回 404。命令尝试和流水留后续任务补充。
+- overview 在原只读快照内增加 `payoutInTransit`（2104）与 `freeCash`（完整公式，允许负值，不裁成零）。定向测试覆盖 AC-7.1 受理部分、7.2～7.5、7.15、7.17、7.20、7.21，另验证同键重放／锁等待、全部写入回滚、读取分页、真实 HTTP 装配和账户锁。AC-7.4 用 sealed postings 建立 PR=-3000、CASH=MA=3854、SIT=3000 的平衡账本夹具，不借模拟银行制造负处理方余额。
+
 ## 5. 不变量
 
 | # | 不变量 | 怎么守 |
