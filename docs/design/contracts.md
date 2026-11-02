@@ -80,7 +80,7 @@ P5 T08 实现备注：提现起点按 ADR-0006 第 6 节取首次 SUBMITTED／UN
 - 批次、支付状态取 evidence_as_of 前最后一条只追加历史。银行匹配结果从该时点前的分录还原：`BANK_DEPOSIT_RECEIVED` 为已应用，2105 的逐笔 posting 净额为未清款；BOOKED/CAD/CREDIT、有不可变 wait_until 且尚无分录为 WAITING。不会用当前 match_status、支付状态、批次状态或账户缓存余额重放。到期但 worker 尚未处理的 WAITING 仍按当时真实状态报告，不虚构应用分录。
 - BANK 重报范围内的 `DEPOSIT_AMOUNT_MISMATCH` / `UNMATCHED_BANK_LINE` 时采用入口相同 `(category, bank_txn, bank_txn_id)`。发现照常插入、关联原 INGESTION issue，不新建 issue、不覆盖其内容与人工处置、不自动 EXPLAINED。2105 未清项另以每笔 bank_txn 报 `UNAPPLIED_CASH_OPEN`。
 - AGING 只对 `HELD(UNKNOWN_PAYMENT)` 的缺失支付逐笔检查，起点为批次 occurred_at；同一支付出现在多个 HELD 批次时合并为同一识别键，取仍在等待的最早批次计算到期，保留各批次和 fetch 引用。新历史固定原因和明细 fetch；旧历史缺字段不回填、不猜当前值。相关完整 fetch 的编号（`processor_fetch:<id>`）和哈希也存入运行输入。
-- AGING `summary.limitations` 固定说明“老化只能发现有开始记录、没有结束记录的义务”“其他 HELD 原因由入口差异负责，等 P4 纠错后重核”，并说明旧 HELD 历史缺字段的覆盖边界。PARKED 的 P3 T01 覆盖及回填限制见上节；退款、提现分别留给 P3/P5。
+- AGING `summary.limitations` 固定说明“老化只能发现有开始记录、没有结束记录的义务”“其他 HELD 原因由入口差异负责，等 P4 纠错后重核”，并说明旧 HELD 历史缺字段的覆盖边界。PARKED 的 P3 T01 覆盖及回填限制见上节；退款、提现分别留给 P3/P5。（后续：提现老化已在 P5 T08 实现。）
 - `POST /api/recon/runs` 接受 `kind=ALL`：在同一 REPEATABLE READ 事务内顺序建立 PROCESSOR、BANK、AGING 三个运行，两个时点相同，全部成功才提交。返回 `{runIds:[处理方运行号,银行运行号,老化运行号],runs:[三个报告]}`；dry run 的 runIds 为空、报告 id 为 null，完全不写库。单种类响应保持单个报告。
 - T11 的独立纯 Java 参考模型用 jqwik 状态动作组合确认、银行导入（含重复）、推进到期、WAITING 扫描、重跑；种子 2026102311，每序列最多 12 步，本地 100 条、CI 1000 条。每步比较逐笔发现集合、重放和账本不变；不替代并发测试。
 
@@ -151,7 +151,7 @@ P5 T08 实现备注：提现起点按 ADR-0006 第 6 节取首次 SUBMITTED／UN
 - 两个写接口均要求 `Idempotency-Key` 为 1～255 个可见 ASCII 字符（0x21～0x7e，不含空格）。P3 无认证：`client_id` 只取配置 `ledgerlab.api.client-id`（默认 `demo-merchant`），不读客户端身份请求头；P7 部署时换为认证主体。
 - JSON 必须为单一对象，拒绝未知／重复键、缺失或类型不符字段、字符串中的 NUL、尾随 JSON。金额检查 JSON token，仅整数 token 才直接读取 long；小数、指数、字符串、null、缺失及溢出均为 INVALID_AMOUNT，不先转换成 double。指纹为 UTF-8 的 `SHA-256("POST" + 规范路由路径 + 规范 JSON)`；JSON 键排序、无空白，字段值不 trim、不改大小写，整数与字符串转义按解析值规范化。
 - **单事务**：设置事务局部 lock_timeout → `lockFunds()` → INSERT IN_PROGRESS（冲突不插入）→ 相同键比较指纹／读取原结果 → 检查永久业务编号 → T04 受理／取消 → 保存 COMPLETED 及响应 → 提交。受理的 `initial_result` 已由 T04 在 INSERT 写入；API 首次与重放均按键排序序列化保存的 body，状态码与响应文本一致。业务编号同金额直接返回原受理结果，不重跑当前状态／额度检查；不同金额 BUSINESS_REF_CONFLICT。
-- 业务 4xx 及任何异常均回滚本事务，不留下幂等记录、退款、posting 或命令；与 Stripe 缓存部分 4xx 的策略不同。失败后同键请求重新判断。IN_PROGRESS 不以已提交状态出现，列保留给 P5 长调用；防御性读取到它时返回 409，不接管／覆盖。
+- 业务 4xx 及任何异常均回滚本事务，不留下幂等记录、退款、posting 或命令；与 Stripe 缓存部分 4xx 的策略不同。失败后同键请求重新判断。IN_PROGRESS 不以已提交状态出现，列保留给 P5 长调用；防御性读取到它时返回 409，不接管／覆盖。（P5 结论：提现受理在单个事务内完成，没有采用 IN_PROGRESS，这一保留仍未使用。）
 - 同键并发后到者等待资金锁／唯一索引；先到者提交后返回已完成原结果，仍在处理且等待超时返回 409（AC-2.12 允许两者）。`ledgerlab.api.idempotency-lock-timeout` 默认 5s，至少 1ms、至多 PostgreSQL 支持的 2147483647ms；55P03 锁超时映射为 IDEMPOTENCY_REQUEST_IN_PROGRESS，其他数据库故障仍向外抛出并回滚。
 - `expires_at` 按数据字典在 INSERT 时设为注入 Clock +24h，不 UPDATE 未授权列。定时每分钟清一批 `expires_at ≤ Clock.instant()` 的缓存；配置 `idempotency-cleanup-interval`、`idempotency-cleanup-batch-size`（默认 500，正数）、`idempotency-cleanup-enabled`（默认跟随 inbox 调度开关），均在 `ledgerlab.api` 下。清理同样先取资金锁，避免在 API 冲突判断与读取之间删除缓存；随后按到期时间／联合主键排序，FOR UPDATE SKIP LOCKED 批量删除。未清理的到期行仍可返回缓存结果，永久业务编号不被清理。
 - `GET /api/refunds/{id}` 通过 investigation readonly 数据源在单个 REPEATABLE READ 快照返回 `{refund, history, commands, asOf}`：当前退款、按历史 id 排序的状态变化、脱敏命令摘要。GET 不改变业务或缓存；找不到退款返回 404。命令视图与字段见数据字典 V16 备注。

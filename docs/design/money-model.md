@@ -97,7 +97,7 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 - 出账遇到 FAILED 时优先开提现为 subject 的 `PAYOUT_STATE_CONFLICT`，不记账；其余不合格出账开流水为 subject 的 `UNMATCHED_BANK_LINE`。不能匹配的 CAD 入账继续记待查收款，FAILED 的候选开提现状态冲突，其余开未匹配流水。已知候选同时保存于 `matched_payout_id` 和差异 evidence_refs；这不代表已记账，必须结合 match_status 判断。退回原因按 memo 中独立的 `RETURN <CODE>` 提取，不含可识别代码时为 `UNKNOWN`。
 - 新增 `IngestionIssues.resolvePayoutPaid`，仅将该提现的 OPEN `PAYOUT_UNRESOLVED` 置为 RESOLVED；按差异编号升序锁行，追加 EXPLAINED 原因的处置历史，关联银行文件、流水及版本。保留其他类别和已人工处置的差异，不设置 correction_id。
 - 提现详情新增 `bankLines`，在原有 readonly/REPEATABLE READ 快照里读取 `recon.v_bank_line`：按 reference 或 matched_payout_id 关联，按 import_order 返回全部已存版本，包括 PENDING、冲突及金额不等的候选行。每行含文件号、行版本、日期、金额、币种、memo 和 match_status；提现出账/退回分录纳入原有 entries/postings。
-- 定向真库测试覆盖 AC-7.1 的 PAID 余额、7.10～7.13、7.24～7.26，以及 PENDING→BOOKED、前缀隔离、同文件并发、处置/退款唤醒回滚、只读详情。AC-7.11 在本任务只断言未记账及状态冲突，提现侧 BANK 规则与余额归期升级留给 T08。既有 Settlement 银行 jqwik 独立模型加入账本夹具预留、出账/第二笔出账、退回/第二笔退回与重复文件动作，逐步核对余额、流水状态、历史数、差异及 2104 不变量；保留原种子与 100/1000 条序列配置。无新迁移或依赖。
+- 定向真库测试覆盖 AC-7.1 的 PAID 余额、7.10～7.13、7.24～7.26，以及 PENDING→BOOKED、前缀隔离、同文件并发、处置/退款唤醒回滚、只读详情。AC-7.11 在本任务只断言未记账及状态冲突，提现侧 BANK 规则与余额归期升级留给 T08。既有 Settlement 银行 jqwik 独立模型加入账本夹具预留、出账/第二笔出账、退回/第二笔退回与重复文件动作，逐步核对余额、流水状态、历史数、差异及 2104 不变量；保留原种子与 100/1000 条序列配置。无新迁移或依赖。（后续：T08 已实现。）
 
 ## 4. 两个门槛
 
@@ -117,7 +117,7 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 
 - T04 的 `refunds` 模块依赖 `ledger`、`payments`、`shared`；T07 增加 outbound SPI 与 reconciliation 的公开差异入口。受理先取资金锁，再通过 `PaymentRefunds` 锁支付行并检查剩余可退额；支付额度增加、退款插入、历史、`REFUND_ACCEPTED`、队列放行与命令落库同事务完成。CAPTURED 和 SETTLED 均可受理，VOIDED 拒绝；金额允许 1～99999999 分。
 - 新退款先作为 AWAITING_FUNDS 加入集合；`RefundQueue.release()` 只检查调用事务已持有资金锁，不主动取锁。等待退款先按 id 锁行，再按 `queue_seq` 求最长可覆盖前缀，合计用 `Math.addExact`，遇到第一个不能覆盖的退款即停止。READY 与 SUBMIT_REFUND 命令同事务创建，重复调用不会重复建命令。
-- `BatchSettlement` 在 BATCH_SETTLED 之后同步调用 release，然后唤醒银行等待行（P3 T10 调整顺序）；取消只允许 AWAITING_FUNDS 且必须有原因，恢复支付额度、记 REFUND_CANCELLED 后同步放行。同事务回滚也撤销队列状态与命令。退款失败的接线由 T07 的 RefundEvidence 完成，提现失败／退回留 P5。
+- `BatchSettlement` 在 BATCH_SETTLED 之后同步调用 release，然后唤醒银行等待行（P3 T10 调整顺序）；取消只允许 AWAITING_FUNDS 且必须有原因，恢复支付额度、记 REFUND_CANCELLED 后同步放行。同事务回滚也撤销队列状态与命令。退款失败的接线由 T07 的 RefundEvidence 完成，提现失败／退回留 P5。（后续：P5 T04/T05 已接上提现失败／退回唤醒。）
 - 公开接口只新增 `Ledger.assertFundsLocked()`（复用事务持锁标记）和 `payments.PaymentRefunds` 的窄支付行接口。settlement 模块允许依赖列表仅增加 refunds；不改变其他模块边界。
 - AC-3.13 通过包内可替换的额度协作者验证丢失更新：故障实现只存在于测试，生产没有去锁开关。真实 PostgreSQL 的资金分录与退款额度不变量检查见 [T04 测试说明](../testing/refund-acceptance.md)。
 
@@ -315,7 +315,7 @@ MA 不再增加：这笔钱在 B1 确认时已经转过可用。
 
 - INV-11 的 1103 汇总加入 `PAYOUT_PAID`（贷）、`PAYOUT_RETURNED`（借）和纠错⑤ `CONFIRM_FAILED_PAYOUT_PAID` 的 `CORRECTION`（贷）。普通提现银行分录的 subject 为 payout，按不可变 `source_key=bank_txn:{id}` 找流水；纠错按关联 correction 的 `params.bankTxnId` 找流水。均按该流水的 booking_date 归期，不按纠错或导入时间归期。
 - 分录、纠错、提现历史和银行文件／行均只取 `recorded_at < evidence_as_of` 的证据；文件另检查 received_at。银行现金延续 P2 的全体可见分录口径，匹配则仅使用本次选定输入。旧时点不会借用当前 payout 状态、bank_txn_id、return_bank_txn_id、match_status 或账户余额；差额仍为银行期末减账本现金，失败后出账 9680 未记账时显示 −9680，纠错后归零。
-- `PayoutReconTest` 在受理、非终态、失败、出账、退回及纠错检查点增加 INV-9：2104 = Σ RESERVED／SUBMITTED／UNKNOWN／ACCEPTED 的提现金额，并同时运行既有账本不变量。未新增汇总差异类别；提现 jqwik 动作仍属 T09。定向真库测试覆盖 AC-7.7、AC-7.11、AC-7.18 和 AC-6.15 留给 T08 的银行余额断言。
+- `PayoutReconTest` 在受理、非终态、失败、出账、退回及纠错检查点增加 INV-9：2104 = Σ RESERVED／SUBMITTED／UNKNOWN／ACCEPTED 的提现金额，并同时运行既有账本不变量。未新增汇总差异类别；提现 jqwik 动作仍属 T09。定向真库测试覆盖 AC-7.7、AC-7.11、AC-7.18 和 AC-6.15 留给 T08 的银行余额断言。（后续：T09 已加入提现 jqwik 动作。）
 
 ### P5 T11 实现备注：跨进程冒烟
 
