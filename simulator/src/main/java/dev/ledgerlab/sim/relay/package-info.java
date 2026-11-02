@@ -1,4 +1,4 @@
-/** Byte-preserving webhook delivery fault injection. */
+/** Byte-preserving webhook and Stripe API fault injection, recording and statistics. */
 @NullMarked
 package dev.ledgerlab.sim.relay;
 

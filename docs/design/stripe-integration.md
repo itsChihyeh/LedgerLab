@@ -268,8 +268,14 @@ T01 实现备注（2026-11-02）：第 7 节已证实当前受限密钥不能 li
 
 - `ANY /relay/stripe-api/**` 原样转发到 `sim.relay.upstream-api-url`（默认 `https://api.stripe.com`；测试用 loopback）：方法、路径、查询串、请求体，以及 `Authorization`、`Stripe-Version`、`Idempotency-Key`、`Content-Type` 头；响应状态、正文和 `Content-Type`、`Request-Id` 原样返回。`Authorization` 带 live 前缀的直接 403，不转发。不跟随重定向。
 - relay 计划增加出站规则：`{"direction":"OUTBOUND","method":"POST","path_prefix":"/v1/refunds","action":"DROP_RESPONSE","times":1}`。动作：`PASS`；`DROP_RESPONSE`（请求照发、等上游响应完成，然后给调用方 504，制造“对方已执行、我们不知道”）；`FAIL_BEFORE_SEND`（不转发，直接 503）。`times` 用完后回到 PASS。原有入站规则不带 `direction`，含义不变。
-- 出站日志进新表（只追加）：方法、路径（不含查询串里的值以外的头）、上游状态、动作、耗时、请求与响应正文的 SHA-256；**正文只在录制开关打开时保存**（9.5），头一律不存。
+- 出站日志进新表（只追加）：方法、路径（不含查询串）、查询参数名列表（不含参数值）、上游状态、动作、耗时、请求与响应正文的 SHA-256；**正文只在录制开关打开时保存**（9.5），头一律不存。
 - `GET /sim/relay/stats?since=…` 返回两个方向各动作的次数，供运行报告用。
+
+**T02 实现备注（2026-11-02）**：出站代理与 stats 由 `sim.relay.outbound-enabled=true` 或 sandbox profile 启用；默认模式保持原行为。上游只能 HTTPS 或 loopback HTTP，禁止 userinfo/query/fragment；连接超时默认 PT5S，完整响应读取期限默认 PT60S（包含正文停滞），分别通过 `sim.relay.connect-timeout/read-timeout` 配置。无重定向、无自动重试。live 凭证的 403 不记录交换、不消耗规则次数；网络错误/超时记选中的动作，上游状态及响应哈希为空，返回 504。
+
+出站规则按方向、method、原始路径前缀匹配，跳过耗尽的规则，无可用规则 PASS；次数在匹配时同步消耗，换计划重置，GET 展示原配置次数。stats 的 since 必填且含边界；入站统计接收行而非转发副本，HOLD_TIMEOUT_RELEASE 另计；出站每个交换计一次，零次动作也返回。V7 表与授权见数据字典 T02 实现备注：正文保存 bytea，默认关闭，sandbox 默认打开；关闭时不新增 inbound_recording。头从不保存。入站原日志仍用模拟时间，出站与录制用注入的审计 Clock。主应用两个适配器的 loopback 回归测试确认共用 transport 保留 base URL 路径前缀，无需生产代码修复。
+
+代理路径单独跳过 Spring 的 form 参数解析过滤器，避免 PUT/PATCH/DELETE 的 form 正文在转发前被消费；其他模拟器接口保留原表单处理。
 
 ### 9.5 录制与脱敏
 

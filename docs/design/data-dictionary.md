@@ -491,6 +491,12 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - `event.charge_id` 在 V3 改成可空，原外键保留；payout 事件使用新增 `payout_id text NULL FK payout`，旧 charge 事件不变。两种事件均保存完整对象快照，redeliver 原样重签，reissue 保留类型及对象快照。
 - 资金写入事务首先以 SHARE ROW EXCLUSIVE 锁定 balance_transaction 表，防止多个请求或进程重复分配。默认 payout 归集已可用、未分配的 CAD 行（不含 payout 自身），负/零净额不创建；失败不解绑定旧行，只新增一条 payout_failure 返还行。amount 覆盖是故意制造不一致的故障：仍归集原集合，payout 借记采用覆盖金额，后续故障场景需独立重置数据，不承诺自动修复不一致。
 
+### P6 T02 实现备注：chaos relay 出站与录制（模拟器 V7）
+
+- `sim_chaos.api_exchange`：`id bigint identity PK`、`received_at/recorded_at timestamptz`、`method/path text`（路径不带查询串）、`query_parameter_names jsonb`（有序参数名数组，保留重复，不存参数值）、`upstream_status integer NULL`（100～599）、`action text`（PASS / DROP_RESPONSE / FAIL_BEFORE_SEND）、`duration_ms bigint`（非负）、`request_sha256 text`、`response_sha256 text NULL`（64 位小写十六进制）、`request_body/response_body bytea NULL`。没有上游完整响应时，响应哈希和正文为空；FAIL_BEFORE_SEND 的上游状态为空。
+- `sim_chaos.inbound_recording`：`id bigint identity PK`、`event_id/event_type text NULL`、`received_at/recorded_at timestamptz`、`sha256 text`、`body bytea NOT NULL`。只在 `sim.relay.record-bodies=true` 时追加每次接收的原文字节；复制/重排不额外录制。出站交换始终记元数据，同一开关控制是否保存正文。任何头都不保存。
+- 两张表由 simulator 迁移、拥有，但显式撤销其全部表权限后只授 INSERT/SELECT，序列只授 USAGE/SELECT；PUBLIC、migrator、app、readonly 无权限。接收与记录时间取注入的 Clock；既有 relay_log 的模拟时钟语义不变。
+
 ### P1b-8 chaos relay（模拟器 V2）
 
 `sim_chaos.relay_log` 由 simulator 迁移、拥有；PUBLIC、migrator、app、readonly 无表和序列访问权。

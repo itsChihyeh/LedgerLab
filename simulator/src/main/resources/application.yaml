@@ -16,6 +16,11 @@ sim:
     timeout: ${SIM_BANK_TIMEOUT:PT30S}
   relay:
     target-url: ${SIM_RELAY_TARGET_URL:http://localhost:8080/webhooks/stripe}
+    outbound-enabled: ${SIM_RELAY_OUTBOUND_ENABLED:false}
+    upstream-api-url: ${SIM_RELAY_UPSTREAM_API_URL:https://api.stripe.com}
+    connect-timeout: ${SIM_RELAY_CONNECT_TIMEOUT:PT5S}
+    read-timeout: ${SIM_RELAY_READ_TIMEOUT:PT60S}
+    record-bodies: ${SIM_RELAY_RECORD_BODIES:false}
   stripe:
     api-key: ${SIM_STRIPE_API_KEY:}
     availability-delay: ${SIM_STRIPE_AVAILABILITY_DELAY:PT0S}

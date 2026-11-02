@@ -42,7 +42,8 @@ public final class RelayController {
     public ObjectNode inspect() {
         ObjectNode result = JsonMapper.builder().build().createObjectNode();
         var rules = result.putArray("rules");
-        for (RelayPlan.Rule rule : relay.plan().rules()) {
+        RelayPlan snapshot = relay.plan();
+        for (RelayPlan.Rule rule : snapshot.rules()) {
             var node = rules.addObject().put("action", rule.action().name());
             if (rule.eventId() != null) node.put("event_id", rule.eventId());
             if (rule.eventType() != null) node.put("event_type", rule.eventType());
@@ -52,6 +53,14 @@ public final class RelayController {
                 case HOLD_AND_REORDER -> node.put("after_events", rule.count());
                 default -> {}
             }
+        }
+        for (RelayPlan.OutboundRule rule : snapshot.outboundRules()) {
+            rules.addObject()
+                    .put("direction", "OUTBOUND")
+                    .put("method", rule.method())
+                    .put("path_prefix", rule.pathPrefix())
+                    .put("action", rule.action().name())
+                    .put("times", rule.times());
         }
         return result;
     }

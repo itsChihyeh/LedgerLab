@@ -32,22 +32,40 @@ public final class Relay {
     private RelayPlan plan = new RelayPlan(List.of());
     private final List<Held> held = new ArrayList<>();
     private long sequence;
+    private int[] outboundRemaining = new int[0];
+    private final RelayRecording recording;
 
     public Relay(
             JdbcClient jdbc,
             HttpClient client,
             SimulationClock clock,
-            @Value("${sim.relay.target-url}") String target) {
+            @Value("${sim.relay.target-url}") String target,
+            RelayRecording recording) {
         this.jdbc = jdbc;
         this.client = client;
         this.clock = clock;
         this.target = URI.create(target);
+        this.recording = recording;
         if (!("http".equals(this.target.getScheme()) || "https".equals(this.target.getScheme()))
                 || this.target.getHost() == null) throw new IllegalArgumentException("Invalid relay target URL");
     }
 
     public synchronized void replace(RelayPlan replacement) {
         plan = replacement;
+        outboundRemaining = replacement.outboundRules().stream()
+                .mapToInt(RelayPlan.OutboundRule::times)
+                .toArray();
+    }
+
+    public synchronized RelayPlan.OutboundAction outboundAction(String method, String path) {
+        for (int i = 0; i < outboundRemaining.length; i++) {
+            var rule = plan.outboundRules().get(i);
+            if (outboundRemaining[i] > 0 && rule.matches(method, path)) {
+                outboundRemaining[i]--;
+                return rule.action();
+            }
+        }
+        return RelayPlan.OutboundAction.PASS;
     }
 
     public synchronized RelayPlan plan() {
@@ -64,6 +82,7 @@ public final class Relay {
         }
         String id = metadata.path("id").isString() ? metadata.path("id").asText() : null;
         String type = metadata.path("type").isString() ? metadata.path("type").asText() : null;
+        recording.inbound(id, type, bytes);
         RelayPlan.Rule rule = plan.match(id, type);
         Packet packet = new Packet(++sequence, UUID.randomUUID(), id, bytes.clone(), signature, hash(bytes));
         log(packet, rule.action().name(), 0, null, null);

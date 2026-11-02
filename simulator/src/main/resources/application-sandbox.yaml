@@ -1,0 +1,4 @@
+sim:
+  relay:
+    outbound-enabled: ${SIM_RELAY_OUTBOUND_ENABLED:true}
+    record-bodies: ${SIM_RELAY_RECORD_BODIES:true}

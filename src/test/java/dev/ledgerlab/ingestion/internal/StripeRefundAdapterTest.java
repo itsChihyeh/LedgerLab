@@ -54,6 +54,29 @@ class StripeRefundAdapterTest {
         db.drop();
     }
 
+    @Test
+    void ac_8_6_refundAdapterPreservesRelayBasePath() {
+        var rest = org.springframework.web.client.RestClient.builder()
+                .baseUrl(server.url() + "/relay/stripe-api")
+                .build();
+        var prefixed = new StripeRefundAdapter(
+                rest,
+                new StripeProperties(dev.ledgerlab.testsupport.StripeSignatures.SECRET, RefundHttpServer.KEY),
+                jdbc,
+                manager,
+                mapper,
+                clock,
+                issues);
+        server.handler = e -> respond(e, 200, refund("re_created", "ch_one", "rfd_local", 3000, "succeeded"));
+        assertThat(prefixed.create("rfd_local", "ch_one", 3000, "rfd_local").value())
+                .isInstanceOf(Found.class);
+        assertThat(server.requests).singleElement().satisfies(request -> {
+            assertThat(request.path()).isEqualTo("/relay/stripe-api/v1/refunds");
+            assertThat(request.method()).isEqualTo("POST");
+            assertThat(request.form()).contains("amount=3000", "metadata[ledgerlab_refund_id]=rfd_local");
+        });
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"pending", "succeeded", "failed", "canceled"})
     void ac_3_17_retrieveParsesAllStatesAndArchivesOutsideCallerTransaction(String state) {

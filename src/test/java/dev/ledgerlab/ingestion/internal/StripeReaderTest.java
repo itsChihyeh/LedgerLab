@@ -76,10 +76,14 @@ class StripeReaderTest {
     }
 
     private StripeReader reader(@Nullable String key, Duration timeout) {
+        return reader(key, timeout, "");
+    }
+
+    private StripeReader reader(@Nullable String key, Duration timeout, String prefix) {
         var factory = new JdkClientHttpRequestFactory(http);
         factory.setReadTimeout(timeout);
         RestClient client = RestClient.builder()
-                .baseUrl("http://127.0.0.1:" + server.getAddress().getPort())
+                .baseUrl("http://127.0.0.1:" + server.getAddress().getPort() + prefix)
                 .requestFactory(factory)
                 .requestInterceptor((request, body, execution) -> {
                     assertThat(TransactionSynchronizationManager.isActualTransactionActive())
@@ -94,6 +98,18 @@ class StripeReaderTest {
                 manager,
                 mapper,
                 Clock.fixed(NOW, ZoneOffset.UTC));
+    }
+
+    @Test
+    void ac_8_6_readerPreservesRelayBasePath() {
+        server.createContext("/relay/stripe-api/v1/payouts/po_batch", exchange -> {
+            assertThat(exchange.getRequestURI().getRawPath()).isEqualTo("/relay/stripe-api/v1/payouts/po_batch");
+            respond(exchange, payout("po_batch"), 200);
+        });
+        var prefixed = reader(KEY, Duration.ofSeconds(2), "/relay/stripe-api");
+        assertThat(prefixed.retrievePayout("po_batch", FetchPurpose.BATCH_LINES, null)
+                        .complete())
+                .isTrue();
     }
 
     @ParameterizedTest

@@ -134,6 +134,28 @@ curl http://localhost:8081/sim/relay/plan
 
 `RelayTest` 以真实 PostgreSQL 和 JDK HttpServer 验证本任务场景，为 AC-2.1（字节/签名）、AC-2.2（短延迟/乱序）、AC-2.3（重复）、AC-8.2（fake Stripe 协议）提供故障注入能力验证；不替代主应用对应的账本验收测试。
 
+### 出站代理（P6 T02）
+
+设置 `SIM_RELAY_OUTBOUND_ENABLED=true`（`sim.relay.outbound-enabled`），或启用 `sandbox` profile，即提供 `ANY /relay/stripe-api/**` 和 `GET /sim/relay/stats?since=<ISO-8601>`。默认模式不启用新 HTTP 接口。主应用的 `ledgerlab.stripe.api-base-url` 指向 `http://simulator:8081/relay/stripe-api`；reader 和退款适配器都会保留该路径前缀。
+
+- `SIM_RELAY_UPSTREAM_API_URL` / `sim.relay.upstream-api-url` 默认 `https://api.stripe.com`，只允许 HTTPS 或 loopback HTTP（localhost、127.x.x.x、IPv6 ::1）；不允许 URL 内嵌凭证、查询串或 fragment，启用代理时配置非法就启动失败。不跟随重定向。
+- 连接超时 `SIM_RELAY_CONNECT_TIMEOUT` 默认 `PT5S`，读取期限 `SIM_RELAY_READ_TIMEOUT` 默认 `PT60S`（对应 `sim.relay.connect-timeout/read-timeout`）。读取期限覆盖完整交换，包括响应正文停滞；超时返回 504，不自动重试。
+- 方法、原始路径、查询串、正文原样转发。调用方的头只转发 Authorization、Stripe-Version、Idempotency-Key、Content-Type；HTTP 客户端自行产生必要的传输头。响应保留状态、原文字节、Content-Type 和 Request-Id。live 凭证直接 403，不发请求、不消耗计划次数、不记交换表。
+
+```json
+{"rules":[{"event_type":"refund.updated","action":"DUPLICATE","copies":2},{"direction":"OUTBOUND","method":"POST","path_prefix":"/v1/refunds","action":"DROP_RESPONSE","times":1}]}
+```
+
+两方向独立按顺序匹配；出站须同时匹配 method 和原始 path 前缀（不含查询串），跳过次数已耗尽的规则，没有可用规则则 PASS。`times` 为正整数，匹配时原子消耗，`PUT /sim/relay/plan` 替换后重置，进程重启不保留。GET 返回配置次数，不是剩余次数；入站格式和已排队请求不变。
+
+出站动作 PASS 原样返回；DROP_RESPONSE 先完整读取上游响应，再返回 504 `{"error":"relay dropped upstream response"}`，日志保留上游真实状态和正文哈希；FAIL_BEFORE_SEND 不发出请求，返回 503。网络失败/超时返回 504，交换记录中的上游状态和响应哈希为空。日志动作仍是选中的计划动作。
+
+`sim_chaos.api_exchange` 每次允许的出站调用追加一行，存路径、查询参数**名**（不存值）、动作、上游状态、时间、耗时和正文 SHA-256。`SIM_RELAY_RECORD_BODIES` / `sim.relay.record-bodies` 默认 false；sandbox profile 默认 true，可显式关闭。打开时出站表保存请求/响应原文字节，`sim_chaos.inbound_recording` 每次收到 webhook 另存原文、事件号/类型和哈希；关闭时不新增入站录制，出站正文为空。两表不保存任何头（包括签名、凭证），simulator 只有 INSERT/SELECT，UPDATE/DELETE/TRUNCATE 都由数据库拒绝。导出脱敏由后续录制夹具任务实现。
+
+统计从持久日志计算，`since` 必填、含边界，非法时间返回 400；所有动作都有键，未发生为 0。入站按 `relay_log.attempt_no=0` 计接收动作，一次 DUPLICATE 只计 1，超时释放另计 HOLD_TIMEOUT_RELEASE；出站按交换行计数。入站沿用模拟时间，出站/录制取注入的审计 Clock。两个方向的计数都不随计划替换清零。
+
+`OutboundRelayTest`、`OutboundRelayConfigurationTest` 和既有 `RelayTest` 使用 loopback JDK HttpServer / PostgreSQL 验证 AC-8.6 的故障注入、AC-8.3 的录制基础和 AC-8.10 的统计基础，不调用真实 Stripe，也不代替后续真实退款验收。
+
 ## 退款（P3 T06）
 
 仅合成测试数据；不连接真实 Stripe。退款 REST 必须带 `Authorization: Bearer <sim.stripe.api-key>` 和 `Stripe-Version: 2026-09-30.endive`；创建另带 `Idempotency-Key`。例如：
