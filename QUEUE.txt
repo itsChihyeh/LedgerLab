@@ -1,0 +1,12 @@
+# 按顺序处理；每行一个任务文件（tasks/ 下）。Claude 会在审查后往这里追加修复任务。
+# 以 # 开头的行忽略。已完成的任务以 p6 分支上提交信息里的 “Task: <编号>” 判定。
+# 行尾的 [WAIT-PAYOUT] 是标记，不是文件名的一部分：按 RUNNER.md “P6 补充”先等 Stripe 自动 payout 走完。T08 依赖 T07 的结果，T07 完成前不要开始 T08。
+# 设计正本：p6 分支 docs/design/stripe-integration.md 第 9 节（2026-11-02）。
+T01-sandbox-env-probe.md
+T02-relay-outbound-proxy.md
+T03-sandbox-bridge.md
+T04-sandbox-stack-ac-8-4.md
+T05-ac-8-5-duplicates-catchup.md
+T06-recording-contract-tests.md
+T07-payout-refund-recon-real.md [WAIT-PAYOUT]
+T08-fixtures-report-handoff.md
