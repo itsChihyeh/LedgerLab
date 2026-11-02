@@ -386,31 +386,7 @@ final class P4Scenario {
     }
 
     List<String> databaseRows() {
-        return List.of(
-                        "ledger.correction",
-                        "ledger.correction_target",
-                        "ledger.journal_entry",
-                        "ledger.posting",
-                        "ledger.account",
-                        "core.payment",
-                        "core.payment_transition",
-                        "core.refund",
-                        "core.refund_transition",
-                        "core.settlement_batch",
-                        "core.settlement_batch_line",
-                        "core.batch_transition",
-                        "recon.bank_line",
-                        "recon.issue",
-                        "recon.issue_transition",
-                        "io.outbound_command",
-                        "io.idempotency_record")
-                .stream()
-                .map(table -> app.jdbc
-                        .sql("SELECT coalesce(jsonb_agg(r ORDER BY r::text),'[]'::jsonb)::text "
-                                + "FROM (SELECT to_jsonb(t) r FROM " + table + " t) s")
-                        .query(String.class)
-                        .single())
-                .toList();
+        return DatabaseSnapshot.rows(app.jdbc);
     }
 
     void check() {
@@ -447,6 +423,7 @@ final class P4Scenario {
                     .containsExactlyInAnyOrderElementsOf(entry.getValue().postings());
         }
         var expectedIssues = new java.util.HashSet<SettlementModel.Issue>(model.settlement.issues);
+        expectedIssues.addAll(state.p5.model.issues.keySet());
         state.model.issues.forEach((category, events) ->
                 events.forEach(event -> expectedIssues.add(new SettlementModel.Issue(category, "event", event))));
         var actualIssues = app.jdbc
@@ -465,6 +442,10 @@ final class P4Scenario {
                     .query()
                     .singleRow();
             String resolution = model.settlement.resolutions.get(issue);
+            if (state.p5.model.issues.containsKey(issue)) {
+                String value = state.p5.model.issues.get(issue);
+                resolution = value.isEmpty() ? null : value;
+            }
             assertThat(row)
                     .containsEntry("status", resolution == null ? "OPEN" : "RESOLVED")
                     .containsEntry(
@@ -487,9 +468,13 @@ final class P4Scenario {
         }
         assertThat(app.balances().get(1103))
                 .as("INV-11 bank evidence, waiting credits and explained unmatched debits")
-                .isEqualTo(Math.addExact(Math.subtractExact(statementCash, waitingCash), unmatchedDebits));
+                .isEqualTo(Math.addExact(
+                        Math.addExact(Math.subtractExact(statementCash, waitingCash), unmatchedDebits),
+                        state.p5.model.cashEvidence()));
         long unapplied = SettlementModel.sum(
                 unapplied().stream().map(b -> b.input.amount()).toList());
+        for (var bank : state.p5.model.banks.values())
+            if (bank.match.equals("UNAPPLIED")) unapplied = Math.addExact(unapplied, bank.amount);
         assertThat(app.balances().get(2105))
                 .as("INV-12 independent current UNAPPLIED credits")
                 .isEqualTo(unapplied);
@@ -500,14 +485,15 @@ final class P4Scenario {
                         .single())
                 .as("INV-12 database current versions")
                 .isTrue();
-        assertThat(app.balances().get(2104))
-                .as("INV-9 no P5 obligations in this generator")
-                .isZero();
         assertThat(app.balances().get(2102))
-                .as("INV-6 settlement proceeds minus reserved refunds")
+                .as("INV-6 settlement proceeds minus refunds and payouts, including corrections")
                 .isEqualTo(Math.addExact(
-                        model.settlement.deltas().getOrDefault(2102, 0L),
-                        model.refunds.deltas().getOrDefault(2102, 0L)));
+                        Math.addExact(
+                                model.settlement.deltas().getOrDefault(2102, 0L),
+                                model.refunds.deltas().getOrDefault(2102, 0L)),
+                        Math.addExact(
+                                model.journal.deltas().getOrDefault(2102, 0L),
+                                state.p5.model.journal.deltas().getOrDefault(2102, 0L))));
         for (var payment : state.model.payments.entrySet()) {
             var row = app.jdbc
                     .sql(

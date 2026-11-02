@@ -28,6 +28,7 @@ final class ScenarioLog {
                     ApiCommand,
                     ApiResult,
                     OutboundRun,
+                    PayoutRun,
                     ApiCleanup {
         Instant at();
     }
@@ -75,6 +76,12 @@ final class ScenarioLog {
 
     record ApiCleanup(Instant at) implements Input {}
 
+    record PayoutRun(Instant at, List<PayoutReplay.Reply> replies) implements Input {
+        PayoutRun {
+            replies = List.copyOf(replies);
+        }
+    }
+
     record ApiResult(Instant at, ModelApplication.ApiResponse response) implements Input {}
 
     record OutboundRun(Instant at, List<RefundReplay.Reply> replies) implements Input {
@@ -91,7 +98,7 @@ final class ScenarioLog {
 
     record WorkerRun(Instant at, String owner, CrashPoint crash) implements Input {}
 
-    void add(Input input) {
+    synchronized void add(Input input) {
         inputs.add(input);
     }
 
@@ -109,6 +116,11 @@ final class ScenarioLog {
         for (Input input : inputs()) {
             target.clock.set(input.at());
             switch (input) {
+                case PayoutRun run -> {
+                    target.payouts.replies.addAll(run.replies());
+                    target.payoutOutbound();
+                    assertThat(target.payouts.replies).isEmpty();
+                }
                 case ApiCleanup ignored -> target.expireApiKeys();
                 case ApiCommand api -> lastResponse = target.api(api.path(), api.key(), api.body());
                 case ApiResult result -> assertThat(lastResponse).isEqualTo(result.response());

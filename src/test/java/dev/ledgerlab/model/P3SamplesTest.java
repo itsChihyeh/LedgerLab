@@ -55,7 +55,16 @@ class P3SamplesTest {
     }
 
     static final class Sample implements AutoCloseable {
-        final ModelApplication app = new ModelApplication();
+        final ModelApplication app;
+
+        Sample() {
+            this(new ModelApplication());
+        }
+
+        Sample(ModelApplication app) {
+            this.app = app;
+        }
+
         final Map<String, List<String>> expected = new TreeMap<>();
         int event;
         int file;
@@ -117,12 +126,16 @@ class P3SamplesTest {
         }
 
         String accept(String payment, String alias, long amount) {
+            return accept(payment, alias, amount, "READY");
+        }
+
+        String accept(String payment, String alias, long amount, String status) {
             var response = app.api("/api/refunds", "sample-" + alias, """
                     {"payment_ref":"ch_sample_%s","merchant_refund_ref":"%s","amount":%d}
                     """.formatted(payment, alias, amount));
             assertThat(response.status()).as(response.body()).isEqualTo(201);
             var json = new ObjectMapper().readTree(response.body());
-            assertThat(json.path("status").asString()).isEqualTo("READY");
+            assertThat(json.path("status").asString()).isEqualTo(status);
             String id = json.path("refund_id").asString();
             entry("refund:" + id + ":accepted", "REFUND_ACCEPTED", "2102:D:" + amount, "2103:C:" + amount);
             return id;
@@ -157,11 +170,15 @@ class P3SamplesTest {
         }
 
         void check(long pr, long sit, long cash, long mp, long ma, long rp, long pit, long total) {
+            check(pr, sit, cash, mp, ma, rp, pit, total, 0L);
+        }
+
+        void check(long pr, long sit, long cash, long mp, long ma, long rp, long pit, long total, long unapplied) {
             assertThat(app.balances())
-                    .containsExactlyInAnyOrderEntriesOf(
-                            Map.of(1101, pr, 1102, sit, 1103, cash, 2101, mp, 2102, ma, 2103, rp, 2104, pit, 2105, 0L));
+                    .containsExactlyInAnyOrderEntriesOf(Map.of(
+                            1101, pr, 1102, sit, 1103, cash, 2101, mp, 2102, ma, 2103, rp, 2104, pit, 2105, unapplied));
             assertThat(Math.addExact(Math.addExact(pr, sit), cash)).isEqualTo(total);
-            assertThat(Math.addExact(Math.addExact(mp, ma), Math.addExact(rp, pit)))
+            assertThat(Math.addExact(Math.addExact(Math.addExact(mp, ma), Math.addExact(rp, pit)), unapplied))
                     .isEqualTo(total);
             Map<String, List<String>> actual = new TreeMap<>();
             app.jdbc

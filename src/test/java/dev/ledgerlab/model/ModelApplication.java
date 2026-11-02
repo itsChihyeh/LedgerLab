@@ -39,10 +39,16 @@ final class ModelApplication implements AutoCloseable {
     final MutableClock clock;
     final LedgerAudit audit;
     final RefundReplay refunds;
+    final PayoutReplay payouts;
+    final FundsLockProbe funds;
     private final URI endpoint;
     private boolean closed;
 
     ModelApplication() {
+        this(null);
+    }
+
+    ModelApplication(String bankUrl) {
         context = new SpringApplicationBuilder(LedgerLabApplication.class, Controls.class)
                 .run(
                         "--server.port=0",
@@ -55,12 +61,17 @@ final class ModelApplication implements AutoCloseable {
                         "--ledgerlab.stripe.api-base-url=" + processor.baseUrl(),
                         "--ledgerlab.inbox.scheduling-enabled=false",
                         "--ledgerlab.outbound.batch-size=100",
+                        "--ledgerlab.bank.payments.enabled=" + (bankUrl != null),
+                        "--ledgerlab.bank.payments.base-url=" + (bankUrl == null ? "http://127.0.0.1:1" : bankUrl),
+                        "--ledgerlab.bank.payments.read-timeout=500ms",
                         "--spring.main.banner-mode=off",
                         "--logging.level.root=WARN");
         jdbc = context.getBean(JdbcClient.class);
         clock = context.getBean(MutableClock.class);
         audit = context.getBean(LedgerAudit.class);
         refunds = context.getBean(RefundReplay.class);
+        payouts = context.getBean(PayoutReplay.class);
+        funds = context.getBean(FundsLockProbe.class);
         endpoint = URI.create(
                 "http://localhost:" + context.getEnvironment().getProperty("local.server.port") + "/webhooks/stripe");
         refunds.earlyDelivery = event -> {
@@ -73,6 +84,22 @@ final class ModelApplication implements AutoCloseable {
 
     @TestConfiguration(proxyBeanMethods = false)
     static class Controls {
+        @Bean
+        static FundsLockProbe fundsLockProbe() {
+            return new FundsLockProbe();
+        }
+
+        @Bean
+        @Primary
+        PayoutReplay payoutReplay(
+                MutableClock clock,
+                @org.springframework.beans.factory.annotation.Qualifier("bankPayoutGateway")
+                        java.util.Optional<dev.ledgerlab.payouts.BankPayoutGateway> external) {
+            var replay = new PayoutReplay(clock);
+            replay.delegate = external.orElse(null);
+            return replay;
+        }
+
         @Bean
         @Primary
         RefundReplay refundReplay() {
@@ -123,7 +150,27 @@ final class ModelApplication implements AutoCloseable {
 
     void outbound() {
         log.add(new ScenarioLog.OutboundRun(clock.instant(), java.util.List.copyOf(refunds.replies)));
-        context.getBean(dev.ledgerlab.outbound.internal.OutboundWorker.class).processAvailable();
+        runOutbound("REFUND");
+    }
+
+    void payoutOutbound() {
+        log.add(new ScenarioLog.PayoutRun(clock.instant(), java.util.List.copyOf(payouts.replies)));
+        runOutbound("PAYOUT");
+    }
+
+    private void runOutbound(String family) {
+        new dev.ledgerlab.outbound.internal.OutboundWorker(
+                        jdbc,
+                        context.getBean(org.springframework.transaction.PlatformTransactionManager.class),
+                        context.getBeansOfType(dev.ledgerlab.outbound.CommandHandler.class).values().stream()
+                                .filter(h -> h.kind().endsWith(family))
+                                .toList(),
+                        clock,
+                        context.getBean(dev.ledgerlab.outbound.OutboundProperties.class),
+                        new java.util.Random(9),
+                        new dev.ledgerlab.outbound.OutboundHooks() {},
+                        context.getBean(tools.jackson.databind.ObjectMapper.class))
+                .processAvailable();
     }
 
     void expireApiKeys() {
