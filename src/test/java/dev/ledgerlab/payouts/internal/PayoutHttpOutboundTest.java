@@ -20,7 +20,10 @@ import dev.ledgerlab.outbound.internal.OutboundWorker;
 import dev.ledgerlab.payouts.PayoutException;
 import dev.ledgerlab.refunds.RefundQueue;
 import dev.ledgerlab.refunds.internal.RefundFixture;
+import dev.ledgerlab.settlement.BankStatements;
+import dev.ledgerlab.shared.BusinessCalendar;
 import dev.ledgerlab.testsupport.Sql;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -94,7 +97,7 @@ class PayoutHttpOutboundTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"ACCEPTED", "EXECUTED"})
+    @ValueSource(strings = {"ACCEPTED", "EXECUTED", "RETURNED"})
     void ac_7_1_apiReceiptAcceptsWithoutMovingCash(String status) {
         Instant received = f.clock.instant().plusSeconds(5);
         bank.handler = e -> {
@@ -110,6 +113,7 @@ class PayoutHttpOutboundTest {
                 .processAvailable();
         assertThat(status()).isEqualTo("ACCEPTED");
         assertThat(commandStatus()).isEqualTo("DONE");
+        assertThat(lastOutcome()).isEqualTo("PAYOUT_" + status);
         held();
         assertThat(f.count("io.outbound_attempt")).isEqualTo(1);
         assertThat(
@@ -193,6 +197,110 @@ class PayoutHttpOutboundTest {
         assertThat(firstSent()).isEqualTo(first);
         assertThat(f.count("io.outbound_attempt")).isEqualTo(2);
         held();
+    }
+
+    @Test
+    void ac_7_10_ac_7_26_returnedQueryCompletesWithoutPostingUntilStatementsArrive() {
+        String refund = f.accept(originalPayment, 800).refundId();
+        // The bank accepted this request without a usable receipt, then executed and returned it
+        // (RETURN_AFTER_DAYS 1). UNAVAILABLE hides the result until after the return.
+        bank.payments.put(id, payment(id, "ACCEPTED"));
+        bank.handler = e -> respond(e, 503, "{\"code\":\"UNAVAILABLE\"}");
+        worker().processAvailable();
+        assertThat(status()).isEqualTo("UNKNOWN");
+        assertThat(commandStatus()).isEqualTo("UNKNOWN");
+        f.clock.set(Instant.parse("2026-11-03T15:00:00Z"));
+        bank.payments.put(id, payment(id, "EXECUTED"));
+        f.clock.set(Instant.parse("2026-11-04T15:00:00Z"));
+        bank.payments.put(id, payment(id, "RETURNED"));
+        bank.handler = bank::normal;
+        long entries = f.count("ledger.journal_entry");
+        handler = handler(() -> {
+            throw new AssertionError("Bank API must not release the refund queue");
+        });
+
+        worker().processAvailable();
+
+        assertThat(commandStatus()).isEqualTo("DONE");
+        assertThat(lastOutcome()).isEqualTo("PAYOUT_RETURNED");
+        assertThat(status()).isEqualTo("ACCEPTED");
+        assertThat(f.balance(2104)).isEqualTo(9680);
+        assertThat(f.balance(1103)).isEqualTo(9680);
+        assertThat(f.balance(2102)).isEqualTo(-800);
+        assertThat(f.count("ledger.journal_entry")).isEqualTo(entries);
+        assertThat(f.status(refund)).isEqualTo("AWAITING_FUNDS");
+        assertThat(f.number("SELECT count(*) FROM io.outbound_command WHERE kind='SUBMIT_REFUND'"))
+                .isZero();
+        assertThat(bank.payments).hasSize(1);
+        assertThat(bank.requests.stream().map(BankHttpServer.Request::method)).containsExactly("POST", "GET");
+        assertThat(bank.requests.stream().map(BankHttpServer.Request::id)).containsOnly(id);
+        assertThat(worker().processAvailable()).isZero();
+
+        statement(false);
+        assertThat(status()).isEqualTo("PAID");
+        assertThat(f.balance(2104)).isZero();
+        assertThat(f.balance(1103)).isZero();
+        assertThat(f.status(refund)).isEqualTo("AWAITING_FUNDS");
+        assertThat(f.count("ledger.journal_entry")).isEqualTo(entries + 1);
+        statement(true);
+        assertThat(status()).isEqualTo("RETURNED");
+        assertThat(f.balance(2104)).isZero();
+        assertThat(f.balance(1103)).isEqualTo(9680);
+        assertThat(f.balance(2102)).isEqualTo(8880);
+        assertThat(f.status(refund)).isEqualTo("READY");
+        assertThat(f.count("ledger.journal_entry")).isEqualTo(entries + 2);
+        assertThat(commandStatus()).isEqualTo("DONE");
+        assertThat(lastOutcome()).isEqualTo("PAYOUT_RETURNED");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"SUBMITTED", "ACCEPTED", "FAILED", "RETURNED"})
+    void ac_7_10_ac_7_11_returnedReceiptRespectsExistingPayoutState(String initialStatus) {
+        if (initialStatus.equals("RETURNED")) {
+            f.clock.set(Instant.parse("2026-11-04T15:00:00Z"));
+            statement(false);
+            statement(true);
+        } else {
+            f.tx.executeWithoutResult(tx -> {
+                f.ledger.lockFunds();
+                f.jdbc.sql("""
+                        UPDATE core.payout SET status=:status,
+                            failure_reason=CASE WHEN :status='FAILED' THEN 'ACCOUNT_CLOSED' END WHERE id=:id
+                        """).param("status", initialStatus).param("id", id).update();
+                if (initialStatus.equals("FAILED"))
+                    f.ledger.post(new EntryRequest(
+                            EntryType.PAYOUT_FAILED,
+                            "payout:" + id + ":failed",
+                            f.clock.instant(),
+                            SubjectType.PAYOUT,
+                            id,
+                            List.of(
+                                    PostingLine.debit(Account.PAYOUT_IN_TRANSIT, 9680),
+                                    PostingLine.credit(Account.MERCHANT_AVAILABLE, 9680))));
+            });
+        }
+        long entries = f.count("ledger.journal_entry");
+        long histories = f.count("core.payout_status_history");
+        var before = f.jdbc.sql("SELECT * FROM core.payout").query().singleRow();
+        handler = handler(() -> {
+            throw new AssertionError("Bank API must not release the refund queue");
+        });
+        bank.handler = e -> respond(e, 200, payment(id, "RETURNED"));
+
+        worker().processAvailable();
+
+        assertThat(commandStatus()).isEqualTo("DONE");
+        assertThat(lastOutcome()).isEqualTo("PAYOUT_RETURNED");
+        assertThat(f.count("ledger.journal_entry")).isEqualTo(entries);
+        assertThat(f.count("core.payout_status_history"))
+                .isEqualTo(histories + (initialStatus.equals("SUBMITTED") ? 1 : 0));
+        if (initialStatus.equals("SUBMITTED")) assertThat(status()).isEqualTo("ACCEPTED");
+        else
+            assertThat(f.jdbc.sql("SELECT * FROM core.payout").query().singleRow())
+                    .isEqualTo(before);
+        assertThat(f.number("SELECT count(*) FROM recon.issue WHERE category='PAYOUT_STATE_CONFLICT' AND subject_id='"
+                        + id + "'"))
+                .isEqualTo(initialStatus.equals("FAILED") ? 1 : 0);
     }
 
     @Test
@@ -324,7 +432,7 @@ class PayoutHttpOutboundTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"ACCEPTED", "EXECUTED", "REJECTED", "UNKNOWN"})
+    @ValueSource(strings = {"ACCEPTED", "EXECUTED", "RETURNED", "REJECTED", "UNKNOWN"})
     void ac_7_1_ac_7_22_paidDuringHttpIsNeverOverwrittenOrReleased(String reply) {
         bank.handler = e -> respond(
                 e,
@@ -338,6 +446,10 @@ class PayoutHttpOutboundTest {
                 })
                 .processAvailable();
         assertThat(status()).isEqualTo("PAID");
+        if (!reply.equals("UNKNOWN")) {
+            assertThat(commandStatus()).isEqualTo("DONE");
+            assertThat(lastOutcome()).isEqualTo("PAYOUT_" + reply);
+        }
         assertThat(f.balance(1103)).isZero();
         assertThat(f.balance(2104)).isZero();
         assertThat(f.balance(2102)).isZero();
@@ -499,6 +611,29 @@ class PayoutHttpOutboundTest {
                 .isZero();
     }
 
+    private void statement(boolean returned) {
+        var statements = new BankStatements(
+                f.jdbc,
+                f.ledger,
+                f.issues,
+                f.clock,
+                f.ids,
+                new BusinessCalendar(),
+                f.mapper,
+                f.manager,
+                2,
+                new JdbcPayoutBankEvidence(f.jdbc, f.ledger, f.queue, new BusinessCalendar(), f.clock));
+        String date = returned ? "2026-11-04" : "2026-11-03";
+        String csv = "H,BANK_STATEMENT,SIM-CAD-001," + date + "," + date + ",1,CAD\r\n"
+                + "D,bt_" + id + (returned ? "_R,CREDIT" : "_1,DEBIT") + ",9680,CAD,BOOKED," + id
+                + "," + date + "," + date + "," + (returned ? "RETURN ACCOUNT_CLOSED" : "Payout " + id)
+                + "\r\nT,1," + (returned ? "9680,0,0,9680" : "0,9680,9680,0") + "\r\n";
+        assertThat(statements
+                        .importBankStatement("payout-" + date + ".csv", csv.getBytes(StandardCharsets.UTF_8))
+                        .status())
+                .isEqualTo("ACCEPTED");
+    }
+
     private void failed(long available) {
         assertThat(status()).isEqualTo("FAILED");
         assertThat(commandStatus()).isEqualTo("DONE");
@@ -523,6 +658,12 @@ class PayoutHttpOutboundTest {
 
     private String commandStatus() {
         return f.jdbc.sql("SELECT status FROM io.outbound_command WHERE kind='SUBMIT_PAYOUT'")
+                .query(String.class)
+                .single();
+    }
+
+    private String lastOutcome() {
+        return f.jdbc.sql("SELECT last_outcome FROM io.outbound_command WHERE kind='SUBMIT_PAYOUT'")
                 .query(String.class)
                 .single();
     }

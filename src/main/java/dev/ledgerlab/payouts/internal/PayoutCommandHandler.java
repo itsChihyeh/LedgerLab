@@ -48,9 +48,7 @@ final class PayoutCommandHandler implements CommandHandler {
         if (outcome instanceof BankPayoutGateway.Found found) {
             if (!command.requestId().equals(found.requestId()))
                 return new CommandResult.Unknown("PAYOUT_RESPONSE_MISMATCH", clock.instant());
-            // Returned funds require statement evidence too. Do not release or post cash from this API.
-            if (found.status() == BankPayoutGateway.Status.RETURNED)
-                return new CommandResult.Unknown("BANK_RETURNED", found.receivedAt());
+            // EXECUTED/RETURNED finish the command; only statement evidence moves cash.
             return new CommandResult.Done(
                     new Receipt(found), found.paymentId(), "PAYOUT_" + found.status(), found.receivedAt());
         }
