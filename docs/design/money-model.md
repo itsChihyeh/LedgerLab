@@ -90,6 +90,15 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 - BANK/AGING 共用版本升级为 `p4-v1`（AGING 算法不变）。历史重建只使用 evidence_as_of 前的文件、流水及分录：2105 退还借方经出账 reference 归到原入账未结项，出账自身不产生负的 UNAPPLIED_CASH_OPEN；1103 退还贷方仍按出账 booking_date 归期，之前期间的余额不变。解释证据包含退还流水与分录；旧证据时点重跑不读取当前 match_status。旧运行报告保持可读，重新计算须使用当前规则版本。
 - `/api/overview` 原有 unappliedCash、bankCash 与 OPEN 差异计数直接反映退还，无新字段。BankAging 的 jqwik 独立模型加入退还动作，每步检查发现、历史重放、现金及 INV-12；定向真库测试覆盖样例 F、拒绝分支、PENDING→BOOKED、当前入账版本、重复导入、并发双退、回滚和银行归期。沿用 V20 的状态与授权，无新迁移、依赖或其他模块行为调整。
 
+### P5 T05 实现备注：银行提现出账与退回
+
+- `settlement.BankStatements` 在既有文件 SHA、流水身份/版本去重之后，先排除 PENDING 和非 CAD，再把 `mpo_` 引用交给 `payouts.PayoutBankEvidence.applyDebit/applyCredit`。该窄接口要求调用方事务已经持有资金锁，自己锁提现行；不依赖 settlement 类型。批次 `po_` 与 P4 入账流水号退还继续走原规则，Modulith 仅增加 ADR-0006 已规定的 settlement → payouts 公开接口依赖。
+- 合法出账/退回使用 `bank_txn:{id}` source_key，分录 subject 为 payout，历史 evidence_type 为 `bank_txn`、evidence_id 为流水号；`paid_at/returned_at` 和分录/历史 occurred_at 均取 booking_date 的多伦多 00:00，记录时刻来自注入 Clock。分录、提现状态/历史、银行行、差异处置和退回后的 `RefundQueue.release()` 都随整文件事务提交或回滚。出站命令后续写回仍沿用 T04 的 PAID/RETURNED 终态保护。
+- 出账遇到 FAILED 时优先开提现为 subject 的 `PAYOUT_STATE_CONFLICT`，不记账；其余不合格出账开流水为 subject 的 `UNMATCHED_BANK_LINE`。不能匹配的 CAD 入账继续记待查收款，FAILED 的候选开提现状态冲突，其余开未匹配流水。已知候选同时保存于 `matched_payout_id` 和差异 evidence_refs；这不代表已记账，必须结合 match_status 判断。退回原因按 memo 中独立的 `RETURN <CODE>` 提取，不含可识别代码时为 `UNKNOWN`。
+- 新增 `IngestionIssues.resolvePayoutPaid`，仅将该提现的 OPEN `PAYOUT_UNRESOLVED` 置为 RESOLVED；按差异编号升序锁行，追加 EXPLAINED 原因的处置历史，关联银行文件、流水及版本。保留其他类别和已人工处置的差异，不设置 correction_id。
+- 提现详情新增 `bankLines`，在原有 readonly/REPEATABLE READ 快照里读取 `recon.v_bank_line`：按 reference 或 matched_payout_id 关联，按 import_order 返回全部已存版本，包括 PENDING、冲突及金额不等的候选行。每行含文件号、行版本、日期、金额、币种、memo 和 match_status；提现出账/退回分录纳入原有 entries/postings。
+- 定向真库测试覆盖 AC-7.1 的 PAID 余额、7.10～7.13、7.24～7.26，以及 PENDING→BOOKED、前缀隔离、同文件并发、处置/退款唤醒回滚、只读详情。AC-7.11 在本任务只断言未记账及状态冲突，提现侧 BANK 规则与余额归期升级留给 T08。既有 Settlement 银行 jqwik 独立模型加入账本夹具预留、出账/第二笔出账、退回/第二笔退回与重复文件动作，逐步核对余额、流水状态、历史数、差异及 2104 不变量；保留原种子与 100/1000 条序列配置。无新迁移或依赖。
+
 ## 4. 两个门槛
 
 ### 4.1 退款执行门槛（S3）

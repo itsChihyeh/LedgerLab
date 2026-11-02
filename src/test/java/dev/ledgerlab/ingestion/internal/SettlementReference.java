@@ -28,6 +28,8 @@ final class SettlementReference {
     long cash;
     long unapplied;
     boolean banked;
+    String payoutStatus = "ABSENT";
+    boolean payoutReserved;
 
     enum Action {
         CAPTURE,
@@ -49,18 +51,57 @@ final class SettlementReference {
         SHORT_BANK,
         FOREIGN_BANK,
         DEBIT_BANK,
-        EXPIRE_BANK
+        EXPIRE_BANK,
+        RESERVE_PAYOUT,
+        PAYOUT_DEBIT_BANK,
+        SECOND_PAYOUT_DEBIT_BANK,
+        PAYOUT_RETURN_BANK,
+        SECOND_PAYOUT_RETURN_BANK
     }
 
     boolean enabled(Action action) {
         return switch (action) {
             case REISSUE -> failed;
             case OTHER_BATCH -> settled;
+            case RESERVE_PAYOUT -> banked && !payoutReserved;
+            case PAYOUT_DEBIT_BANK, SECOND_PAYOUT_DEBIT_BANK, PAYOUT_RETURN_BANK, SECOND_PAYOUT_RETURN_BANK ->
+                payoutReserved;
             default -> true;
         };
     }
 
     void apply(Action action) {
+        if (action == Action.RESERVE_PAYOUT) {
+            payoutReserved = true;
+            payoutStatus = "RESERVED";
+            return;
+        }
+        if (action.name().contains("PAYOUT") && action.name().contains("BANK")) {
+            if (!bankFiles.add(action)) return;
+            boolean debit = action.name().contains("DEBIT");
+            String id = action.name().toLowerCase(java.util.Locale.ROOT);
+            Bank bank = new Bank(id, 9680, "UNMATCHED_NO_POSTING");
+            banks.put(id, bank);
+            bankVersions++;
+            if (debit && payoutStatus.equals("RESERVED")) {
+                payoutStatus = "PAID";
+                bank.state = "PAYOUT_PAID";
+                cash = Math.subtractExact(cash, 9680);
+                bankEntries++;
+            } else if (!debit) {
+                cash = Math.addExact(cash, 9680);
+                bankEntries++;
+                if (payoutStatus.equals("PAID")) {
+                    payoutStatus = "RETURNED";
+                    bank.state = "PAYOUT_RETURNED";
+                } else {
+                    bank.state = "UNAPPLIED";
+                    unapplied = Math.addExact(unapplied, 9680);
+                    issues.add("UNMATCHED_BANK_LINE:" + id);
+                }
+            } else issues.add("UNMATCHED_BANK_LINE:" + id);
+            return;
+        }
         if (action == Action.EXPIRE_BANK) {
             expired = true;
             rematchBanks();
@@ -220,6 +261,15 @@ final class SettlementReference {
             transit = Math.addExact(transit, 9680L);
         }
         if (banked) transit = Math.subtractExact(transit, 9680);
-        return List.of(receivable, transit, cash, pending, available, 0L, 0L, unapplied);
+        if (payoutReserved && !payoutStatus.equals("RETURNED")) available = Math.subtractExact(available, 9680);
+        return List.of(
+                receivable,
+                transit,
+                cash,
+                pending,
+                available,
+                0L,
+                payoutStatus.equals("RESERVED") ? 9680L : 0L,
+                unapplied);
     }
 }

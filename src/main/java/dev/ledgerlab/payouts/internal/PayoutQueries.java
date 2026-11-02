@@ -104,11 +104,28 @@ final class PayoutQueries {
             @Nullable Integer responseStatus,
             String resultCode) {}
 
+    record BankLine(
+            String bankTxnId,
+            int version,
+            String fileId,
+            String direction,
+            String currency,
+            String status,
+            long amount,
+            String reference,
+            LocalDate bookingDate,
+            LocalDate valueDate,
+            String memo,
+            String matchStatus,
+            @Nullable String matchedPayoutId,
+            Instant recordedAt) {}
+
     record Detail(
             Payout payout,
             List<History> history,
             List<Command> commands,
             List<Attempt> attempts,
+            List<BankLine> bankLines,
             List<Entry> entries,
             List<Posting> postings,
             AsOf asOf) {}
@@ -228,7 +245,28 @@ final class PayoutQueries {
                             rs.getObject("response_status", Integer.class),
                             rs.getString("result_code")))
                     .list();
-            return new Detail(payout, history, commands, attempts, entries, postings, asOf());
+            var bankLines = jdbc.sql("""
+                    SELECT * FROM recon.v_bank_line WHERE matched_payout_id=:id OR reference=:id
+                    ORDER BY import_order
+                    """)
+                    .param("id", id)
+                    .query((rs, row) -> new BankLine(
+                            rs.getString("bank_txn_id"),
+                            rs.getInt("version"),
+                            rs.getString("file_id"),
+                            rs.getString("direction"),
+                            rs.getString("currency"),
+                            rs.getString("status"),
+                            rs.getLong("amount"),
+                            rs.getString("reference"),
+                            rs.getObject("booking_date", LocalDate.class),
+                            rs.getObject("value_date", LocalDate.class),
+                            rs.getString("memo"),
+                            rs.getString("match_status"),
+                            rs.getString("matched_payout_id"),
+                            rs.getTimestamp("recorded_at").toInstant()))
+                    .list();
+            return new Detail(payout, history, commands, attempts, bankLines, entries, postings, asOf());
         });
     }
 

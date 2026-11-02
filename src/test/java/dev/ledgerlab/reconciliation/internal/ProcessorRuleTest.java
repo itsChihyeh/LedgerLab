@@ -43,6 +43,8 @@ class ProcessorRuleTest {
     BatchSettlement settlement;
     ProcessorSnapshots snapshots;
     ReconRuns runs;
+    dev.ledgerlab.ledger.Ledger ledger;
+    dev.ledgerlab.payouts.PayoutBankEvidence payoutBankEvidence;
 
     @BeforeEach
     void setup() {
@@ -52,7 +54,7 @@ class ProcessorRuleTest {
         manager = new DataSourceTransactionManager(source);
         tx = new TransactionTemplate(manager);
         var ids = IdGenerator.seeded(clock, 1007);
-        var ledger = new JdbcLedger(source, clock, ids);
+        ledger = new JdbcLedger(source, clock, ids);
         var issues = new JdbcIngestionIssues(jdbc, ids, clock);
         var json = new ReconJson(mapper);
         var calendar = new BusinessCalendar();
@@ -60,6 +62,8 @@ class ProcessorRuleTest {
         var history = new dev.ledgerlab.refunds.internal.RefundHistory(jdbc);
         var queue = new dev.ledgerlab.refunds.internal.JdbcRefundQueue(jdbc, ledger, clock, ids, history);
         var payments = new dev.ledgerlab.payments.PaymentRefunds(jdbc, ledger);
+        payoutBankEvidence =
+                new dev.ledgerlab.payouts.internal.JdbcPayoutBankEvidence(jdbc, ledger, queue, calendar, clock);
         settlement = new BatchSettlement(
                 jdbc,
                 ledger,
@@ -67,7 +71,7 @@ class ProcessorRuleTest {
                 issues,
                 clock,
                 mapper,
-                new BankStatements(jdbc, ledger, issues, clock, ids, calendar, mapper, manager, 2),
+                new BankStatements(jdbc, ledger, issues, clock, ids, calendar, mapper, manager, 2, payoutBankEvidence),
                 queue,
                 new dev.ledgerlab.refunds.RefundSettlement(
                         jdbc,

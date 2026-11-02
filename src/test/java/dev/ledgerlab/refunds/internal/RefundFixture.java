@@ -48,8 +48,18 @@ public final class RefundFixture implements AutoCloseable {
     final JdbcRefunds refunds = service(ledger, new LockedRefundLimitGuard(ledger, payments), () -> {});
     public final JdbcIngestionIssues issues = new JdbcIngestionIssues(jdbc, ids, clock);
     final PaymentCapture capture = new PaymentCapture(ledger, jdbc, issues, ids, clock, mapper);
-    final BankStatements banks =
-            new BankStatements(jdbc, ledger, issues, clock, ids, new BusinessCalendar(), mapper, manager, 2);
+    final BankStatements banks = new BankStatements(
+            jdbc,
+            ledger,
+            issues,
+            clock,
+            ids,
+            new BusinessCalendar(),
+            mapper,
+            manager,
+            2,
+            new dev.ledgerlab.payouts.internal.JdbcPayoutBankEvidence(
+                    jdbc, ledger, queue, new BusinessCalendar(), clock));
     final BatchSettlement batches = new BatchSettlement(
             jdbc,
             ledger,

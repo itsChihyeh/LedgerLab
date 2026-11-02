@@ -2,7 +2,6 @@ package dev.ledgerlab.reconciliation.internal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import dev.ledgerlab.ledger.internal.JdbcLedger;
 import dev.ledgerlab.settlement.BankStatements;
 import dev.ledgerlab.shared.BusinessCalendar;
 import dev.ledgerlab.shared.IdGenerator;
@@ -42,14 +41,15 @@ class BankAgingRuleTest {
                 new IssueStore(f.jdbc, ids, f.clock, manager));
         bank = new BankStatements(
                 f.jdbc,
-                new JdbcLedger(f.source, f.clock, ids),
+                f.ledger,
                 new JdbcIngestionIssues(f.jdbc, ids, f.clock),
                 f.clock,
                 ids,
                 new BusinessCalendar(),
                 f.mapper,
                 manager,
-                2);
+                2,
+                f.payoutBankEvidence);
     }
 
     @AfterEach
@@ -132,6 +132,35 @@ class BankAgingRuleTest {
         assertThat(finding.subjectId()).isEqualTo(f.paymentId("ch_old"));
         assertThat(finding.expected()).contains("已过 3 个工作日", "2026-11-10T05:00:00Z");
         assertThat(report.summary().toString()).contains("老化只能发现有开始记录、没有结束记录的义务");
+    }
+
+    @Test
+    void ac_7_12_unknownPayoutDebitDoesNotPostAndBankBalanceReportsDifference() {
+        f.payment("ch_unknown_payout", 10000, ProcessorRuleTest.CAPTURED);
+        f.batch(
+                "po_unknown_payout",
+                ProcessorRuleTest.CAPTURED,
+                List.of(f.localLine("txn_unknown_payout", "ch_unknown_payout", 10000, 320)));
+        statement("2026-11-10", 1, 0, 9680, credit("deposit", 9680, "po_unknown_payout", "2026-11-10"));
+        long entries = f.jdbc.sql("SELECT count(*) FROM ledger.journal_entry")
+                .query(Long.class)
+                .single();
+        statement(
+                "2026-11-10",
+                2,
+                0,
+                0,
+                credit("deposit", 9680, "po_unknown_payout", "2026-11-10"),
+                "D,unknown-payout,DEBIT,9680,CAD,BOOKED,mpo_absent,2026-11-10,2026-11-10,Payout");
+        assertThat(f.jdbc.sql("SELECT count(*) FROM ledger.journal_entry")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(entries);
+        assertThat(status("UNMATCHED_BANK_LINE", "unknown-payout")).isEqualTo("OPEN");
+        f.clock.set(ProcessorRuleTest.AS_OF.plusSeconds(61));
+        var report = run(RunRequest.Kind.BANK, ProcessorRuleTest.CUTOFF, ProcessorRuleTest.AS_OF, false);
+        assertThat(f.finding(report, "BANK_BALANCE_MISMATCH").actual())
+                .contains("\"difference\":-9680", "\"cash\":9680");
     }
 
     @Test

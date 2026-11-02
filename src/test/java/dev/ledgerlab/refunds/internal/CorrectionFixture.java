@@ -32,6 +32,7 @@ public final class CorrectionFixture implements AutoCloseable {
     public final dev.ledgerlab.settlement.BatchRechecks rechecks = f.rechecks;
     public final PaymentCapture capture = f.capture;
     public final IngestionIssues issues = f.issues;
+    public final dev.ledgerlab.refunds.RefundQueue queue = f.queue;
 
     public String s1() {
         return f.s1();

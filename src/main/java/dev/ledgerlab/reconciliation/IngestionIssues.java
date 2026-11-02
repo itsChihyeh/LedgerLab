@@ -13,4 +13,7 @@ public interface IngestionIssues {
 
     /** Resolves only OPEN issues for the returned credit, in the bank import transaction. */
     void resolveBankReturn(String creditId, String debitId, String evidenceRefs);
+
+    /** Resolves only OPEN PAYOUT_UNRESOLVED issues for this payout, in the bank import transaction. */
+    void resolvePayoutPaid(String payoutId, String bankTxnId, String evidenceRefs);
 }

@@ -44,7 +44,17 @@ class BankCorrectionHttpTest {
 
     private BankStatements banks(Ledger ledger) {
         return new BankStatements(
-                f.jdbc, ledger, f.issues, f.clock, f.ids, new BusinessCalendar(), f.mapper, f.manager, 2);
+                f.jdbc,
+                ledger,
+                f.issues,
+                f.clock,
+                f.ids,
+                new BusinessCalendar(),
+                f.mapper,
+                f.manager,
+                2,
+                new dev.ledgerlab.payouts.internal.JdbcPayoutBankEvidence(
+                        f.jdbc, ledger, f.queue, new BusinessCalendar(), f.clock));
     }
 
     private MockMvc controller(Ledger ledger, Runnable fault) {

@@ -54,7 +54,18 @@ class BankCorrectionReconTest {
                 json,
                 f.mapper,
                 new IssueStore(f.jdbc, f.ids, f.clock, f.manager));
-        banks = new BankStatements(f.jdbc, f.ledger, f.issues, f.clock, f.ids, calendar, f.mapper, f.manager, 2);
+        banks = new BankStatements(
+                f.jdbc,
+                f.ledger,
+                f.issues,
+                f.clock,
+                f.ids,
+                calendar,
+                f.mapper,
+                f.manager,
+                2,
+                new dev.ledgerlab.payouts.internal.JdbcPayoutBankEvidence(
+                        f.jdbc, f.ledger, f.queue, new BusinessCalendar(), f.clock));
     }
 
     @AfterEach

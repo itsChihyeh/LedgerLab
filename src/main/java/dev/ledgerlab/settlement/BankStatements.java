@@ -6,6 +6,7 @@ import dev.ledgerlab.ledger.EntryType;
 import dev.ledgerlab.ledger.Ledger;
 import dev.ledgerlab.ledger.PostingLine;
 import dev.ledgerlab.ledger.SubjectType;
+import dev.ledgerlab.payouts.PayoutBankEvidence;
 import dev.ledgerlab.reconciliation.IngestionIssues;
 import dev.ledgerlab.shared.BusinessCalendar;
 import dev.ledgerlab.shared.IdGenerator;
@@ -40,6 +41,7 @@ public final class BankStatements {
     private final ObjectMapper mapper;
     private final TransactionTemplate tx;
     private final int waitDays;
+    private final PayoutBankEvidence payouts;
 
     public BankStatements(
             JdbcClient jdbc,
@@ -50,7 +52,8 @@ public final class BankStatements {
             BusinessCalendar calendar,
             ObjectMapper mapper,
             PlatformTransactionManager manager,
-            @Value("${ledgerlab.bank.wait-business-days:2}") int waitDays) {
+            @Value("${ledgerlab.bank.wait-business-days:2}") int waitDays,
+            PayoutBankEvidence payouts) {
         if (waitDays <= 0) throw new IllegalArgumentException("Bank wait days must be positive");
         this.jdbc = jdbc;
         this.ledger = ledger;
@@ -61,6 +64,7 @@ public final class BankStatements {
         this.mapper = mapper;
         this.tx = new TransactionTemplate(manager);
         this.waitDays = waitDays;
+        this.payouts = payouts;
     }
 
     public ImportResult importBankStatement(String sourceName, byte[] content) {
@@ -142,13 +146,22 @@ public final class BankStatements {
             }
             version = Math.incrementExact(previous.version());
         }
-        Decision decision = decide(line, now, null);
+        PayoutBankEvidence.Result payout = null;
+        if (line.status().equals("BOOKED")
+                && line.currency().equals("CAD")
+                && line.reference().startsWith("mpo_")) {
+            var evidence = new PayoutBankEvidence.Line(
+                    line.id(), line.reference(), line.amount(), line.bookingDate(), line.memo());
+            payout = line.direction().equals("DEBIT") ? payouts.applyDebit(evidence) : payouts.applyCredit(evidence);
+        }
+        Decision decision =
+                payout == null ? decide(line, now, null) : new Decision(payout.matchStatus(), null, null, null, null);
         jdbc.sql("""
                 INSERT INTO recon.bank_line
                     (bank_txn_id, version, file_id, direction, currency, status, amount, reference,
-                     booking_date, value_date, memo, match_status, matched_batch_id, wait_until, recorded_at)
+                     booking_date, value_date, memo, match_status, matched_batch_id, matched_payout_id, wait_until, recorded_at)
                 VALUES (:id, :version, :file, :direction, :currency, :status, :amount, :reference,
-                        :booking, :value, :memo, :match, :batch, :wait, :now)
+                        :booking, :value, :memo, :match, :batch, :payout, :wait, :now)
                 """)
                 .param("id", line.id())
                 .param("version", version)
@@ -163,10 +176,37 @@ public final class BankStatements {
                 .param("memo", line.memo())
                 .param("match", decision.status())
                 .param("batch", decision.matchedBatch())
+                .param(
+                        "payout",
+                        payout == null || payout.candidate() == null
+                                ? null
+                                : payout.candidate().id())
                 .param("wait", decision.due() == null ? null : utc(decision.due()))
                 .param("now", utc(now))
                 .update();
         apply(new Stored(line, version, file, decision.due()), decision, now);
+        if (payout != null) payoutIssue(payout, line, file, version);
+    }
+
+    private void payoutIssue(PayoutBankEvidence.Result result, BankCsv.Line line, String file, int version) {
+        var refs = new ArrayList<Map<String, Object>>();
+        refs.add(Map.of("table", "io.imported_file", "id", file));
+        refs.add(Map.of("table", "recon.bank_line", "bank_txn_id", line.id(), "version", version));
+        var candidate = result.candidate();
+        if (candidate != null) refs.add(Map.of("table", "core.payout", "id", candidate.id()));
+        String evidence = mapper.writeValueAsString(refs);
+        if (result.matchStatus().equals("PAYOUT_PAID"))
+            issues.resolvePayoutPaid(Objects.requireNonNull(candidate).id(), line.id(), evidence);
+        if (result.issueCategory() != null) {
+            boolean conflict = result.issueCategory().equals("PAYOUT_STATE_CONFLICT");
+            issues.open(
+                    result.issueCategory(),
+                    conflict ? "payout" : "bank_txn",
+                    conflict ? Objects.requireNonNull(candidate).id() : line.id(),
+                    mapper.writeValueAsString(candidate == null ? Map.of() : candidate),
+                    mapper.writeValueAsString(line),
+                    evidence);
+        }
     }
 
     /** Called synchronously after BATCH_SETTLED, in the confirming transaction. */
