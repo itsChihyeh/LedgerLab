@@ -5,7 +5,7 @@ stripe-integration.md 第 9.1（运行编号、时钟跟随现实）、9.3 节�
 
 ## 范围
 1. simulator 新包 `dev.ledgerlab.sim.sandbox`，只在 Spring profile `sandbox` 下装配；新增 `application-sandbox.yaml`。配置：`sim.sandbox.stripe-api-key`（环境变量 `STRIPE_API_KEY`，启动时只接受 `rk_test_`/`sk_test_`，live 或其他前缀拒绝启动，错误信息不含值）、`sim.sandbox.stripe-base-url`（默认 `http://localhost:8081/relay/stripe-api`，即经过 T02 的出站代理）、`sim.sandbox.run-id`（必填，`sbx_` 开头）、`sim.sandbox.window-start`（ISO-8601，必填）。HTTP 用现有 RestClient/JDK 客户端，不加依赖。
-2. 流量生成器 `POST /sim/sandbox/payments {"count":1..50,"card":"<pm_card_…>","seed":n}`：按 9.3 生成金额和请求；`Idempotency-Key = <run_id>:pay:<card>:<seed>:<序号>`。卡只接受白名单（`pm_card_bypassPending` 和 T01 确认的加拿大卡）。每笔结果（序号、金额、pi_、ch_、状态、HTTP 状态、错误码）追加进新表；返回汇总。部分失败不回滚已成功的。
+2. 流量生成器 `POST /sim/sandbox/payments {"count":1..50,"card":"<pm_card_…>","seed":n}`：按 9.3 生成金额和请求（**按 answers/T01.md 第 1 条：不传 `payment_method_types`，用 `automatic_payment_methods[enabled]=true&automatic_payment_methods[allow_redirects]=never`**）；`Idempotency-Key = <run_id>:pay:<card>:<seed>:<序号>`。卡只接受白名单（`pm_card_bypassPending` 和 T01 确认的加拿大卡）。每笔结果（序号、金额、pi_、ch_、状态、HTTP 状态、错误码）追加进新表；返回汇总。部分失败不回滚已成功的。
 3. `POST /sim/sandbox/bank/sync`：按 9.3 列出窗口内 paid payout（`GET /v1/payouts?status=paid&created[gte]=<window-start>&limit=100` 翻完 `has_more`；任何一页失败则整个同步不做任何入账，返回 502 和已翻页数），合格的调 `IncomingTransfers.receive(po_, amount)`，不合格的记原因。返回 `{seen, received, skipped:[{payout, reason}]}`。每次同步结果追加进新表。
 4. `GET /sim/sandbox/payments` 返回本 run 全部生成记录（按序号）；`GET /sim/sandbox/summary`：生成器各卡笔数/金额合计、成功失败数、银行同步收到的 payout 数——给运行报告用。
 5. 时钟跟随现实：`sim.clock.follow-wall=true`（sandbox profile 里设为 true，默认 false）时，每秒把 `SimulationClock` 推进到现实 UTC（只进不退，现实时间早于模拟时间时什么也不做），推进后照常执行到期 relay 回调和银行计划。
