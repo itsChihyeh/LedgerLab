@@ -197,18 +197,31 @@ P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at`
 这些是按文档做的推断，接入前要在测试模式里逐条验证，结果回写本文：
 
 1. 测试模式下自动 payout 会按日程生成，且 `balance_transactions?payout=` 对它可用（文档说这个过滤只对自动 payout 有效）。
+   **实测 2026-11-02（T01）**：两笔支付后 CAD 可用余额 1158 分、待结算余额 9680 分；`GET /v1/payouts?limit=10` 返回空列表且 `has_more=false`。自动 payout 与按 payout 过滤明细待 T07 观察。
 2. 测试卡 `4000 0000 0000 0077` 能让资金直接进入可用余额，便于快速产生 payout。它是美国卡，不能用来验证加拿大国内卡费率；费率要用加拿大测试卡另测。
+   **实测 2026-11-02（T01）**：审查确认改用 9.3 的 automatic payment methods 参数后，CAD 1234 分的 `pm_card_bypassPending` 成功，charge 类型断言为 card、卡国家 US；fee=76、net=1158、status=available、available_on=1793645009（与 charge.created 相同），直接进入可用余额。国内公式预期 66 分，实际多 10 分；不据国际卡修改国内公式。旧参数被拒；旧幂等键绑定旧参数，再用新参数返回 `HTTP_400 type=idempotency_error`，因此为修订请求固定分配编号 4，原编号 1 退役且本地记录保留。
 3. 加拿大国内测试卡的手续费等于 `30 + round(2.9%)`；舍入方式不同就改合同公式，不加容差。
+   **实测 2026-11-02（T01）**：官方[国际测试卡表](https://docs.stripe.com/testing#international-cards)的加拿大 Visa `pm_card_ca` 成功；charge 类型 card、国家 CA。10000 分的实际 fee=320，与 `30 + round(2.9%)` 相等，net=9680、status=pending、available_on=1794182400。此单验证通过，不改变合同公式或加容差，不把单个金额推广为完整舍入验证。
 4. 余额不足时退款进入 `pending` 的行为在测试模式下可复现（官方文档说卡退款只用可用余额、不够时 pending；fake Stripe 已按此建模）。
+   **实测 2026-11-02（T01，延期）**：本任务没有创建退款，避免未来批次出现账本未知退款而 HELD；待 T07 经主应用发起退款时观察。
 5. 有能让 payout 失败的加拿大测试银行账户号。
+   **实测 2026-11-02（T01，仅文档核查）**：官方 [Connect 测试文档加拿大 payout 表](https://docs.stripe.com/connect/testing#payouts)列出路由 `11000-000`、测试账号 `000111111113` 对应 `account_closed`，`000111111116` 对应 `no_account`。仅记录文档能力，未配置银行账户、未验证本账号失败 payout。
 6. webhook 端点返回非 2xx 时的重试节奏（只用于报告，不写进业务逻辑）。文档说 live 模式最多重试 3 天，sandbox 只在几小时内重试几次，不能依赖测试模式的自动补投。
+   **实测 2026-11-02（T01，仅文档核查）**：官方 [Automatic retries](https://docs.stripe.com/webhooks#automatic-retries)明确 sandbox 在几小时内重试三次，live 指数退避最长三天。本任务未注入失败、未测实际间隔；不能把 CLI 转发当作已验证的端点重试。
 7. 测试模式的接口速率上限，决定流量生成器和演示页的限流值。
+   **实测 2026-11-02（T01，仅文档核查）**：官方 [Rate limits](https://docs.stripe.com/rate-limits)列出 sandbox 全局 25 请求/秒、普通单端点默认 25 请求/秒，另有端点和并发限制。没有压测；这是文档上限，不是流量生成器应持续达到的目标。
 8. 测试模式的自动 payout 会走到 `reconciliation_status=completed` 并发出 `payout.reconciliation_completed`。这一条决定 P2 的批次触发方式：P2 先按官方文档在 fake Stripe 里实现；如果那时测试账号已经注册，就在 P2 开工前先验证这一条，否则 P6 接账号后第一个验证。
+   **实测 2026-11-02（T01）**：没有历史 payout；支付后可用 1158 分、待结算 9680 分。`reconciliation_completed` 待 T07 观察，未改变当前触发设计。
 9. 用 Stripe 的 default test-mode sandbox 还是新建的独立 sandbox：接账号时选定一种并写在这里，文档里统一称“测试模式”。
    **已定（2026-10-23）**：用户注册了加拿大账号，使用 Stripe 自带的默认测试沙盒（Dashboard 显示“测试企业 沙盒”），不另建 sandbox。开发用受限密钥 `ledgerlab-dev`（`rk_test_…`，只放在本地 `.env` 的 `STRIPE_API_KEY`），权限：Balance、Balance Transaction Sources、Events、Payouts 读取；Charges and Refunds、Payment Intents 写入，其余全部无。第 1～8 条尚未实测。第 8 条原定 P2 开工前实测；2026-10-23 改为 P2 期间做（新账号的首次自动 payout 要等 Stripe 的初始等待期，开工前等不到），P2 先按官方文档在 fake Stripe 里实现 `reconciliation_completed` 触发，并保留“查询 payout 对象看到 `completed`”的后备路径，所以实测结果即使相反也只改触发方式、不改批次核对。
 10. 受限密钥能否用于 `stripe listen`（`--api-key rk_test_…`）；不能则用户本人 `stripe login` 一次。
+   **实测 2026-11-02（T01）**：Stripe CLI 1.55.6 使用当前受限密钥调用 `listen --print-secret` 不能取得签名密钥，错误类别 `PERMISSION_ERROR`，需用户登录。按审查结论，`env.sh` 默认 `STRIPE_CLI_USE_LOGIN=1`；listen/resend 不带 `--api-key`，并从 CLI 子进程环境移除 `STRIPE_API_KEY`。本轮登录模式返回 `LOGIN_REQUIRED`，输出“需要用户 stripe login”后跳过 f 项，其他探测成功则整体退出 0。未自动登录、未存储签名密钥；REST 仍用受限测试密钥。
 11. `stripe events resend evt_…` 能否把事件重投给正在运行的 `stripe listen`（9.2 补投依赖它）。
+   **实测 2026-11-02（T01，延期）**：已找到 bypass 的 `charge.succeeded`（`evt_3UXQCaF5hIinUF490brSX7aS`）；CLI 未登录，未执行 resend 或 60 秒接收观察。待用户登录后由 T04 观察，不能断言支持或不支持。官方[手工重试说明](https://docs.stripe.com/webhooks#manual-retries)的 webhook endpoint 示例不能代替本地 listen 实测。
 12. 真实事件的 `api_version` 是否等于第 8 节固定的版本；不同就按第 8 节“升级 API 版本是一次单独的改动”处理，P6 先如实记录。
+   **实测 2026-11-02（T01，部分）**：初始 `account.updated` 与支付后的最近五条事件（含 `charge.succeeded`、`charge.updated`、`payment_intent.created`、`payment_intent.succeeded`）均为 `api_version=2026-09-30.endive`。经 listen 投递的版本待用户登录后由 T04 观察；API 列表结果不替代 webhook 契约验证。
+
+第 9 条补充：**实测 2026-11-02（T01）**：从 `.env` 单独加载的测试密钥可以读取 balance、payouts、events、charge 及其 balance transaction，并创建确认两笔 PaymentIntent；balance、PaymentIntent、charge 明确 `livemode=false`。沿用已定的加拿大默认测试沙盒，不另建 sandbox；REST 权限不代表 CLI listen 获权。完整记录与后续观察项见 [p6-probe.md](../handoff/p6-probe.md)。
 
 ## 8. 协议版本（P1 开工前固定）
 
@@ -234,6 +247,8 @@ P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at`
 
 ### 9.2 漏收补投
 
+T01 实现备注（2026-11-02）：第 7 节已证实当前受限密钥不能 listen，后续沙箱脚本默认使用 `STRIPE_CLI_USE_LOGIN=1`；listen/resend 不传 `--api-key`，并移除 CLI 子进程的 `STRIPE_API_KEY`，REST 调用仍使用 env.sh 加载的受限测试密钥。用户本人登录之前，T01 跳过 CLI 观察项；后续任务按各自退出码约定处理。
+
 本机会休眠，`stripe listen` 会断，测试模式的自动重试也不可靠（第 7 节第 6 条）。所以每次运行和每次恢复都先做补投：
 
 1. 用 Events API `GET /v1/events?created[gte]=<窗口起点>&types[]=…` 翻完全部分页（任何一页失败都算“不完整”，不据此下结论），得到订阅类型的事件编号。
@@ -245,7 +260,7 @@ P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at`
 
 ### 9.3 沙箱桥（simulator 的 `sandbox` 包，只在 sandbox profile 装配）
 
-- **流量生成器** `POST /sim/sandbox/payments {"count":20,"card":"pm_card_bypassPending","seed":1}`：按种子生成 500～20000 分的金额，逐笔 `POST /v1/payment_intents`（`amount`、`currency=cad`、`payment_method=<测试 PaymentMethod>`、`payment_method_types[]=card`、`confirm=true`、`metadata[ledgerlab_run_id]`），`Idempotency-Key = <run_id>:pay:<序号>`，所以重跑同一批不会多扣。只走自动请款。卡：`pm_card_bypassPending`（资金立即可用，便于尽快产生 payout）和加拿大国内卡（验证第 7 节第 3 条费率）。每笔结果追加进 simulator 自己的表（`sim_sandbox` schema，主应用不读）。
+- **流量生成器** `POST /sim/sandbox/payments {"count":20,"card":"pm_card_bypassPending","seed":1}`：按种子生成 500～20000 分的金额，逐笔 `POST /v1/payment_intents`（`amount`、`currency=cad`、`payment_method=<测试 PaymentMethod>`、`automatic_payment_methods[enabled]=true`、`automatic_payment_methods[allow_redirects]=never`、`confirm=true`、`metadata[ledgerlab_run_id]`），`Idempotency-Key = <run_id>:pay:<序号>`，所以重跑同一批不会多扣。只走自动请款，成功后断言 charge 的 `payment_method_details.type == "card"`。卡：`pm_card_bypassPending`（资金立即可用，便于尽快产生 payout）和加拿大国内卡（验证第 7 节第 3 条费率）。每笔结果追加进 simulator 自己的表（`sim_sandbox` schema，主应用不读）。T01 按 2026-11-02 审查结论采用此请求契约并实测成功；错误记录只允许 `error.type`、`error.code`、`error.param`、`error.decline_code` 等安全字段，不记录 `error.message` 或完整错误原文。
 - **模拟银行对接真实 payout** `POST /sim/sandbox/bank/sync`：列出窗口内 `status=paid` 的 payout（翻完全部分页），对 `automatic=true`、`method=standard`、`currency=cad`、`amount>0` 的调用已有的 `IncomingTransfers.receive(po_…, amount)`（已有幂等，重复同步不重复入账）；入账日仍由模拟银行自己的日历和计划决定（第 1 节）。simulator 只读 Stripe，不读主应用的库。
 - 两个接口都用同一把 `STRIPE_API_KEY`，启动时同样拒绝 live 前缀；请求也经过 9.4 的出站代理，以便录制。
 
@@ -281,4 +296,7 @@ P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at`
 
 | 项目 | fake Stripe | 真实 Stripe 测试模式 |
 |---|---|---|
-| （待 P6 实测填写） | | |
+| PaymentIntent 创建参数（T01，2026-11-02） | fake Stripe 不实现 PaymentIntent，无法暴露这个差异 | 当前测试账号拒绝显式 `payment_method_types`；9.3 已按审查改用 automatic payment methods、禁止 redirect 并断言 charge 类型 card，两笔支付实测成功 |
+| 本地 webhook 监听鉴权（T01，2026-11-02） | fake Stripe 直接发签名 webhook，不需要 Stripe CLI 登录 | CLI 1.55.6 用当前受限密钥获取签名密钥失败（`PERMISSION_ERROR`）；需要用户本人登录后再测 |
+| 国际卡手续费（T01，2026-11-02） | 默认按合同公式计算，故障计划可覆盖 fee；不模拟卡国家费率 | 美国 bypass 卡 CAD 1234 分 fee=76，比国内公式 66 多 10；加拿大卡 CAD 10000 分 fee=320，与合同相等。只记录实际差额，不推导完整国际卡费率 |
+| 资金可用时间（T01，2026-11-02） | 默认 availability-delay=PT0S；可显式配置延迟，使用模拟时钟 | bypass 净额 1158 分立即 available；加拿大卡净额 9680 分 pending、available_on=1794182400，不应要求普通卡立即可用 |
