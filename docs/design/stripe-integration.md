@@ -260,9 +260,19 @@ T01 实现备注（2026-11-02）：第 7 节已证实当前受限密钥不能 li
 
 ### 9.3 沙箱桥（simulator 的 `sandbox` 包，只在 sandbox profile 装配）
 
-- **流量生成器** `POST /sim/sandbox/payments {"count":20,"card":"pm_card_bypassPending","seed":1}`：按种子生成 500～20000 分的金额，逐笔 `POST /v1/payment_intents`（`amount`、`currency=cad`、`payment_method=<测试 PaymentMethod>`、`automatic_payment_methods[enabled]=true`、`automatic_payment_methods[allow_redirects]=never`、`confirm=true`、`metadata[ledgerlab_run_id]`），`Idempotency-Key = <run_id>:pay:<序号>`，所以重跑同一批不会多扣。只走自动请款，成功后断言 charge 的 `payment_method_details.type == "card"`。卡：`pm_card_bypassPending`（资金立即可用，便于尽快产生 payout）和加拿大国内卡（验证第 7 节第 3 条费率）。每笔结果追加进 simulator 自己的表（`sim_sandbox` schema，主应用不读）。T01 按 2026-11-02 审查结论采用此请求契约并实测成功；错误记录只允许 `error.type`、`error.code`、`error.param`、`error.decline_code` 等安全字段，不记录 `error.message` 或完整错误原文。
+- **流量生成器** `POST /sim/sandbox/payments {"count":20,"card":"pm_card_bypassPending","seed":1}`：按种子生成 500～20000 分的金额，逐笔 `POST /v1/payment_intents`（`amount`、`currency=cad`、`payment_method=<测试 PaymentMethod>`、`automatic_payment_methods[enabled]=true`、`automatic_payment_methods[allow_redirects]=never`、`confirm=true`、`metadata[ledgerlab_run_id]`），`Idempotency-Key = <run_id>:pay:<card>:<seed>:<序号>`，所以重跑同一批不会多扣。只走自动请款，成功后断言 charge 的 `payment_method_details.type == "card"`。卡：`pm_card_bypassPending`（资金立即可用，便于尽快产生 payout）和加拿大国内卡（验证第 7 节第 3 条费率）。每笔结果追加进 simulator 自己的表（`sim_sandbox` schema，主应用不读）。T01 按 2026-11-02 审查结论采用此请求契约并实测成功；错误记录只允许 `error.type`、`error.code`、`error.param`、`error.decline_code` 等安全字段，不记录 `error.message` 或完整错误原文。
 - **模拟银行对接真实 payout** `POST /sim/sandbox/bank/sync`：列出窗口内 `status=paid` 的 payout（翻完全部分页），对 `automatic=true`、`method=standard`、`currency=cad`、`amount>0` 的调用已有的 `IncomingTransfers.receive(po_…, amount)`（已有幂等，重复同步不重复入账）；入账日仍由模拟银行自己的日历和计划决定（第 1 节）。simulator 只读 Stripe，不读主应用的库。
 - 两个接口都用同一把 `STRIPE_API_KEY`，启动时同样拒绝 live 前缀；请求也经过 9.4 的出站代理，以便录制。
+
+**T03 实现备注（2026-11-02）**：沙箱桥仅在 `sandbox` profile 注册。必填 `sim.sandbox.stripe-api-key/run-id/window-start`，分别由 `STRIPE_API_KEY`、`SIM_SANDBOX_RUN_ID`、`SIM_SANDBOX_WINDOW_START` 注入；base URL 默认 `http://localhost:8081/relay/stripe-api`，可用 `SIM_SANDBOX_STRIPE_BASE_URL` 覆盖。run-id 限 `sbx_` 加 1～100 个字母、数字、下划线或连字符；窗口接受 ISO-8601 Instant。错误信息不回显配置值。API 版本固定 `2026-09-30.endive`，不跟随重定向、不自动重试；连接 5 秒、完整响应期限 60 秒。
+
+金额序列用 `java.util.Random(seed)` 的 `500 + nextInt(19501)`，序号从 1 开始，每批 1～50 笔。白名单为 `pm_card_bypassPending`、T01 实测的 `pm_card_ca`。完整幂等键包含 card 和 seed（修正本节原简写），相同种子不同卡不会撞键；同卡同种子的扩容批次复用前面序号。请求显式 `capture_method=automatic`，展开 `latest_charge`；若返回字符串则 GET charge，再断言 test mode 和 card 类型。部分失败只追加安全结果，不回滚其他支付；完整原文不进沙箱桥表或返回值。
+
+发送前追加 started、完成后追加结果，成功重放直接返回已有结果；未确认尝试在首次发送满 23 小时后拒绝再次 POST（沿用 T01 的幂等保留窗口保护）。`GET /sim/sandbox/payments` 返回当前 run 的全部尝试行，按 ordinal/id 排序；`GET /sim/sandbox/summary` 按逻辑身份 `(card, seed, ordinal)` 的最新结果统计各卡 count/amount、succeeded/failed/pending 和 payouts_received，started 单列 pending。金额合计包含失败尝试对应的逻辑支付，不把重试行累计成新支付。
+
+银行同步先拉完全部分页，再在同一事务中调用银行并追加同步记录；任何页 HTTP/解析/游标失败返回 502、`pages` 为已读完整页数、零接收。记录包含 seen/received/skipped/pages/httpStatus/errorCode；成功的 received 为本次新通知的 payout 数，重复同步列入 ALREADY_RECEIVED。跨 run 去重由持久同步记录与银行自身幂等共同保证；同 run 的报告计收到的唯一 payout。额外拒绝 live、窗口外和非 paid 对象，金额沿用模拟银行既有正整数且小于 2^53 的界限（没有放宽银行范围）。银行接收发生错误时整个本次入账事务回滚并追加 502 记录。V8 表、权限见数据字典 T03 备注。
+
+`sim.clock.follow-wall` 默认 false，sandbox 默认 true，显式配置可覆盖；每秒用注入的现实 Clock 原子推进 SimulationClock 到较晚时刻，执行到期回调、原有推进监听器，再推进银行计划。默认冻结路径和手动推进接口保持原行为。沙箱桥测试只用 JDK HttpServer 与真实 PostgreSQL，支持 AC-8.4、8.8、8.10，密钥防护支持 AC-8.2；不替代真实沙箱端到端验收。
 
 ### 9.4 chaos relay 的出站代理
 

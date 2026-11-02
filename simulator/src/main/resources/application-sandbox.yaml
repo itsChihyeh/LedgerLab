@@ -1,4 +1,11 @@
 sim:
+  sandbox:
+    stripe-api-key: ${STRIPE_API_KEY:}
+    stripe-base-url: ${SIM_SANDBOX_STRIPE_BASE_URL:http://localhost:8081/relay/stripe-api}
+    run-id: ${SIM_SANDBOX_RUN_ID:}
+    window-start: ${SIM_SANDBOX_WINDOW_START:}
+  clock:
+    follow-wall: ${SIM_CLOCK_FOLLOW_WALL:true}
   relay:
     outbound-enabled: ${SIM_RELAY_OUTBOUND_ENABLED:true}
     record-bodies: ${SIM_RELAY_RECORD_BODIES:true}

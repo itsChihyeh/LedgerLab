@@ -63,6 +63,17 @@ public final class SimulationClock extends Clock {
         advanceListeners.add(listener);
     }
 
+    /** Atomically catch up, preserving manual advances that are already ahead of wall time. */
+    public boolean advanceTo(Instant target) {
+        synchronized (this) {
+            if (!target.isAfter(now)) return false;
+            now = target;
+        }
+        runDue();
+        advanceListeners.forEach(Runnable::run);
+        return true;
+    }
+
     public void schedule(Duration delay, Runnable task) {
         if (delay.isNegative()) throw new IllegalArgumentException("Negative delay");
         synchronized (this) {

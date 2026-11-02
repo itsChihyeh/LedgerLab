@@ -87,6 +87,26 @@ class ProcessorTest {
     }
 
     @Test
+    void ac_8_4_defaultProfileHasNoSandboxOrWallFollower() throws Exception {
+        assertThat(app.getBeansOfType(dev.ledgerlab.sim.sandbox.SandboxStripe.class))
+                .isEmpty();
+        assertThat(app.getBeansOfType(dev.ledgerlab.sim.sandbox.SandboxController.class))
+                .isEmpty();
+        assertThat(app.getBeansOfType(dev.ledgerlab.sim.processor.WallClockFollower.class))
+                .isEmpty();
+        for (String path : java.util.List.of("/payments", "/summary", "/bank/sync")) {
+            for (String method : java.util.List.of("GET", "POST")) {
+                var result = client.send(
+                        HttpRequest.newBuilder(URI.create(base + "/sim/sandbox" + path))
+                                .method(method, HttpRequest.BodyPublishers.noBody())
+                                .build(),
+                        HttpResponse.BodyHandlers.ofString());
+                assertThat(result.statusCode()).isEqualTo(404);
+            }
+        }
+    }
+
+    @Test
     void ac_2_1_snapshotAndIndependentSignatureMatchStoredBytes() throws Exception {
         RECEIVED.clear();
         var result = post("/sim/charges", "{\"amount\":10000}");

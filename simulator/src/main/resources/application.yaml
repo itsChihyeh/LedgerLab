@@ -28,4 +28,5 @@ sim:
     webhook-url: ${SIM_STRIPE_WEBHOOK_URL:http://localhost:8080/webhooks/stripe}
   seed: ${SIM_SEED:1}
   clock:
+    follow-wall: ${SIM_CLOCK_FOLLOW_WALL:false}
     start: ${SIM_CLOCK_START:}
