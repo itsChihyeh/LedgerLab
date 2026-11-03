@@ -262,7 +262,13 @@ T01 实现备注（2026-11-02）：第 7 节已证实当前受限密钥不能 li
 
 窗口起点默认取运行开始时刻，可用参数改早（例如覆盖 P6 实测时产生的对象）。
 
-T04 实现备注（2026-11-02）：按任务补充，`up.sh` 新 run 的窗口默认提前到 `2026-10-20T00:00:00Z`，覆盖 T01 探测及账号早期测试支付；`--window-start` 可覆盖。已有 run 沿用原窗口，变更须 `--new-run`；漏收补投仍由后续 catchup 任务实现。
+T04 实现备注（2026-11-02）：按任务补充，`up.sh` 新 run 的窗口默认提前到 `2026-10-20T00:00:00Z`，覆盖 T01 探测及账号早期测试支付；`--window-start` 可覆盖。已有 run 沿用原窗口，变更须 `--new-run`。
+
+**T05 实现备注（2026-11-03 UTC）**：`catchup.sh [--window-start <Instant>]` 经 env.sh 加载 REST 测试密钥，通过出站 relay 查询 Events API；上界固定为本次开始时的整秒（`created[lt]`），订阅列表与 listener 一致，limit=100，以最后一个事件号继续翻页。全部页成功并验证 test mode、类型、窗口和游标推进后才对照 inbox；任何页失败、格式错误或游标循环都输出“不完整”、退出 2，不重投、不更新漏收清单，也不继续银行同步。按官方 [Events 列表契约](https://docs.stripe.com/api/events/list)，事件仅保留 30 天，窗口超出保留期同样不能声称完整。参数覆盖只作用于本次 catchup，不改 run.json。
+
+只有 app 详情 404 才是漏收，已经收到但 PARKED／REJECTED 的事件不算漏收；其他查询失败终止，不当作 404。重投复用 T04 已实测可达 listener 的登录模式 `stripe events resend evt_…`，同时检查退出码、JSON 中的同一事件编号、`livemode=false` 和无 error。所有缺失事件各尝试一次后，每 2 秒轮询，最多等待 60 秒再对照；仍缺事件写 `.sandbox/missing-events.json`，含 run 和窗口，摘要写 `target/sandbox/catchup-<UTC时间>.json`。仍缺／重投失败退出 1；完整且补齐、银行成功才退出 0。没有本地重签名或直接写 inbox。
+
+随后调用沙箱银行 sync；成功后读取模拟银行实际流水，按最早 visible_date 到模拟多伦多当天逐日取 CSV（无流水仍导当天），原字节 POST `/api/bank-statements`，要求 ACCEPTED。包括 visible_date 是为了覆盖先 PENDING 后 BOOKED 的文件。使用 simulator 观察者连接将 `/sim/clock` 返回的时刻按 PostgreSQL 的 America/Toronto 时区转成日期，避免 Windows Python 缺少 IANA 数据而新增依赖；不读 app 库或 sim_truth。已有 app 按 CSV SHA 去重，相同日报版本返回原 fileId；脚本不另设可能掩盖新版文件的“已导入日期”缓存。重复运行实测 fileId 不变。T05 首次补回 1 个真实漏收事件，后续补投数为 0；当时 paid payout 为 0，银行同步只证明空结果及空日报幂等，不代替 AC-8.8。
 
 ### 9.3 沙箱桥（simulator 的 `sandbox` 包，只在 sandbox profile 装配）
 
@@ -319,6 +325,12 @@ T04 实现备注（2026-11-02）：按任务补充，`up.sh` 新 run 的窗口�
 `up` 每次解析 CLI `events retrieve evt_3UXQCaF5hIinUF490brSX7aS` 的 JSON 核对登录账号，resource_missing 或无法证明 test mode 时退出 78 并提示用户重新登录，不把 CLI 退出码 0 当成功。签名密钥只写 `.sandbox/secrets.env`（POSIX 0600，Windows 尽量移除继承 ACL 并仅授予当前用户）；日志在落盘前脱敏。后台 Python supervisor 管理 listen，Windows 下 supervisor 与 CLI 子进程均显式无窗口启动，保存 PID、ready 和心跳，通过随机 token 请求退出，不凭一个可能复用的 PID 杀进程。重复 up 沿用 run，已就绪的 listen 不重复启动；`--new-run` 归档旧编号。down 保留卷，`--purge` 必须交互输入当前 run_id，删除后撤销当前 run，避免同编号重建触发旧幂等键。
 
 `traffic` 使用 T03 幂等身份，当前 run 最多 50 个逻辑支付；`accept --only ac-8.4` 从 simulator 的当前 run 支付尝试恢复最新逻辑结果，不生成支付，至少 20 笔成功且全部唯一。最多轮询五分钟，逐笔验证 CAPTURED、对应真实 charge.succeeded 已进 inbox 并 PROCESSED、版本为固定协议。录制原文由脚本以 simulator 角色只读 `sim_chaos.inbound_recording`（沿用 smoke/p3 的观察者 SQL 模式），校验 SHA-256，原文只留进程内存；主应用仍不读模拟器数据库，脚本不读 sim_truth。
+
+**T05 AC-8.5 实现备注**：先保存当前 run 的各支付状态及零违反基线，从 seed=2 六笔之外选 3 个已 CAPTURED 的真实 charge.succeeded，每个 resend 两次，并等待新增两条投递。`traffic` 的 card 参数默认 pm_card_bypassPending，显式传卡的旧用法不变。
+
+为让乱序不依赖切换计划的竞态，同一 seed=2 批次先 count=1，再 count=6（后一次复用第 1 笔，所以只新建 6 个 PaymentIntent）。第 1 笔先按类型 HOLD_AND_REORDER(after_events=2)，看到 relay 接收记录后改为精确事件号 HOLD，其余 charge.succeeded DUPLICATE(copies=3)；随后生成其余 5 笔。重跑时沿用保存的六笔身份，由 Stripe resend 已有事件，不换 seed、不再新建支付。结束或失败均尝试清空本脚本设置的计划；启动时已有非空计划则失败，避免覆盖其他场景。
+
+验收要求 stats 增量为 HOLD=1、DUPLICATE=5、HOLD_TIMEOUT_RELEASE=0；另用 simulator 角色只读 relay_log 验证每个副本均 200，扣留 receipt 在两个不同的后续事件完成全部三次转发后才释放。最多等 60 秒获取录制／重复投递、120 秒等待支付处理；超时不会当作通过。9 个事件须全部 PROCESSED/APPLIED、各仅一条 NEW，其余投递为 DUPLICATE；原 3 个事件的业务结果、支付号、请款分录号及金额保持不变。支付详情 postings 按 entryId 分组核对一条 PAYMENT_CAPTURED（两条借贷 posting），inbox.subjectId 按现有契约关联 ch_ 而非本地 pay_；最后审计零违反。结果与清空计划状态落 `accept-<UTC时间>.json`，离线自检入口为 `python scripts/sandbox/selftest.py`。
 
 篡改用例由脚本用本地签名密钥和当前时间戳生成 HMAC，再改正文一个字节、去掉签名头、或用早 400 秒时间戳，三次直接发 app 均须 401；这些是脚本签名而非 Stripe 原签名，不发送“正确正文＋正确签名”。真实验签证据是此前至少 20 笔经 listen → relay → inbox 的真实事件。结果（包括失败）脱敏写 `target/sandbox/accept-<UTC时间>.json`，列出 charge/event、录制哈希、状态、协议版本、负例结果和不变量。
 

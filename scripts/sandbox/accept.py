@@ -164,15 +164,18 @@ def main():
     commands = parser.add_subparsers(dest='command', required=True)
     generate = commands.add_parser('traffic')
     generate.add_argument('--count', type=int, required=True)
-    generate.add_argument('--card', choices=['pm_card_bypassPending', 'pm_card_ca'], required=True)
+    generate.add_argument('--card', choices=['pm_card_bypassPending', 'pm_card_ca'], default='pm_card_bypassPending')
     generate.add_argument('--seed', type=int, required=True)
     check = commands.add_parser('accept')
-    check.add_argument('--only', choices=['ac-8.4'], default='ac-8.4')
+    check.add_argument('--only', choices=['ac-8.4', 'ac-8.5'], default='ac-8.4')
     args = parser.parse_args()
     try:
         if args.command == 'traffic':
             traffic(args)
             return 0
+        if args.only == 'ac-8.5':
+            from duplicates import accept_duplicates
+            return accept_duplicates()
         return accept()
     except Failure as error:
         emit({'result': 'FAIL', 'reason': str(error)})
