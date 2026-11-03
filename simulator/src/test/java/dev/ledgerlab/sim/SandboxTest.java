@@ -149,6 +149,79 @@ class SandboxTest {
     }
 
     @Test
+    void ac_8_3_recordingsFilterPageAndRedactWithoutChangingStoredEvidence() throws Exception {
+        byte[] body = ("{\"id\":\"evt_export\",\"billing_details\":{\"name\":\"private person\"},"
+                        + "\"nested\":[\"acct_" + "private\"],\"amount\":1234}")
+                .getBytes(StandardCharsets.UTF_8);
+        for (int i = 0; i < 2; i++) {
+            admin.sql("""
+                    INSERT INTO sim_chaos.inbound_recording(event_id,event_type,received_at,recorded_at,sha256,body)
+                    VALUES ('evt_export','export.test','2026-11-02T12:00:00Z','2026-11-02T12:00:00Z',
+                    encode(sha256(:body),'hex'),:body)
+                    """).param("body", body).update();
+        }
+        var first = call("GET", "/recordings?kind=webhook&event_type=export.test&limit=1", "");
+        assertThat(first.statusCode()).isEqualTo(200);
+        JsonNode page = JSON.readTree(first.body());
+        assertThat(page.size()).isEqualTo(1);
+        assertThat(page.get(0).path("body").path("amount").longValue()).isEqualTo(1234);
+        assertThat(page.get(0).path("body").has("billing_details")).isFalse();
+        assertThat(page.get(0).path("body").path("nested").get(0).asString()).isEqualTo("acct_" + "REDACTED");
+        long id = page.get(0).path("id").longValue();
+        var second = JSON.readTree(call("GET", "/recordings?kind=webhook&event_type=export.test&after_id=" + id, "")
+                .body());
+        assertThat(second.size()).isEqualTo(1);
+        assertThat(second.get(0).path("id").longValue()).isGreaterThan(id);
+        assertThat(admin.sql("SELECT body FROM sim_chaos.inbound_recording WHERE id=?")
+                        .param(id)
+                        .query(byte[].class)
+                        .single())
+                .isEqualTo(body);
+        assertThat(JSON.readTree(call("GET", "/recordings?kind=webhook&event_type=absent", "")
+                                .body())
+                        .isEmpty())
+                .isTrue();
+    }
+
+    @Test
+    void ac_8_3_apiExportsResponsesOnlyAndMatchesLiteralPrefix() throws Exception {
+        byte[] response =
+                "{\"data\":[],\"has_more\":false,\"receipt_url\":\"private\"}".getBytes(StandardCharsets.UTF_8);
+        admin.sql("""
+                INSERT INTO sim_chaos.api_exchange(received_at,recorded_at,method,path,query_parameter_names,
+                upstream_status,action,duration_ms,request_sha256,response_sha256,request_body,response_body)
+                VALUES ('2026-11-02T12:00:00Z','2026-11-02T12:00:00Z','GET','/v1/export_test','[]',200,
+                'PASS',1,encode(sha256('private'::bytea),'hex'),encode(sha256(:body),'hex'),'private'::bytea,:body)
+                """).param("body", response).update();
+        var result = call("GET", "/recordings?kind=api&path_prefix=/v1/export_", "");
+        assertThat(result.statusCode()).isEqualTo(200);
+        assertThat(result.body()).doesNotContain("private", "request_body", "receipt_url");
+        var item = JSON.readTree(result.body()).get(0);
+        assertThat(item.path("method").asString()).isEqualTo("GET");
+        assertThat(item.path("status").intValue()).isEqualTo(200);
+        assertThat(JSON.readTree(call("GET", "/recordings?kind=api&path_prefix=/v1/export%25", "")
+                                .body())
+                        .isEmpty())
+                .isTrue();
+    }
+
+    @Test
+    void ac_8_3_invalidRecordingFiltersAndUnsafeBodyFailClosed() throws Exception {
+        for (String query :
+                List.of("kind=other", "kind=api&limit=0", "kind=api&limit=1001", "kind=webhook&after_id=-1")) {
+            assertThat(call("GET", "/recordings?" + query, "").statusCode()).isEqualTo(400);
+        }
+        byte[] body = ("{\"unknown\":\"sk_" + "private\"}").getBytes(StandardCharsets.UTF_8);
+        admin.sql("""
+                INSERT INTO sim_chaos.inbound_recording(event_type,received_at,recorded_at,sha256,body)
+                VALUES ('export.unsafe','2026-11-02T12:00:00Z','2026-11-02T12:00:00Z',encode(sha256(:body),'hex'),:body)
+                """).param("body", body).update();
+        var response = call("GET", "/recordings?kind=webhook&event_type=export.unsafe", "");
+        assertThat(response.statusCode()).isEqualTo(422);
+        assertThat(response.body()).doesNotContain("private");
+    }
+
+    @Test
     void ac_8_4_deterministicFormAndReplayCountsLogicalPayments() throws Exception {
         String request = "{\"count\":3,\"card\":\"pm_card_ca\",\"seed\":12}";
         assertThat(call("POST", "/payments", request).statusCode()).isEqualTo(200);

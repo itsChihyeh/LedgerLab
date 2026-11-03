@@ -1,0 +1,33 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "txn_3UXVJ2F5hIinUF491LXP3f5A",
+      "object": "balance_transaction",
+      "amount": 11500,
+      "available_on": 1793664628,
+      "balance_type": "payments",
+      "created": 1793664628,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 456,
+      "fee_details": [
+        {
+          "amount": 456,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 11044,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+      "status": "available",
+      "type": "charge"
+    }
+  ],
+  "has_more": false,
+  "url": "/v1/balance_transactions"
+}

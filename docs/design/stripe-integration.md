@@ -305,10 +305,24 @@ T04 实现备注（2026-11-02）：按任务补充，`up.sh` 新 run 的窗口�
 - `scripts/sandbox/record-fixtures` 按场景导出夹具到 `src/test/resources/contracts/stripe-sandbox/<场景>/`，带 `manifest.json`（场景、顺序、类型、API 版本、录制时间、run_id）。导出时脱敏（simulator 里的 Java 代码，有单测）：账号号 `acct_…` → `acct_REDACTED`；邮箱、姓名、地址、电话、`billing_details`、`receipt_url`、`client_secret`、卡 `fingerprint` 置空或去掉；对象编号（`ch_`/`pi_`/`re_`/`po_`/`txn_`/`evt_`）、金额、币种、时间、状态保留。导出后再扫一遍：出现 `sk_`、`rk_`、`whsec_`、`_secret_`、`@` 即失败。
 - 场景固定为：S1 支付成功（charge.succeeded＋其 balance transaction）；S2 退款成功（POST /v1/refunds 响应＋refund.created/updated）；S3 退款 pending（余额不足时，能复现才录）；S4 payout（payout.created → reconciliation_completed → paid，及 `balance_transactions?payout=` 分页）；S5 签名错误（本地篡改，不需要录制）。
 
+**T06 实现备注（2026-11-02）**：新增仅 sandbox profile 注册的 `GET /sim/sandbox/recordings`。kind 必填 webhook/api；event_type 精确匹配入站类型，path_prefix 按字面前缀匹配 API 路径。按录制表 id 升序返回数组，limit 默认 100、范围 1～1000；附加 after_id 游标可完整翻页。每条含 id、kind、recorded_at、脱敏后的 body；webhook 另含 event_type，API 另含 method、path、status。API 只导出响应正文，不导出请求正文、查询值或头；无响应正文的交换不返回。
+
+`RecordingRedactor` 是无 I/O 的纯 Java 变换：递归删除隐私字段，字符串内嵌账号替换为账号占位值，含邮箱标记的字符串置 null；原录制字节保持不变。未参与适配器解析的 risk_level/risk_score/network_status 等字段名也会命中严格子串扫描，故一并删除含禁用标记的字段。未知位置的密钥标记不自动放行，脱敏结果连同接口元数据再扫一次；加入非占位账号检查。无法安全解析、含尾随 JSON 或残留标记时返回 422，错误不回显正文。
+
+`sh scripts/sandbox/record-fixtures.sh --scenario s1` 核对本地 run 与 simulator summary 一致，以成功支付尝试的 charge 编号及 webhook metadata.ledgerlab_run_id 双重关联当前 run，选最早录制的一条 charge.succeeded。余额响应按 source=该 charge 关联，仅取成功 GET 的完整列表响应，保留整个响应。没有对应响应时 manifest 显式写 not_available；提交的 T06 S1 已包含响应（经 relay 做一次 source 过滤的只读查询后再导出），没有新增支付或退款。输出为 s1-payment 下两条录制和 manifest，后者含顺序、类型、固定协议版本、录制时间、run_id、全部期望映射值及准入结果；API 版本沿用沙箱所有请求固定的版本，录制表不保存头。两个资源目录都在写前用 Python 扫描器检查全部内容，重跑覆盖同场景并清除过时 JSON。离线自检为 `python scripts/sandbox/selftest.py`。
+
+`sh scripts/sandbox/check-payout.sh` 从当前 run.window_start 起完整翻页查询 Stripe，全部页成功后才判断 automatic=true、paid、reconciliation_status=completed；有符合对象输出编号并返回 0，没有或仍在处理输出状态并返回 75，调用或分页失败返回 2。T06 实跑窗口内暂无 payout，返回 75；此结果不表示 AC-8.8 已验收。
+
 ### 9.6 契约测试（AC-8.3，进 CI，不联网）
 
 - 主应用：录制的 webhook 喂给 `StripeEventParser`、请款准入、退款解析、payout 解析；录制的 API 响应由 loopback HttpServer 回放给 `RestStripeReader`、`StripeRefundAdapter`。断言映射出的字段等于 manifest 里写的期望。
 - “我们用到的字段”只在一个地方定义：`contracts/stripe-sandbox/used-fields.json`（按对象类型列字段路径）。simulator 侧测试让 fake Stripe 跑同样的场景，比较事件类型序列和这些字段的存在性与类型；夹具在 simulator 测试资源里放一份逐字节相同的副本（沿用 P3 `refund-updated-failed.json` 的做法，主应用侧有测试检查两份哈希一致）。差异以真实 Stripe 为准修 fake；修不了的（例如真实的 pending 调度）写进本节“已知差异”表和运行报告。
+
+**T06 实现备注（2026-11-02）**：`StripeSandboxContractTest` 遍历场景 manifest，将事件信封、Charge 全部映射值与 manifest 比较，再在真实 PostgreSQL 的 app 事务中调用 `PaymentCapture` 验证准入。API 响应在 JDK loopback HttpServer 回放给 `RestStripeReader`，逐字段比较全部余额行；测试不访问 Stripe。S1 尚未有自动 payout，回放时用合成 payout 查询参数调用同一 reader，验证的是响应映射，不把它当作真实 payout 筛选验收。
+
+字段目录使用 JSON Pointer 与 JSON 类型，整数须能表示为 long；`|` 表示解析器接受的联合类型，`missing` 只用于代码显式允许缺省的退款字段。目录逐项核对 `StripeEventParser`、`ChargeParser`、`RefundParser`、`StripeRefundAdapter`、`StripeReadParser`；payout webhook 复用后者。S1 实际校验 event、charge、balance_transaction，退款与 payout 夹具由 T08 补充，新增场景需显式增加回放分支，不能静默跳过。列表外层的 data 数组和 has_more 布尔值也校验。
+
+`FakeStripeContractTest` 在真实 PostgreSQL 上生成 S1 charge，比较事件类型序列、版本与所用字段类型，并核对请款事实。序列断言后才创建一个 fake payout，以便经既有公开接口读取该 charge 的余额行（fake 列表要求 payout 过滤）；这一步不计入 S1 事件序列。手续费保留第 9.9 节国际卡差异，测试显式说明并断言 fake 的国内合同公式。主应用另检查两份完整目录的文件集合与 SHA-256 相同，并再次扫描全部 JSON。T06 没有修改主应用生产代码、fake 业务行为或数据库结构。
 
 ### 9.7 对账接真实数据（AC-8.9）与运行报告（AC-8.10）
 

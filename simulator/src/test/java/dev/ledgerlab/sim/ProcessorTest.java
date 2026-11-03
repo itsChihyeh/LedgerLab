@@ -94,7 +94,7 @@ class ProcessorTest {
                 .isEmpty();
         assertThat(app.getBeansOfType(dev.ledgerlab.sim.processor.WallClockFollower.class))
                 .isEmpty();
-        for (String path : java.util.List.of("/payments", "/summary", "/bank/sync")) {
+        for (String path : java.util.List.of("/payments", "/summary", "/bank/sync", "/recordings")) {
             for (String method : java.util.List.of("GET", "POST")) {
                 var result = client.send(
                         HttpRequest.newBuilder(URI.create(base + "/sim/sandbox" + path))
