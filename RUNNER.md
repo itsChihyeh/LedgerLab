@@ -42,7 +42,7 @@
 - **密钥**：Stripe 测试密钥在 `.env` 的 `STRIPE_API_KEY`。你和 Codex 都**不读、不打印** `.env`，只通过 `scripts/sandbox/env.sh`（T01 新增）把它加载进子进程环境。不要把 `stripe listen` 输出的 `whsec_`、任何 `rk_`/`sk_` 值写进报告、提交或日志摘要；报告里提到密钥只写“已加载/前缀正确/401”这类结论。
 - **沙箱栈**：T04 起有一套长期运行的 `ledgerlab-sandbox` Compose 项目和后台 `stripe listen`。每个任务结束后**保持它运行**（自动 payout 要跨天），不要 `down -v`、不要删卷。电脑重启或会话被重新拉起后，先 `sh scripts/sandbox/up.sh` 再 `sh scripts/sandbox/catchup.sh`。
 - **独立验证**：步骤 7 的全量测试照旧（主应用 verify；改了 simulator 再跑 simulator verify；改了前端再跑 check）。任务说明的“执行者验证”一节列出的沙箱脚本也要你亲自跑（需要 Git Bash 和本机 `.env`），结果写进报告。最后一个任务另跑 `sh scripts/smoke-p5.sh`。
-- **等待 payout 的任务**：`QUEUE.txt` 里标了 `[WAIT-PAYOUT]` 的任务，调 Codex 之前先跑 `sh scripts/sandbox/catchup.sh` 和 `sh scripts/sandbox/check-payout.sh`。退出码 75（还在等 Stripe 的自动 payout）→ 不调 Codex，报告里记一行“等待 payout，<时间>”，**每 2 小时**重查一次（期间照常处理队列里后面不依赖它的任务；没有就等待）。退出码 0 → 正常调 Codex。连续 4 天仍是 75 → 写报告停在等待。其他非零 → 当成失败写报告。
+- **等待 payout 的任务**：`QUEUE.txt` 里标了 `[WAIT-PAYOUT]` 的任务，调 Codex 之前先跑 `sh scripts/sandbox/catchup.sh` 和 `sh scripts/sandbox/check-payout.sh`。退出码 75（还在等 Stripe 的自动 payout）→ 不调 Codex，报告里记一行“等待 payout，<时间>”，**每 2 小时**重查一次（期间照常处理队列里后面不依赖它的任务；没有就等待）。退出码 0 → 正常调 Codex。连续 10 天仍是 75 → 写报告停在等待（新账号首次自动 payout 有 Stripe 的初始等待期，可能超过一周；2026-11-03 云端改为 10 天）。等待超过 24 小时后，每 24 小时在报告分支的 WAIT.md 追加一行状态（payout 列表条数、可用余额），不必每 2 小时都写。其他非零 → 当成失败写报告。
 - **提问轮**：Codex 列出需要用户本人处理的事（例如 `stripe login`）时，原样写进报告并进入等待；不要自己替用户登录任何账号。
 - **不要停下这一轮**：每个任务 push、写完报告后直接进入下一个任务或“等待”，不要发总结消息结束这一轮、也不要等用户回复。会话被停后重新拉起时，从循环第 1 步接着做。
 - 2026-10-24 用户定的两条提速照旧：①Codex 只跑本任务相关测试＋编译＋Spotless，全量 `verify` 只由你跑一次；②提问轮工作区干净且无新提交就跳过测试，等回答每 2 分钟查一次。
