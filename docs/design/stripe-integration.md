@@ -218,8 +218,10 @@ P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at`
    **实测 2026-11-02（T01）**：Stripe CLI 1.55.6 使用当前受限密钥调用 `listen --print-secret` 不能取得签名密钥，错误类别 `PERMISSION_ERROR`，需用户登录。按审查结论，`env.sh` 默认 `STRIPE_CLI_USE_LOGIN=1`；listen/resend 不带 `--api-key`，并从 CLI 子进程环境移除 `STRIPE_API_KEY`。本轮登录模式返回 `LOGIN_REQUIRED`，输出“需要用户 stripe login”后跳过 f 项，其他探测成功则整体退出 0。未自动登录、未存储签名密钥；REST 仍用受限测试密钥。
 11. `stripe events resend evt_…` 能否把事件重投给正在运行的 `stripe listen`（9.2 补投依赖它）。
    **实测 2026-11-02（T01，延期）**：已找到 bypass 的 `charge.succeeded`（`evt_3UXQCaF5hIinUF490brSX7aS`）；CLI 未登录，未执行 resend 或 60 秒接收观察。待用户登录后由 T04 观察，不能断言支持或不支持。官方[手工重试说明](https://docs.stripe.com/webhooks#manual-retries)的 webhook endpoint 示例不能代替本地 listen 实测。
+   **实测 2026-11-03 UTC（T04）**：登录模式 `events retrieve` 读到上述事件并核对 `livemode=false`；listen 就绪后 `events resend` 返回该事件 JSON（无 error），relay 录制表也出现新的接收行，证明本地 listen 能接收重投。CLI 错误同样可能退出 0，所以脚本解析 JSON 并独立核对 relay。最初监听子进程在 Windows 退出，显式为 Stripe CLI 设置 CREATE_NO_WINDOW 后保持运行；用 Stripe resend 恢复漏收的本 run 20 个 charge.succeeded，未新增支付或伪造入账签名。
 12. 真实事件的 `api_version` 是否等于第 8 节固定的版本；不同就按第 8 节“升级 API 版本是一次单独的改动”处理，P6 先如实记录。
    **实测 2026-11-02（T01，部分）**：初始 `account.updated` 与支付后的最近五条事件（含 `charge.succeeded`、`charge.updated`、`payment_intent.created`、`payment_intent.succeeded`）均为 `api_version=2026-09-30.endive`。经 listen 投递的版本待用户登录后由 T04 观察；API 列表结果不替代 webhook 契约验证。
+   **实测 2026-11-03 UTC（T04）**：20 笔真实支付事件经 listen → relay → inbox，录制原文与 inbox 的版本均为 `2026-09-30.endive`，20/20 CAPTURED；未升级协议版本。
 
 第 9 条补充：**实测 2026-11-02（T01）**：从 `.env` 单独加载的测试密钥可以读取 balance、payouts、events、charge 及其 balance transaction，并创建确认两笔 PaymentIntent；balance、PaymentIntent、charge 明确 `livemode=false`。沿用已定的加拿大默认测试沙盒，不另建 sandbox；REST 权限不代表 CLI listen 获权。完整记录与后续观察项见 [p6-probe.md](../handoff/p6-probe.md)。
 
@@ -245,6 +247,8 @@ P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at`
 - **运行编号**：每次运行有 `run_id`（`sbx_` + UTC 时间）和开始时刻，写进 `.sandbox/run.json`；流量生成器给 PaymentIntent 的 `metadata[ledgerlab_run_id]` 带上它，报告按它和时间窗统计。
 - **模拟时钟跟随现实**：simulator 在 sandbox profile 下打开 `sim.clock.follow-wall=true`，每秒把模拟时钟推进到现实 UTC（只进不退），relay 的延迟/扣留和模拟银行的入账日因此按现实时间走。默认（测试、冒烟）仍然冻结，行为不变。
 
+T04 实现备注（2026-11-03）：沙箱数据库不沿用 `.env` 密码。首次 `up` 用 Python `secrets` 为 postgres、migrator、app、readonly、simulator 分别生成密码，持久保存在 `.sandbox/secrets.env`；之后只补缺失项，已有值绝不轮换，更新 webhook 签名密钥也保留五项密码。文件原子替换，写入前收紧权限（POSIX 0600；Windows 仅当前用户 ACL）。普通 down 和 `--new-run` 均保留密码，只有确认 `down --purge` 且删卷成功后才清除五项；下次 up 重新生成。`.env` 只通过 env.sh 读取 Stripe 测试密钥，Compose 显式使用空 env-file。
+
 ### 9.2 漏收补投
 
 T01 实现备注（2026-11-02）：第 7 节已证实当前受限密钥不能 listen，后续沙箱脚本默认使用 `STRIPE_CLI_USE_LOGIN=1`；listen/resend 不传 `--api-key`，并移除 CLI 子进程的 `STRIPE_API_KEY`，REST 调用仍使用 env.sh 加载的受限测试密钥。用户本人登录之前，T01 跳过 CLI 观察项；后续任务按各自退出码约定处理。
@@ -257,6 +261,8 @@ T01 实现备注（2026-11-02）：第 7 节已证实当前受限密钥不能 li
 4. 重投后仍缺的事件列进运行报告“漏收”一栏。payout 的明细就绪本来就有兜底轮询（第 2 节 T05 备注），不依赖补投。
 
 窗口起点默认取运行开始时刻，可用参数改早（例如覆盖 P6 实测时产生的对象）。
+
+T04 实现备注（2026-11-02）：按任务补充，`up.sh` 新 run 的窗口默认提前到 `2026-10-20T00:00:00Z`，覆盖 T01 探测及账号早期测试支付；`--window-start` 可覆盖。已有 run 沿用原窗口，变更须 `--new-run`；漏收补投仍由后续 catchup 任务实现。
 
 ### 9.3 沙箱桥（simulator 的 `sandbox` 包，只在 sandbox profile 装配）
 
@@ -307,6 +313,16 @@ T01 实现备注（2026-11-02）：第 7 节已证实当前受限密钥不能 li
 ### 9.8 沙箱验收脚本
 
 `scripts/sandbox/` 下（Git Bash／POSIX sh，Python 3 做 HTTP 断言，和冒烟脚本同一风格）：`up`、`down`（保留卷）、`status`、`catchup`（9.2＋银行同步＋银行流水导入）、`traffic`、`accept`（AC-8.4、8.5、8.6、8.9 的顺序断言）、`check-payout`（AC-8.8，payout 走完才通过，没走完输出“等待中”并以 75 退出）、`record-fixtures`、`report`。这些脚本需要密钥，不进 CI。
+
+**T04 实现备注（2026-11-02）**：已提供 `up.sh/down.sh/status.sh/traffic.sh/accept.sh`，shell 入口统一加载 env.sh，Python 从本地 secrets.env 读取五个数据库密码并只注入 Compose 子进程；Compose 使用空 env-file，不求值 `.env`，固定项目 `ledgerlab-sandbox` 和 sandbox profile。叠加文件以 `!override` 替换端口/profile/数据库卷（需 Compose 2.24.4+），只开放 127.0.0.1 的 18080/18081/15432，独立持久卷 `sandbox-pgdata`。fake Stripe 不配置 API key，主应用和沙箱桥均经出站 relay；银行出站仅在此叠加配置开启。
+
+`up` 每次解析 CLI `events retrieve evt_3UXQCaF5hIinUF490brSX7aS` 的 JSON 核对登录账号，resource_missing 或无法证明 test mode 时退出 78 并提示用户重新登录，不把 CLI 退出码 0 当成功。签名密钥只写 `.sandbox/secrets.env`（POSIX 0600，Windows 尽量移除继承 ACL 并仅授予当前用户）；日志在落盘前脱敏。后台 Python supervisor 管理 listen，Windows 下 supervisor 与 CLI 子进程均显式无窗口启动，保存 PID、ready 和心跳，通过随机 token 请求退出，不凭一个可能复用的 PID 杀进程。重复 up 沿用 run，已就绪的 listen 不重复启动；`--new-run` 归档旧编号。down 保留卷，`--purge` 必须交互输入当前 run_id，删除后撤销当前 run，避免同编号重建触发旧幂等键。
+
+`traffic` 使用 T03 幂等身份，当前 run 最多 50 个逻辑支付；`accept --only ac-8.4` 从 simulator 的当前 run 支付尝试恢复最新逻辑结果，不生成支付，至少 20 笔成功且全部唯一。最多轮询五分钟，逐笔验证 CAPTURED、对应真实 charge.succeeded 已进 inbox 并 PROCESSED、版本为固定协议。录制原文由脚本以 simulator 角色只读 `sim_chaos.inbound_recording`（沿用 smoke/p3 的观察者 SQL 模式），校验 SHA-256，原文只留进程内存；主应用仍不读模拟器数据库，脚本不读 sim_truth。
+
+篡改用例由脚本用本地签名密钥和当前时间戳生成 HMAC，再改正文一个字节、去掉签名头、或用早 400 秒时间戳，三次直接发 app 均须 401；这些是脚本签名而非 Stripe 原签名，不发送“正确正文＋正确签名”。真实验签证据是此前至少 20 笔经 listen → relay → inbox 的真实事件。结果（包括失败）脱敏写 `target/sandbox/accept-<UTC时间>.json`，列出 charge/event、录制哈希、状态、协议版本、负例结果和不变量。
+
+`GET /api/audit/invariants` 仅在 sandbox profile 注册，返回 `{checkedAt, violations:[{invariant,detail}]}`，checkedAt 来自注入 Clock，沿用本地只读接口无额外 HTTP 鉴权的约定。为遵守 ADR-0014，新增向后兼容的 `LedgerAudit.readonly(DataSource)` 装配入口，在 readonly 凭证的 REPEATABLE READ 事务里对现有 `ledger.v_*` 视图运行同一套 `check()` SQL；分组显式列出视图所需字段，默认 app 审计路径结果不变，没有复制检查逻辑或放宽权限。仅检查 LedgerAudit 已有的 INV-1～5、INV-8；reconciliation、refunds、payouts 没有现成公开审计入口，未新增其检查逻辑。离线脚本单测及 MockMvc＋真实 PostgreSQL 覆盖解析、脱敏、幂等恢复、负例签名、限时等待、空库、正常记账、损坏余额和 readonly 权限。
 
 ### 9.9 已知差异（随实测补充）
 

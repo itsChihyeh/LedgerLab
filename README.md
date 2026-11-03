@@ -14,6 +14,12 @@ Run it (JDK 25 and a running Docker are the only prerequisites):
 cd frontend && npm ci && npm run check && npm run test:e2e   # page, unit and Playwright tests
 cp .env.example .env     # fill in local passwords, then:
 docker compose up -d     # local PostgreSQL with the three roles
+# Real Stripe test sandbox (Stripe CLI login + test key in .env; persistent stack):
+sh scripts/sandbox/up.sh
+sh scripts/sandbox/traffic.sh --count 20 --card pm_card_bypassPending --seed 1
+sh scripts/sandbox/accept.sh --only ac-8.4   # repeat without generating more payments
+sh scripts/sandbox/status.sh
+sh scripts/sandbox/down.sh                 # optional stop; preserves volumes
 ```
 
 ## 三进程本地演示

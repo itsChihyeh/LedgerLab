@@ -4,7 +4,9 @@ import dev.ledgerlab.ledger.LedgerAudit;
 import java.util.ArrayList;
 import java.util.List;
 import javax.sql.DataSource;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -16,13 +18,30 @@ public class JdbcLedgerAudit implements LedgerAudit {
 
     private final JdbcClient jdbc;
     private final TransactionTemplate snapshot;
+    private final boolean readonlyViews;
 
+    @Autowired
     public JdbcLedgerAudit(DataSource dataSource, PlatformTransactionManager transactionManager) {
+        this(dataSource, transactionManager, false);
+    }
+
+    private JdbcLedgerAudit(
+            DataSource dataSource, PlatformTransactionManager transactionManager, boolean readonlyViews) {
+        this.readonlyViews = readonlyViews;
         this.jdbc = JdbcClient.create(dataSource);
         this.snapshot = new TransactionTemplate(transactionManager);
         snapshot.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
         snapshot.setReadOnly(true);
         snapshot.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    }
+
+    public static LedgerAudit readonly(DataSource dataSource) {
+        return new JdbcLedgerAudit(dataSource, new JdbcTransactionManager(dataSource), true);
+    }
+
+    private JdbcClient.StatementSpec sql(String statement) {
+        // Only these fixed, internal SQL statements reach this method. No caller supplied SQL.
+        return jdbc.sql(readonlyViews ? statement.replace("ledger.", "ledger.v_") : statement);
     }
 
     @Override
@@ -41,14 +60,14 @@ public class JdbcLedgerAudit implements LedgerAudit {
 
     /** INV-1 and INV-4: at least two positive postings, debits = credits = header total, count = header count. */
     private List<InvariantViolation> entriesMatchHeaders() {
-        return jdbc.sql("""
+        return sql("""
                         SELECT e.id, e.posting_count, e.total_amount, count(p.id) AS postings,
                                coalesce(sum(p.amount) FILTER (WHERE p.side = 'D'), 0) AS debits,
                                coalesce(sum(p.amount) FILTER (WHERE p.side = 'C'), 0) AS credits,
                                coalesce(min(p.amount), 0) AS smallest
                         FROM ledger.journal_entry e
                         LEFT JOIN ledger.posting p ON p.entry_id = e.id
-                        GROUP BY e.id
+                        GROUP BY e.id, e.posting_count, e.total_amount
                         HAVING count(p.id) < 2
                             OR count(p.id) <> e.posting_count
                             OR coalesce(sum(p.amount) FILTER (WHERE p.side = 'D'), 0) <> e.total_amount
@@ -72,14 +91,14 @@ public class JdbcLedgerAudit implements LedgerAudit {
 
     /** INV-2: the stored balance and version equal what the postings say. */
     private List<InvariantViolation> balancesMatchPostings() {
-        return jdbc.sql("""
+        return sql("""
                         SELECT a.code, a.balance, a.version,
                                coalesce(sum(CASE WHEN p.side = a.normal_side THEN p.amount ELSE -p.amount END), 0)
                                    AS recomputed,
                                count(p.id) AS postings
                         FROM ledger.account a
                         LEFT JOIN ledger.posting p ON p.account_code = a.code
-                        GROUP BY a.code
+                        GROUP BY a.code, a.balance, a.version
                         HAVING a.balance <> coalesce(sum(CASE WHEN p.side = a.normal_side THEN p.amount
                                                                ELSE -p.amount END), 0)
                             OR a.version <> count(p.id)
@@ -99,8 +118,7 @@ public class JdbcLedgerAudit implements LedgerAudit {
 
     /** INV-3: total assets equal total liabilities, from the stored balances. */
     private List<InvariantViolation> assetsEqualLiabilities() {
-        return jdbc
-                .sql("""
+        return sql("""
                         SELECT coalesce(sum(balance) FILTER (WHERE kind = 'ASSET'), 0) AS assets,
                                coalesce(sum(balance) FILTER (WHERE kind = 'LIABILITY'), 0) AS liabilities
                         FROM ledger.account
@@ -116,8 +134,7 @@ public class JdbcLedgerAudit implements LedgerAudit {
 
     /** INV-5: accounts that may not go negative are not negative. */
     private List<InvariantViolation> nonNegativeAccounts() {
-        return jdbc.sql(
-                        "SELECT code, balance FROM ledger.account WHERE NOT allow_negative AND balance < 0 ORDER BY code")
+        return sql("SELECT code, balance FROM ledger.account WHERE NOT allow_negative AND balance < 0 ORDER BY code")
                 .query((rs, row) -> new InvariantViolation(
                         "INV-5", "account %d balance %d".formatted(rs.getInt("code"), rs.getLong("balance"))))
                 .list();
@@ -125,7 +142,7 @@ public class JdbcLedgerAudit implements LedgerAudit {
 
     /** INV-8: one entry per source key (the UNIQUE constraint holds it; this proves it). */
     private List<InvariantViolation> uniqueSourceKeys() {
-        return jdbc.sql("""
+        return sql("""
                         SELECT source_key, count(*) AS entries FROM ledger.journal_entry
                         GROUP BY source_key HAVING count(*) > 1 ORDER BY source_key
                         """)
