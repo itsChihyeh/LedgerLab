@@ -152,7 +152,7 @@ record RebuildSnapshot(
                         """),
                 rows(jdbc, """
                         SELECT bank_txn_id || ':' || version AS external_key, direction, currency, status, amount,
-                        reference, booking_date, value_date, memo, match_status, matched_batch_id, wait_until
+                        reference, booking_date, value_date, memo, match_status, matched_batch_id, matched_payout_id, wait_until
                         FROM recon.bank_line
                         """),
                 rows(jdbc, """
@@ -189,6 +189,8 @@ record RebuildSnapshot(
         for (String table : List.of(
                 "ledger.correction",
                 "ledger.correction_target",
+                "core.payout",
+                "core.payout_status_history",
                 "core.payment_transition",
                 "core.batch_transition",
                 "recon.issue_transition")) {
@@ -209,6 +211,10 @@ record RebuildSnapshot(
         result.putAll(rows(
                 jdbc,
                 "SELECT 'issue:' || id AS external_key,status,resolution_correction_id,explanation FROM recon.issue"));
+        result.putAll(
+                rows(
+                        jdbc,
+                        "SELECT 'payout-command:' || id AS external_key, subject_id,request_id,kind,status,attempts,first_sent_at,last_outcome FROM io.outbound_command WHERE kind IN ('SUBMIT_PAYOUT','QUERY_PAYOUT')"));
         return result;
     }
 

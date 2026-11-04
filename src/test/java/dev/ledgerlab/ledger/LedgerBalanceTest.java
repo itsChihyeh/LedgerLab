@@ -112,6 +112,46 @@ class LedgerBalanceTest {
                 .update();
     }
 
+    @Test
+    void ac_7_15_lockBalancesRequiresFundsLockAndHoldsAllRequestedRowsUntilCommit() throws Exception {
+        var accounts = List.of(
+                Account.UNAPPLIED_CASH,
+                Account.PAYOUT_IN_TRANSIT,
+                Account.MERCHANT_AVAILABLE,
+                Account.BANK_CASH,
+                Account.PROCESSOR_RECEIVABLE,
+                Account.BANK_CASH);
+        assertThatThrownBy(() -> ledger.lockBalances(accounts)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> transactions.execute(s -> ledger.lockBalances(accounts)))
+                .isInstanceOf(IllegalStateException.class);
+        try (var competitor = db.app().getConnection()) {
+            transactions.executeWithoutResult(s -> {
+                ledger.lockFunds();
+                var balances = ledger.lockBalances(accounts);
+                assertThat(balances).hasSize(5);
+                for (var account : accounts) {
+                    assertThat(balances.get(account)).isEqualTo(ledger.balance(account));
+                    assertThatThrownBy(() -> {
+                                try (var statement = competitor.createStatement()) {
+                                    statement.executeQuery("SELECT code FROM ledger.account WHERE code="
+                                            + account.code() + " FOR UPDATE NOWAIT");
+                                }
+                            })
+                            .isInstanceOf(java.sql.SQLException.class)
+                            .satisfies(e -> assertThat(((java.sql.SQLException) e).getSQLState())
+                                    .isEqualTo("55P03"));
+                }
+            });
+            try (var statement = competitor.createStatement();
+                    var rows = statement.executeQuery(
+                            "SELECT code FROM ledger.account WHERE code IN (1101,1103,2102,2104,2105) ORDER BY code FOR UPDATE NOWAIT")) {
+                int count = 0;
+                while (rows.next()) count++;
+                assertThat(count).isEqualTo(5);
+            }
+        }
+    }
+
     private void assertBalancesMatchPostings() {
         for (Account account : Account.values()) {
             long recomputed = jdbc.sql("""

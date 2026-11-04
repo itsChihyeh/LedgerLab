@@ -1,5 +1,7 @@
 package dev.ledgerlab.ledger;
 
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -25,6 +27,9 @@ public interface Ledger {
      * @throws ArithmeticException if the balance is outside the JSON safe integer range (contracts section 3)
      */
     long balance(Account account);
+
+    /** Locks the requested accounts in code order and reads balances. Requires the funds lock. */
+    Map<Account, Long> lockBalances(List<Account> accounts);
 
     /**
      * Records one complete entry: locks the touched accounts in ascending code order, checks that no account

@@ -18,6 +18,7 @@ import {
   CorrectionsPage,
   LedgerEntryPage,
 } from "./corrections";
+import { PayoutPage, PayoutsPage } from "./payouts";
 import { RefundPage } from "./refunds";
 
 function currentRoute() {
@@ -34,6 +35,7 @@ function Route({ route }: { route: string }) {
   const [kind, id, third, fourth] = parts;
   if (path === "/") return <OverviewPage />;
   if (path === "/corrections") return <CorrectionsPage />;
+  if (path === "/payouts") return <PayoutsPage />;
   if (kind === "batch-lines" && id && third && parts.length === 3)
     return <BatchLinePage id={id} seq={third} />;
   if (kind === "recon" && parts.length === 1)
@@ -43,6 +45,7 @@ function Route({ route }: { route: string }) {
     if (kind === "entries") return <LedgerEntryPage id={id} />;
     if (kind === "payments") return <PaymentPage id={id} />;
     if (kind === "refunds") return <RefundPage id={id} />;
+    if (kind === "payouts") return <PayoutPage id={id} />;
     if (kind === "batches") return <BatchPage id={id} />;
     if (kind === "recon") return <IssuePage id={id} />;
     if (kind === "events") return <EventPage id={id} />;
@@ -78,6 +81,7 @@ function App() {
           <a href="#/">总览</a>
           <a href="#/recon">对账工作台</a>
           <a href="#/corrections">纠错记录</a>
+          <a href="#/payouts">提现</a>
         </nav>
         <span>合成测试数据 · CAD</span>
       </header>

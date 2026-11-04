@@ -24,7 +24,7 @@ import net.jqwik.api.state.ActionChain;
 import net.jqwik.api.state.Transformer;
 
 class PaymentModelProperties {
-    static final String SEED = "2026102504";
+    static final String SEED = "2026110209";
     private static ModelReport report = new ModelReport();
     private static long sequenceId;
     private static boolean rebuildFailed;
@@ -43,14 +43,17 @@ class PaymentModelProperties {
     }
 
     @Property(seed = SEED, shrinking = ShrinkingMode.BOUNDED, generation = GenerationMode.RANDOMIZED)
-    void ac_6_13_ac_4_11_ac_4_13_p4ActionsMatchIndependentModelAndRebuild(@ForAll("actions") ActionChain<State> chain) {
+    void ac_7_27_ac_4_11_ac_4_13_p5ActionsMatchIndependentModelAndRebuild(@ForAll("actions") ActionChain<State> chain) {
         current = null;
         boolean passed = false;
         long violationsBefore = report.violations;
         try {
-            chain.withInvariant("P1/P2/P3/P4 ledger, correction, refund, batch, bank and inbox model", State::check)
+            chain.withInvariant(
+                            "P1/P2/P3/P4/P5 ledger, correction, refund, payout, batch, bank and inbox model",
+                            State::check)
                     .run();
             current.drain("final-worker");
+            current.p5.finish();
             current.p3.finish();
             current.p2.finish();
             current.app.assertNoPending();
@@ -104,6 +107,15 @@ class PaymentModelProperties {
                     return current;
                 })
                 .withAction(5, new NewCharge())
+                .withAction(12, new P5Scenario.Operation(P5Scenario.Kind.PREPARE_PAYOUT))
+                .withAction(12, new P5Scenario.Operation(P5Scenario.Kind.RESERVE_PAYOUT))
+                .withAction(8, new P5Scenario.Operation(P5Scenario.Kind.PAYOUT_RECEIPT))
+                .withAction(6, new P5Scenario.Operation(P5Scenario.Kind.PAYOUT_DEBIT))
+                .withAction(6, new P5Scenario.Operation(P5Scenario.Kind.PAYOUT_RETURN))
+                .withAction(6, new P5Scenario.Operation(P5Scenario.Kind.PAYOUT_CONFLICT))
+                .withAction(8, new P5Scenario.Operation(P5Scenario.Kind.CONFIRM_FAILED_PAYOUT_PAID))
+                .withAction(5, new P5Scenario.Operation(P5Scenario.Kind.QUERY_PAYOUT))
+                .withAction(2, new P5Scenario.Operation(P5Scenario.Kind.REPLAY_PAYOUT_FILE))
                 .withAction(8, new P4Scenario.Operation(P4Scenario.Kind.PREPARE_CORRECTION))
                 .withAction(4, new P4Scenario.Operation(P4Scenario.Kind.VOID_CAPTURE))
                 .withAction(7, new P4Scenario.Operation(P4Scenario.Kind.RESTATE_CAPTURE_AMOUNT))
@@ -256,6 +268,7 @@ class PaymentModelProperties {
         final P2Scenario p2;
         final P3Scenario p3;
         final P4Scenario p4;
+        final P5Scenario p5;
         int counter;
         int length;
         boolean failed;
@@ -282,6 +295,7 @@ class PaymentModelProperties {
             p2 = new P2Scenario(this);
             p3 = new P3Scenario(this);
             p4 = new P4Scenario(this);
+            p5 = new P5Scenario(this);
         }
 
         void rebuild() {
@@ -371,6 +385,7 @@ class PaymentModelProperties {
                 model.settlement.deltas().forEach((code, delta) -> expectedBalances.merge(code, delta, Math::addExact));
                 p3.model.deltas().forEach((code, delta) -> expectedBalances.merge(code, delta, Math::addExact));
                 p4.model.journal.deltas().forEach((code, delta) -> expectedBalances.merge(code, delta, Math::addExact));
+                p5.model.journal.deltas().forEach((code, delta) -> expectedBalances.merge(code, delta, Math::addExact));
                 Map<Integer, Long> balances = app.balances();
                 assertThat(balances).as("snapshot + model deltas, all accounts").isEqualTo(expectedBalances);
 
@@ -437,7 +452,8 @@ class PaymentModelProperties {
                                 + model.payments.size()
                                 + model.settlement.entries.size()
                                 + p3.model.entries.size()
-                                + p4.model.journal.entries.size());
+                                + p4.model.journal.entries.size()
+                                + p5.model.journal.entries.size());
 
                 assertThat(groupCounts("recon.issue", "category", "subject_id")).isEqualTo(model.issueCounts());
                 assertThat(groupCounts("io.inbox_conflict", "event_id", "event_id"))
@@ -445,6 +461,7 @@ class PaymentModelProperties {
                 p2.check();
                 p3.check();
                 p4.check();
+                p5.check();
             } catch (AssertionError failure) {
                 report.violations++;
                 throw failure;

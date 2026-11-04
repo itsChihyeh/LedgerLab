@@ -18,7 +18,7 @@ class SettlementModelProperties {
     private boolean initiallyCaptured;
 
     @Property(seed = "2026102308")
-    void ac_4_11_ac_4_1_ac_5_3_batchActionsMatchIndependentReference(
+    void ac_4_11_ac_4_1_ac_5_3_ac_7_13_batchAndPayoutBankActionsMatchIndependentReference(
             @ForAll("actions") ActionChain<State> actions, @ForAll boolean capturedInitially) throws Exception {
         fixture = new SettlementWorkerTest();
         initiallyCaptured = capturedInitially;
@@ -42,6 +42,32 @@ class SettlementModelProperties {
                 .withMaxTransformations(24);
     }
 
+    @net.jqwik.api.Example
+    void ac_7_1_ac_7_10_ac_7_13_payoutEvidenceAlsoRunsThroughTheIndependentModel() throws Exception {
+        var example = new SettlementWorkerTest();
+        example.start();
+        try {
+            var state = new State(example, false);
+            for (var action : new SettlementReference.Action[] {
+                SettlementReference.Action.CAPTURE,
+                SettlementReference.Action.READY,
+                SettlementReference.Action.BANK,
+                SettlementReference.Action.RESERVE_PAYOUT,
+                SettlementReference.Action.PAYOUT_RETURN_BANK,
+                SettlementReference.Action.PAYOUT_DEBIT_BANK,
+                SettlementReference.Action.PAYOUT_DEBIT_BANK,
+                SettlementReference.Action.SECOND_PAYOUT_DEBIT_BANK,
+                SettlementReference.Action.SECOND_PAYOUT_RETURN_BANK,
+                SettlementReference.Action.SECOND_PAYOUT_RETURN_BANK
+            }) {
+                state.apply(action);
+                state.check();
+            }
+        } finally {
+            example.stop();
+        }
+    }
+
     private static final class State {
         private final SettlementWorkerTest fixture;
         private final SettlementReference reference = new SettlementReference();
@@ -59,7 +85,9 @@ class SettlementModelProperties {
             }
             Statistics.label("executed action").collect(action.name());
             String eventId = "evt_model_" + ++sequence;
-            if (action.name().contains("BANK")) {
+            if (action == SettlementReference.Action.RESERVE_PAYOUT) {
+                fixture.modelReservePayout();
+            } else if (action.name().contains("BANK")) {
                 fixture.modelBank(action.name());
             } else if (action == SettlementReference.Action.CAPTURE) {
                 fixture.event(eventId, "charge.succeeded", fixture.charge("ch_p1", 10000));
@@ -110,6 +138,7 @@ class SettlementModelProperties {
                             + (reference.settled ? 5 : 0)
                             + (reference.failed ? 2 : 0)
                             + (reference.reissued ? 2 : 0)
+                            + (reference.payoutReserved ? 2 : 0)
                             + reference.bankEntries * 2);
             assertThat(fixture.count("core.payment_transition"))
                     .isEqualTo((reference.captured ? 1 : 0) + (reference.settled ? 1 : 0));
@@ -117,6 +146,15 @@ class SettlementModelProperties {
                     .isEqualTo((reference.settled ? 1 : 0) + (reference.reissued ? 1 : 0));
             assertThat(fixture.issueIdentities()).containsExactlyInAnyOrderElementsOf(reference.issues);
             assertThat(fixture.balances()).isEqualTo(reference.balances());
+            assertThat(fixture.modelPayoutStatus()).isEqualTo(reference.payoutStatus);
+            assertThat(fixture.count("core.payout_status_history"))
+                    .isEqualTo(
+                            switch (reference.payoutStatus) {
+                                case "RESERVED" -> 1;
+                                case "PAID" -> 2;
+                                case "RETURNED" -> 3;
+                                default -> 0;
+                            });
             assertThat(fixture.count("io.imported_file")).isEqualTo(reference.bankFiles.size());
             assertThat(fixture.count("recon.bank_line")).isEqualTo(reference.bankVersions);
             reference.banks.forEach(

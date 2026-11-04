@@ -2,10 +2,44 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 import {
   AmountChange,
+  CorrectionContent,
   CorrectionTable,
   ReversedNotice,
   TraceContent,
 } from "./corrections";
+
+test("ac_7_19 fifth correction type explains failed payout confirmation and links payout", () => {
+  const html = renderToStaticMarkup(
+    <CorrectionContent
+      data={{
+        correction: {
+          id: "cor_payout",
+          type: "CONFIRM_FAILED_PAYOUT_PAID",
+          reasonCode: "BANK_EVIDENCE",
+          reasonNote: "synthetic",
+          requestedBy: "operator",
+          recordedAt: "2026-11-16T14:00:00Z",
+          subjectType: "payout",
+          subjectId: "mpo_demo",
+          evidence: [],
+          params: {},
+        },
+        targets: [],
+        entries: [],
+        affected: {
+          payments: [],
+          batches: [],
+          bankLines: [],
+          issues: [],
+          payouts: ["mpo_demo"],
+        },
+      }}
+    />,
+  );
+  expect(html).toContain("CONFIRM_FAILED_PAYOUT_PAID");
+  expect(html).toContain("FAILED → PAID");
+  expect(html).toContain('href="#/payouts/mpo_demo"');
+});
 
 test("ac_6_14 amount change preserves cents including zero and one cent", () => {
   expect(

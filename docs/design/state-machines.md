@@ -97,6 +97,27 @@ RESERVED ──命令发出──▶ SUBMITTED ──银行回执──▶ ACCEP
 - 冲突证据：状态已是 `FAILED`，银行流水却出现出账行 → 不自动记账，开差异 `PAYOUT_STATE_CONFLICT`，走受限纠错。
 - 银行的 API 状态（`ACCEPTED`）和银行流水是两种证据，模拟器里分开产生（I6）；只有流水能移动现金账户。
 
+### P5 T04 实现备注：银行出站与直接受理边
+
+- 按 ADR-0006 补充第 4 节增加 `RESERVED/UNKNOWN → ACCEPTED` 直接边；`SUBMITTED → ACCEPTED` 保留。HTTP `ACCEPTED/EXECUTED` 都只确认受理，保存 `bank_ack_ref/bank_execution_date`，不记 `PAYOUT_PAID`。不人为插入 SUBMITTED 历史，首次 UNKNOWN／ACCEPTED／FAILED 时刻取收到结果时注入 Clock 的时刻，历史 recorded_at 与 updated_at 取写回时刻；重复 UNKNOWN 不追加历史。
+- `SUBMIT_PAYOUT` 复用 P3 worker；首次直接 submit，已有尝试或接管过期 IN_FLIGHT（即使崩溃在首次调用前、attempts=0）先 query。仅协议明确的 404 NOT_FOUND 允许用原 requestId 重发，不设退款的 20 小时期限。查询与重发分别走租约校验并追加 outbound_attempt，业务写回与命令 epoch 校验同事务提交，旧租约写入全部回滚，尝试存档保留。
+- 明确 REJECTED 且 bank_txn_id 为空才记 FAILED、业务分录 PAYOUT_FAILED（无 reverses_entry_id），同事务调用 RefundQueue.release。已有出账证据时不释放；拒绝回执开 PAYOUT_STATE_CONFLICT。409 REQUEST_CONFLICT 仅开差异并完成命令。超时、断连、5xx、无效／身份不匹配响应保持未知、不释放。重试上限沿用 worker，停止自动尝试不改变资金占用。
+- T04b：提交或重试查询收到 RETURNED 与 EXECUTED 一样只确认受理（RESERVED/SUBMITTED/UNKNOWN → ACCEPTED），命令 DONE、last_outcome=PAYOUT_RETURNED；已有 ACCEPTED/PAID/RETURNED 保持不变，FAILED 则开 PAYOUT_STATE_CONFLICT，不记分录、不释放资金、不唤醒退款队列，出账与退回仍等待银行流水；回归沿用 T04 的 HTTP 协议夹具模拟 UNAVAILABLE 后首次查到 RETURN_AFTER_DAYS 的退回结果，并通过 T05 真库导入验证 ACCEPTED → PAID → RETURNED。
+- `ledgerlab.bank.payments.enabled=true`（或 `LEDGERLAB_BANK_PAYMENTS_ENABLED=true`）启用模拟银行 HTTP 网关；默认关闭时无网关 bean，不注册提现处理器，命令保留 PENDING。`base-url` 默认 `http://localhost:8081`（环境变量 `LEDGERLAB_BANK_PAYMENTS_BASE_URL`），`connect-timeout/read-timeout` 默认 5s/10s；固定 CAD 与 MERCHANT-001，所有调用与响应存档沿用 P3。详情增加 commands／attempts 脱敏摘要，V22 视图与权限见数据字典。
+- 测试沿用 P3 T08 的本地 HTTP 协议替身及真实 PostgreSQL，覆盖 ACCEPTED/EXECUTED、真实读超时、UNAVAILABLE ≥10、五工作日后不释放、丢回执查询恢复、拒绝与退款队列、两个 OutboundHooks 崩溃点、迟到租约回执、PAID 抢先到达及写回回滚。PAID 并发前置使用已封存账本分录模拟 T05 的银行证据边界；本任务不实现银行导入或 PAYOUT_UNRESOLVED 老化。
+
+### P5 T06 实现备注：运营查询
+
+- `POST /api/payouts/{id}/query` 返回 202 `{commandId:"cmd_…"}`。复用纠错运营开关 `ledgerlab.corrections.enabled`（默认 true）；公开配置设为 false 时不注册此路由，返回 404，既有只读提现查询仍可用。提现不存在返回 404 `PAYOUT_NOT_FOUND`；仅 UNKNOWN／ACCEPTED／SUBMITTED 可查询，其余返回 409 `PAYOUT_NOT_QUERYABLE`，拒绝不写命令。
+- 入队在同一事务先取资金锁、锁提现行并检查状态；已有未完成 QUERY_PAYOUT（PENDING／IN_FLIGHT／UNKNOWN）返回原命令号，DONE 后可再建，数据库沿用 V21 部分唯一索引。入队不改提现状态或追加状态历史；request_id 与 subject_id 均为提现号，命令时间来自注入 Clock。
+- QUERY_PAYOUT 与 SUBMIT_PAYOUT 共用 T04 的结果映射和写回入口，但每次尝试只调用 query，不调用 submit；无网关时两种处理器均不注册。ACCEPTED／EXECUTED／RETURNED 只确认受理；REJECTED 无出账时记 FAILED 并同事务唤醒退款队列；其余重试、冲突及银行流水抢先到达的规则沿用 T04。
+- 查询明确返回 404 NOT_FOUND 时完成 QUERY_PAYOUT（last_outcome=PAYOUT_NOT_FOUND），提现与资金保持不变。资金锁内锁住对应 SUBMIT_PAYOUT；已 DONE 则开 PAYOUT_STATE_CONFLICT，否则仅把 next_attempt_at 改为注入 Clock 的当前时刻，保留 attempts、first_sent_at、状态和租约，交由原提交处理器按既有重试上限及租约规则处理，不重置次数或绕过上限。上述差异或调度写入与查询命令 epoch 校验同事务，迟到回执的写入回滚，独立尝试存档保留。
+- AC-7.23／AC-7.9 真库与本地 HTTP 测试覆盖命令复用与并发入队、完成后再查、状态拒绝和不存在、运营配置 404、只查不发、拒绝释放与退款队列原子性、404 两分支、查询重试、银行出账抢先到达及旧租约 404 写回回滚。
+
+### P5 T07 实现备注：失败提现的冲突纠错
+
+`CONFIRM_FAILED_PAYOUT_PAID` 已实现 ADR-0011 第 8 节的受限 `FAILED → PAID` 边：同一事务内冲销失败分录、重记出账、保存 correction 历史、匹配当前银行行并关闭相关 OPEN 差异。`paid_at` 沿用银行 booking_date 的多伦多日初；纠错分录与历史时间取注入 Clock，保留原失败证据。不唤醒退款队列；随后 CREDIT 证据复用正常 `PAID → RETURNED` 路径。现有纠错详情返回 `params.payoutId/bankTxnId`、`affected.payouts/bankLines`；总览沿用既有欠款字段显示负可用。现金不足返回 409 且全部回滚，银行余额对账汇总留 T08。
+
 ## 4. 结算批次 Settlement batch（S2）
 
 | 从 | 到 | 触发 | 分录 |
@@ -233,6 +254,13 @@ V15 已同步放宽 inbox_event 与 inbox_status_history 的 result CHECK，本�
 - T07 不提供 HTTP 实现；没有 ProcessorRefundGateway bean 时不注册退款处理器，命令保持 PENDING。T08 提供网关后共用同一 SPI；处理器不依赖 ingestion。
 
 ## 7. 对账差异 Reconciliation issue
+
+### P5 T08 实现备注：提现银行匹配与老化
+
+- BANK／AGING 版本升为 `p5-v1`，PROCESSOR 保持 `processor-v2`。旧版本报告直接读取保存的 run／finding，仍可原样查看；新运行只执行当前规则版本，不用新算法重算旧报告。
+- 提现状态从 evidence_as_of 前最后一条 payout_status_history 还原（同刻按 id 排序），受理时刻取初始 RESERVED 历史。BANK 检查受理时刻早于 cutoff 的 PAID／RETURNED 提现：PAID 必须有对应出账，RETURNED 同时要求原出账和退回。流水号来自历史 bank_txn 证据；纠错 PAID 来自该历史指向的 correction.params.bankTxnId。选定输入内的行必须逐项满足同一流水号、reference=提现号、金额相等、CAD、BOOKED 和正确方向，否则发现 PAYOUT_STATE_CONFLICT。匹配证据可晚于 cutoff，但必须早于 evidence_as_of。
+- PAYOUT_UNRESOLVED 沿用本地退款老化的 evidence_as_of 时钟：RESERVED／SUBMITTED／UNKNOWN／ACCEPTED 在阈值到期、且选定输入无精确 BOOKED/CAD 出账时报告。起点为证据时点前首次进入 SUBMITTED／UNKNOWN／ACCEPTED 的最早 occurred_at，没有则用初始 RESERVED；重复状态及后续重试不重置起点。`ledgerlab.recon.aging.payout-business-days` 默认 1，必须为正，使用既有多伦多工作日日历（含周末、11 月 11 日假日）。
+- 未完成操作包含终态在 checkedScope 中，以便后续证据解释旧差异。银行导入已按 T05 将 OPEN PAYOUT_UNRESOLVED 转 RESOLVED；失败等后续证据由 AGING 转 EXPLAINED，BANK 精确匹配恢复后解释自身冲突。INGESTION 的差异归属、人工关闭、指纹重开及旧 finding 不变等规则沿用 7.1。老化只读业务与账本，不释放 2104、不改变提现或命令状态；dry run 不写处置。
 
 ### P4 T05b 实现备注：银行纠错后的发现与解释
 

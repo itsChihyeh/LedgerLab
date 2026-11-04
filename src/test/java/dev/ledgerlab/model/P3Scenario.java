@@ -196,6 +196,7 @@ final class P3Scenario {
         String body =
                 "{\"payment_ref\":\"%s\",\"merchant_refund_ref\":\"%s\",\"amount\":%d}".formatted(payment, ref, amount);
         long remaining = model.remaining(payment);
+        var before = DatabaseSnapshot.rows(app.jdbc);
         var response = app.api("/api/refunds", ref, body);
         if (amount > 99_999_999) {
             assertThat(response.status()).isEqualTo(400);
@@ -216,6 +217,8 @@ final class P3Scenario {
             initialBodies.put(ref, body);
             initialResponses.put(ref, response);
         }
+        if (response.status() >= 400)
+            assertThat(DatabaseSnapshot.rows(app.jdbc)).isEqualTo(before);
     }
 
     void cancel(RefundModel.Refund r) {
@@ -230,7 +233,8 @@ final class P3Scenario {
         var pending = commands();
         // Read identities/order only, and assert the selected set against the oracle before execution.
         var ids = app.jdbc
-                .sql("SELECT subject_id FROM io.outbound_command WHERE status<>'DONE' ORDER BY created_at,id")
+                .sql(
+                        "SELECT subject_id FROM io.outbound_command WHERE kind='SUBMIT_REFUND' AND status<>'DONE' ORDER BY created_at,id")
                 .query(String.class)
                 .list();
         assertThat(ids)

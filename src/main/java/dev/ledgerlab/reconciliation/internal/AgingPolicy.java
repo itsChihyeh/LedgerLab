@@ -12,7 +12,28 @@ public record AgingPolicy(
         Duration parkedEvent,
         int refundStatementBusinessDays,
         int refundAwaitingFundsBusinessDays,
-        int refundExecutionBusinessDays) {
+        int refundExecutionBusinessDays,
+        int payoutBusinessDays) {
+    public AgingPolicy(
+            int paymentBusinessDays,
+            int depositBusinessDays,
+            int heldBatchBusinessDays,
+            Duration parkedEvent,
+            int refundStatementBusinessDays,
+            int refundAwaitingFundsBusinessDays,
+            int refundExecutionBusinessDays) {
+        this(
+                paymentBusinessDays,
+                depositBusinessDays,
+                heldBatchBusinessDays,
+                parkedEvent,
+                refundStatementBusinessDays,
+                refundAwaitingFundsBusinessDays,
+                refundExecutionBusinessDays,
+                1);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
     public AgingPolicy(
             @Value("${ledgerlab.recon.aging.payment-business-days:2}") int paymentBusinessDays,
             @Value("${ledgerlab.recon.aging.deposit-business-days:2}") int depositBusinessDays,
@@ -21,13 +42,15 @@ public record AgingPolicy(
             @Value("${ledgerlab.recon.aging.refund-statement-business-days:2}") int refundStatementBusinessDays,
             @Value("${ledgerlab.recon.aging.refund-awaiting-funds-business-days:5}")
                     int refundAwaitingFundsBusinessDays,
-            @Value("${ledgerlab.recon.aging.refund-execution-business-days:3}") int refundExecutionBusinessDays) {
+            @Value("${ledgerlab.recon.aging.refund-execution-business-days:3}") int refundExecutionBusinessDays,
+            @Value("${ledgerlab.recon.aging.payout-business-days:1}") int payoutBusinessDays) {
         if (paymentBusinessDays <= 0
                 || depositBusinessDays <= 0
                 || heldBatchBusinessDays <= 0
                 || refundStatementBusinessDays <= 0
                 || refundAwaitingFundsBusinessDays <= 0
-                || refundExecutionBusinessDays <= 0)
+                || refundExecutionBusinessDays <= 0
+                || payoutBusinessDays <= 0)
             throw new IllegalArgumentException("Aging business-day thresholds must be positive");
         if (parkedEvent.isZero() || parkedEvent.isNegative())
             throw new IllegalArgumentException("Parked event threshold must be positive");
@@ -38,5 +61,6 @@ public record AgingPolicy(
         this.refundStatementBusinessDays = refundStatementBusinessDays;
         this.refundAwaitingFundsBusinessDays = refundAwaitingFundsBusinessDays;
         this.refundExecutionBusinessDays = refundExecutionBusinessDays;
+        this.payoutBusinessDays = payoutBusinessDays;
     }
 }

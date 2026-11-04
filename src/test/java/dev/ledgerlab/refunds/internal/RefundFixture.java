@@ -31,25 +31,35 @@ import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.json.JsonMapper;
 
 /** P2 capture/batch/bank services, connected as app to a real migrated PostgreSQL. */
-final class RefundFixture implements AutoCloseable {
-    final TestDatabase.Handle db = TestDatabase.freshMigrated();
+public final class RefundFixture implements AutoCloseable {
+    public final TestDatabase.Handle db = TestDatabase.freshMigrated();
     final DataSource source = db.app();
-    final JdbcClient jdbc = JdbcClient.create(source);
-    final DataSourceTransactionManager manager = new DataSourceTransactionManager(source);
-    final TransactionTemplate tx = new TransactionTemplate(manager);
-    final MutableClock clock = new MutableClock(Instant.parse("2026-10-23T14:00:00Z"));
-    final IdGenerator ids = IdGenerator.seeded(clock, 304);
-    final JsonMapper mapper = new JsonMapper();
-    final Ledger ledger = new JdbcLedger(source, clock, ids);
+    public final JdbcClient jdbc = JdbcClient.create(source);
+    public final DataSourceTransactionManager manager = new DataSourceTransactionManager(source);
+    public final TransactionTemplate tx = new TransactionTemplate(manager);
+    public final MutableClock clock = new MutableClock(Instant.parse("2026-10-23T14:00:00Z"));
+    public final IdGenerator ids = IdGenerator.seeded(clock, 304);
+    public final JsonMapper mapper = new JsonMapper();
+    public final Ledger ledger = new JdbcLedger(source, clock, ids);
     final JdbcLedgerAudit audit = new JdbcLedgerAudit(source, manager);
     final PaymentRefunds payments = new PaymentRefunds(jdbc, ledger);
     final RefundHistory history = new RefundHistory(jdbc);
-    final RefundQueue queue = new JdbcRefundQueue(jdbc, ledger, clock, ids, history);
+    public final RefundQueue queue = new JdbcRefundQueue(jdbc, ledger, clock, ids, history);
     final JdbcRefunds refunds = service(ledger, new LockedRefundLimitGuard(ledger, payments), () -> {});
-    final JdbcIngestionIssues issues = new JdbcIngestionIssues(jdbc, ids, clock);
+    public final JdbcIngestionIssues issues = new JdbcIngestionIssues(jdbc, ids, clock);
     final PaymentCapture capture = new PaymentCapture(ledger, jdbc, issues, ids, clock, mapper);
-    final BankStatements banks =
-            new BankStatements(jdbc, ledger, issues, clock, ids, new BusinessCalendar(), mapper, manager, 2);
+    final BankStatements banks = new BankStatements(
+            jdbc,
+            ledger,
+            issues,
+            clock,
+            ids,
+            new BusinessCalendar(),
+            mapper,
+            manager,
+            2,
+            new dev.ledgerlab.payouts.internal.JdbcPayoutBankEvidence(
+                    jdbc, ledger, queue, new BusinessCalendar(), clock));
     final BatchSettlement batches = new BatchSettlement(
             jdbc,
             ledger,
@@ -86,7 +96,7 @@ final class RefundFixture implements AutoCloseable {
         return payment("ch_p1", 10000);
     }
 
-    String s3() {
+    public String s3() {
         String id = s1();
         batch("po_b1", "ch_p1", 10000, 320);
         byte[] csv = ("H,BANK_STATEMENT,SIM-CAD-001,2026-10-23,2026-10-23,1,CAD\r\n"
@@ -171,30 +181,30 @@ final class RefundFixture implements AutoCloseable {
                                 clock.instant()))));
     }
 
-    RefundResult accept(String payment, long amount) {
+    public RefundResult accept(String payment, long amount) {
         return refunds.accept(payment, "merchant-" + ++next, amount, "fingerprint-" + next);
     }
 
-    String status(String refund) {
+    public String status(String refund) {
         return jdbc.sql("SELECT status FROM core.refund WHERE id = :id")
                 .param("id", refund)
                 .query(String.class)
                 .single();
     }
 
-    long number(String sql) {
+    public long number(String sql) {
         return jdbc.sql(sql).query(Long.class).single();
     }
 
-    long count(String table) {
+    public long count(String table) {
         return number("SELECT count(*) FROM " + table);
     }
 
-    long balance(int code) {
+    public long balance(int code) {
         return number("SELECT balance FROM ledger.account WHERE code = " + code);
     }
 
-    void invariants() {
+    public void invariants() {
         RefundAssertions.invariants(jdbc, audit);
     }
 

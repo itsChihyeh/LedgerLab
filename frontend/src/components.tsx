@@ -139,7 +139,8 @@ export function Postings({
             </small>
           </td>
           <td>
-            {p.accountCode} · {p.accountName}
+            {p.accountCode}
+            {p.accountName && ` · ${p.accountName}`}
           </td>
           <td>{p.side === "D" ? "借（D）" : "贷（C）"}</td>
           <td>

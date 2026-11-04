@@ -8,6 +8,8 @@ import dev.ledgerlab.ledger.EntryRequest;
 import dev.ledgerlab.ledger.Ledger;
 import dev.ledgerlab.ledger.PostedEntry;
 import dev.ledgerlab.ledger.RecordedCorrection;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /** Transparent adapter for tests that intercept just one ledger operation. */
@@ -31,6 +33,11 @@ public class DelegatingLedger implements Ledger {
     @Override
     public long balance(Account account) {
         return delegate.balance(account);
+    }
+
+    @Override
+    public Map<Account, Long> lockBalances(List<Account> accounts) {
+        return delegate.lockBalances(accounts);
     }
 
     @Override

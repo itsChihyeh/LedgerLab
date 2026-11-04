@@ -16,7 +16,7 @@ import tools.jackson.databind.ObjectMapper;
 public final class AgingRule implements ReconRule {
     static final String LIMITATIONS = "老化只能发现有开始记录、没有结束记录的义务；"
             + "其他 HELD 原因由入口差异负责，等 P4 纠错后重核；回填 inbox 历史之前的状态无法重建；"
-            + "旧 HELD 历史缺少原因或明细存档时无法重建，未纳入检查；提现老化留给 P5。";
+            + "旧 HELD 历史缺少原因或明细存档时无法重建，未纳入检查。";
     private final JdbcClient jdbc;
     private final BusinessCalendar calendar;
     private final AgingPolicy policy;
@@ -46,7 +46,7 @@ public final class AgingRule implements ReconRule {
 
     @Override
     public String version() {
-        return "p4-v2";
+        return "p5-v1";
     }
 
     @Override
@@ -118,7 +118,30 @@ public final class AgingRule implements ReconRule {
         held(context, result);
         parked(context, result);
         refunds(context, result);
+        payouts(context, result, snapshot);
         return result;
+    }
+
+    private void payouts(Context context, RuleResults result, BankEvidence.Snapshot snapshot) {
+        Instant asOf = context.request().evidenceAsOf();
+        for (var payout : PayoutEvidence.read(jdbc, asOf)) {
+            var expected =
+                    new LinkedHashMap<String, Object>(expected(payout.start(), policy.payoutBusinessDays(), asOf));
+            expected.put("status", payout.status());
+            result.check(
+                    "PAYOUT_UNRESOLVED",
+                    "payout",
+                    payout.id(),
+                    payout.outstanding()
+                            && !payout.hasDebit(snapshot.lines())
+                            && !calendar.dueAt(payout.start(), policy.payoutBusinessDays())
+                                    .isAfter(asOf),
+                    expected,
+                    Map.of("status", payout.status()),
+                    payout.references(snapshot),
+                    null,
+                    "Payout obligation completed, bank debit received or not yet due: " + payout.id());
+        }
     }
 
     private void refunds(Context context, RuleResults result) {

@@ -2,7 +2,7 @@
 @NullMarked
 @ApplicationModule(
         displayName = "Corrections",
-        allowedDependencies = {"ledger", "payments", "settlement", "reconciliation", "shared"})
+        allowedDependencies = {"ledger", "payments", "payouts", "settlement", "reconciliation", "shared"})
 package dev.ledgerlab.corrections;
 
 import org.jspecify.annotations.NullMarked;

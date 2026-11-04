@@ -60,6 +60,11 @@ ledgerlab:
     connect-timeout: 5s
     read-timeout: 30s
   bank:
+    payments:
+      enabled: ${LEDGERLAB_BANK_PAYMENTS_ENABLED:false}
+      base-url: ${LEDGERLAB_BANK_PAYMENTS_BASE_URL:http://localhost:8081}
+      connect-timeout: 5s
+      read-timeout: 10s
     wait-business-days: 2
     poll-interval: 1m
     scheduling-enabled: ${ledgerlab.inbox.scheduling-enabled:true}

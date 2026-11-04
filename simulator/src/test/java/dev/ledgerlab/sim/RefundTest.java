@@ -677,8 +677,7 @@ class RefundTest {
                             + other.path("id").asText() + "'",
                     "23505");
         }
-        assertThat(jdbc.sql(
-                                "select version from sim_processor.flyway_schema_history where success order by installed_rank desc limit 1")
+        assertThat(jdbc.sql("select version from sim_processor.flyway_schema_history where success and version='5'")
                         .query(String.class)
                         .single())
                 .isEqualTo("5");

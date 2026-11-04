@@ -425,7 +425,7 @@ final class P2Scenario {
         assertThat(balances.get(1103))
                 .as("INV-11 posted BOOKED credits minus WAITING and exact returns")
                 .isEqualTo(total("""
-                        SELECT coalesce(sum(CASE WHEN match_status='WAITING' THEN 0 WHEN direction='DEBIT' AND match_status='RETURN_POSTED' THEN -amount WHEN direction='DEBIT' THEN 0 ELSE amount END),0)::bigint
+                        SELECT coalesce(sum(CASE WHEN match_status='WAITING' THEN 0 WHEN direction='DEBIT' AND match_status IN ('RETURN_POSTED','PAYOUT_PAID') THEN -amount WHEN direction='DEBIT' THEN 0 ELSE amount END),0)::bigint
                         FROM (SELECT DISTINCT ON (bank_txn_id) * FROM recon.bank_line
                               ORDER BY bank_txn_id, version DESC) b WHERE status='BOOKED'
                         """));

@@ -98,6 +98,7 @@ class SettlementWorkerTest {
     private volatile boolean interrupted;
     private boolean failThird;
     private BankStatements bankStatements;
+    private dev.ledgerlab.payouts.PayoutBankEvidence payoutBankEvidence;
     private int failAfterPosting;
     private Refunds refunds;
     private RefundEvidence refundEvidence;
@@ -123,10 +124,12 @@ class SettlementWorkerTest {
         audit = new JdbcLedgerAudit(source, manager);
         issues = new JdbcIngestionIssues(jdbc, ids, clock);
         capture = new PaymentCapture(ledger, jdbc, issues, ids, clock, mapper);
-        bankStatements =
-                new BankStatements(jdbc, ledger, issues, clock, ids, new BusinessCalendar(), mapper, manager, 2);
         var refundHistory = new RefundHistory(jdbc);
         var refundQueue = new JdbcRefundQueue(jdbc, ledger, clock, ids, refundHistory);
+        payoutBankEvidence = new dev.ledgerlab.payouts.internal.JdbcPayoutBankEvidence(
+                jdbc, ledger, refundQueue, new BusinessCalendar(), clock);
+        bankStatements = new BankStatements(
+                jdbc, ledger, issues, clock, ids, new BusinessCalendar(), mapper, manager, 2, payoutBankEvidence);
         var refundPayments = new PaymentRefunds(jdbc, ledger);
         refunds =
                 new JdbcRefunds(jdbc, ledger, refundPayments, refundQueue, refundHistory, clock, ids, mapper, manager);
@@ -979,6 +982,24 @@ class SettlementWorkerTest {
             bankStatements.expireWaiting();
             return;
         }
+        if (action.contains("PAYOUT")) {
+            assertThat(bankStatements
+                            .importBankStatement(
+                                    "model-payout.csv",
+                                    bankCsv(
+                                            action.toLowerCase(java.util.Locale.ROOT),
+                                            9680,
+                                            action.contains("DEBIT") ? "DEBIT" : "CREDIT",
+                                            "CAD",
+                                            "BOOKED",
+                                            MODEL_PAYOUT,
+                                            "2026-10-23",
+                                            "2026-10-23",
+                                            1))
+                            .status())
+                    .isEqualTo("ACCEPTED");
+            return;
+        }
         String id = action.equals("BANK") || action.equals("PENDING_BANK")
                 ? "model_bank"
                 : action.toLowerCase(java.util.Locale.ROOT);
@@ -994,6 +1015,42 @@ class SettlementWorkerTest {
                         "2026-10-23",
                         "2026-10-23",
                         1));
+    }
+
+    private static final String MODEL_PAYOUT = "mpo_00000000000000000000000001";
+
+    // Ledger-backed payout fixture: this model exercises bank evidence, not API admission.
+    void modelReservePayout() {
+        tx.executeWithoutResult(tx -> {
+            ledger.lockFunds();
+            var now = clock.instant().atOffset(java.time.ZoneOffset.UTC);
+            jdbc.sql("""
+                    INSERT INTO core.payout(id, merchant_payout_ref, amount, currency, status, initial_result,
+                        request_fingerprint, reserved_at, updated_at, recorded_at)
+                    VALUES (?, 'MP-model', 9680, 'CAD', 'RESERVED', '{}', 'fixture', ?, ?, ?)
+                    """).params(MODEL_PAYOUT, now, now, now).update();
+            jdbc.sql("""
+                    INSERT INTO core.payout_status_history(payout_id, to_status, evidence_type, evidence_id, occurred_at, recorded_at)
+                    VALUES (?, 'RESERVED', 'api', 'fixture', ?, ?)
+                    """).params(MODEL_PAYOUT, now, now).update();
+            ledger.post(new EntryRequest(
+                    EntryType.PAYOUT_RESERVED,
+                    "payout:" + MODEL_PAYOUT + ":reserved",
+                    clock.instant(),
+                    SubjectType.PAYOUT,
+                    MODEL_PAYOUT,
+                    List.of(
+                            PostingLine.debit(Account.MERCHANT_AVAILABLE, 9680),
+                            PostingLine.credit(Account.PAYOUT_IN_TRANSIT, 9680))));
+        });
+    }
+
+    String modelPayoutStatus() {
+        return jdbc.sql("SELECT status FROM core.payout WHERE id=?")
+                .param(MODEL_PAYOUT)
+                .query(String.class)
+                .optional()
+                .orElse("ABSENT");
     }
 
     String bankState(String id) {
@@ -1209,7 +1266,8 @@ class SettlementWorkerTest {
                 new BusinessCalendar(),
                 mapper,
                 manager,
-                3);
+                3,
+                payoutBankEvidence);
         changed.expireWaiting();
         assertThat(bankState("early")).isEqualTo("UNAPPLIED");
     }
@@ -1567,6 +1625,13 @@ class SettlementWorkerTest {
     }
 
     void assertSettlementInvariants() {
+        assertThat(jdbc.sql("""
+                SELECT balance = (SELECT coalesce(sum(amount),0) FROM core.payout
+                    WHERE status IN ('RESERVED','SUBMITTED','UNKNOWN','ACCEPTED'))
+                FROM ledger.account WHERE code=2104
+                """).query(Boolean.class).single())
+                .as("INV-9 payout in transit")
+                .isTrue();
         assertThat(jdbc.sql("SELECT balance FROM ledger.account WHERE code = '2101'")
                         .query(Long.class)
                         .single())

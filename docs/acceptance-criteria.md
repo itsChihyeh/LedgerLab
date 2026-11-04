@@ -70,7 +70,7 @@
 | **P2** 结算＋银行入账＋对账 | 手续费、批次＝payout＋balance transactions、明细就绪、结算在途、模拟银行入账、待查收款、两段精确对账、老化 | AC-1.4b、AC-1.11、AC-2.8、AC-2.16、AC-4.1、AC-5.1–5.13、AC-5.15–5.21 |
 | **P3** 退款 | 退款状态机、额度、并发、资金门槛与等待队列、处理方可用余额、出站命令、失败与未知结果、API 幂等 | AC-1.4c、AC-2.9–2.15、AC-3、AC-4.2、AC-4.7–4.10、AC-4.12、AC-5.14、AC-8.7 |
 | **P4** 纠错 | 误记撤销、冲销＋重记、待查收款清出与归位、冲突证据恢复、HELD 重核 | AC-1.4d、AC-6 |
-| **P5** 提现 | 双门槛、出站命令、结果未知恢复、失败、退回、提现侧三方对账 | AC-1.4e、AC-7 |
+| **P5** 提现 | 双门槛、出站命令、结果未知恢复、失败、退回、提现侧三方对账 | AC-1.4e、AC-6.15、AC-7 |
 | **P6** 接真实 Stripe 测试模式 | 用户的测试账号、密钥管理、契约测试、真实 webhook 经 chaos relay、对账接真实 balance transactions、运行报告 | AC-8.3–8.6、AC-8.8–8.10 |
 | **P7** 部署＋公开演示页 | AWS 部署、“来搞坏它”演示页、性能基线、演示视频、技术文章 | AC-9（部署与性能的验收另写） |
 | **P8** 对账调查 Agent | 只读工具、评测 | 另写 |
@@ -272,6 +272,7 @@ webhook 入口：`POST /webhooks/stripe`，签名用 Stripe 的方案（`Stripe-
 | AC-6.9 | 待查收款清出 | **Given** AC-5.6 的待查收款 9680 **When** 银行流水出现出账行 9680，引用 T2（退还处理方）**Then** 记 `UNAPPLIED_CASH_RETURNED`：待查收款 0、现金 9680；差异 `RESOLVED` | TC | P4 |
 | AC-6.10 | 拆分到账归位 | **Given** B1 已 `CONFIRMED`（net 9680），银行流水两行入账 5000（T5）、4680（T6），都引用 B1，各记待查收款、开 `DEPOSIT_AMOUNT_MISMATCH` **When** 提交 `APPLY_UNAPPLIED_CASH`（B1，T5＋T6，原因 `SPLIT_DEPOSIT`）**Then** 一个 `CORRECTION`：借 待查收款 9680 / 贷 在途 9680，没有 `REVERSAL`；现金仍 9680、待查收款 0、在途 0；B1 `BANKED`；T5、T6 `APPLIED`；两条差异 `RESOLVED` 并关联纠错。**When** 只提交 T5，或再提交一次 **Then** 409 `APPLICATION_AMOUNT_MISMATCH` / `BATCH_NOT_AWAITING_DEPOSIT`，无写入 | TC | P4 |
 | AC-6.11 | 银行冲突证据恢复 | **Given** B1 `CONFIRMED` 后收到 `payout.failed`（`PAYOUT_FAILED`），之后银行入账 9680 引用 B1（待查收款、`BATCH_STATE_CONFLICT`）**When** 提交 `RESTORE_FAILED_PAYOUT`（B1，该流水）**Then** `REVERSAL` 冲销 `BATCH_PAYOUT_FAILED` ＋ `CORRECTION` 借 待查收款 9680 / 贷 在途 9680；余额 = S3；B1 `BANKED`；差异 `RESOLVED`。**When** 失败打款已作为退回行出现在 B2 **Then** 409 `FAILED_PAYOUT_ALREADY_RETURNED` | TC | P4 |
+| AC-6.15 | 提现冲突证据纠错 | **Given** AC-7.11 之后（PO2 `FAILED`、出账 9680 未记账、`PAYOUT_STATE_CONFLICT` OPEN）**When** 纠错 `CONFIRM_FAILED_PAYOUT_PAID`（PO2、该流水）**Then** 一个 `REVERSAL`（冲销 `PAYOUT_FAILED`）＋一个 `CORRECTION`（借 提现在途 / 贷 现金）；PO2 `PAID`；流水 `PAYOUT_PAID`；差异 `RESOLVED` 指向纠错；银行余额核对不再报差。重复提交 409；前置不满足的各种情况 4xx 无写入 | TC | P5 |
 | AC-6.12 | HELD 批次运营重核 | **Given** 一个 P2 时因退款行 `HELD(UNSUPPORTED_LINE)` 的历史批次，批次里的退款在本地都有对应退款、金额相等 **When** `POST /api/batches/{id}/recheck` **Then** 按固定明细存档重核通过，`CONFIRMED` 并记账，不发 HTTP。**When** 对非 `HELD` 批次重核 **Then** 409 `BATCH_NOT_HELD` | TC | P4 |
 | AC-6.13 | 纠错进入模型测试 | 有状态模型加入四种纠错、待查收款退还、批次重核动作；每步核对余额、INV-1～INV-12、支付金额与状态、退款剩余额度、批次与流水状态 | MT | P4 |
 | AC-6.14 | 纠错可追溯 | **Given** AC-6.5 完成 **When** 打开 B6 的差异 **Then** 页面链接到纠错详情；纠错详情列出目标分录、生成的分录与 posting、原因、证据（可点到结算单行、原事件），以及支付金额的前后值 | PW | P4 |
@@ -302,6 +303,12 @@ webhook 入口：`POST /webhooks/stripe`，签名用 Stripe 的方案（`Stripe-
 | AC-7.18 | 提现侧三方对账 | **When** 运行银行段对账 **Then** 每笔 `PAID`/`RETURNED` 提现精确匹配到流水行；`ACCEPTED` 超过阈值没有出账的报 `PAYOUT_UNRESOLVED` | TC | P5 |
 | AC-7.20 | 提现金额校验 | **When** 提现金额为 `100.5`、`"20.00"`、`0`、`-1`、`100000000` 或缺失 **Then** 400 `INVALID_AMOUNT`；无写入 | TC | P5 |
 | AC-7.21 | 现金全是待查收款 | **Given** 在途 5000、可用 5000、现金 1000、待查收款 1000（批次已确认未到账，另有一笔认不出的入账）**When** 提现 1 **Then** 409，原因 `FREE_CASH`；单独证明公式扣了待查收款 | TC | P5 |
+| AC-7.22 | 银行明确拒绝 | **Given** S3，银行计划 `REJECT ACCOUNT_CLOSED` **When** 提现 9680、worker 发送 **Then** `FAILED`，记 `PAYOUT_FAILED`；可用 9680、在途 0；模拟银行没有出账；命令 `DONE` | TC | P5 |
+| AC-7.23 | 运营查询 | **Given** PO1 `UNKNOWN`（银行 `UNAVAILABLE` 已恢复）**When** `POST /api/payouts/{id}/query` **Then** 202，`QUERY_PAYOUT` 只查不发；查到 `ACCEPTED` → `ACCEPTED`；对 `PAID` 的提现查询 → 409 `PAYOUT_NOT_QUERYABLE` | TC | P5 |
+| AC-7.24 | 出账金额不等或第二笔出账 | **When** 流水出现引用 PO1 但金额不等的出账，或 PO1 已 `PAID` 后又一笔出账 **Then** 不记账，`UNMATCHED_NO_POSTING`，开 `UNMATCHED_BANK_LINE`，候选 PO1 | TC | P5 |
+| AC-7.25 | 退回不对应已付提现 | **When** 入账行引用 PO1 而 PO1 还是 `ACCEPTED`，或金额不等 **Then** 记待查收款，开 `UNMATCHED_BANK_LINE`，候选 PO1；PO1 状态不变 | TC | P5 |
+| AC-7.26 | 失败与退回唤醒退款队列 | **Given** 一笔退款因资金不足 `AWAITING_FUNDS` **When** 提现失败（AC-7.9）或退回（AC-7.10）使可用足够 **Then** 同一事务里退款 `READY` 并建命令 | TC | P5 |
+| AC-7.27 | 提现进入模型测试 | 有状态模型加入提现受理（含两种 409）、银行回执（受理/拒绝/超时/丢回执）、出账、退回、冲突出账、纠错⑤、运营查询动作；每步核对余额、INV-1～INV-12（INV-9 含 2104）、提现状态与银行流水匹配状态，参考模型独立实现门槛与状态机；空库按种子重建一致 | TC | P5 |
 | AC-7.19 | 页面演示“钱没有重复动” | **When** 演示脚本让银行执行后丢回执，再恢复 **Then** 页面显示 PO1 `UNKNOWN → PAID`，附银行请求号和流水行；可用、在途、现金正确，银行侧只有一笔付款 | PW | P5 |
 
 ## AC-8 Stripe 测试模式

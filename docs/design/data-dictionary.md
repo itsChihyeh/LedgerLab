@@ -30,6 +30,9 @@ P1 的第一个迁移照这张表写授权、约束和测试。P2 以后新增�
 | `core.payment` | INSERT；UPDATE(`status`, `actual_fee`, `batch_id`, `refunded_amount`, `amount`, `expected_fee`) | 状态 CHECK；`refunded_amount ≤ amount`；金额范围 CHECK | 纠错可改金额和预期手续费；改 `processor_payment_ref` 42501 |
 | `ledger.correction`、`ledger.correction_target` | 只 INSERT/SELECT | 目标分录终身唯一；提交时核对冲销镜像、目标关联和至少一个分录；UPDATE/DELETE/TRUNCATE 触发器 LL004 | 改、删、清空 42501；属主操作 LL004；readonly 只读显式列视图 |
 | `core.payment_transition` | 只 INSERT/SELECT | — | UPDATE、DELETE 42501 |
+| `core.payout` | INSERT/SELECT；UPDATE(`status`, `reserved_at`, `submitted_at`, `unknown_at`, `accepted_at`, `paid_at`, `failed_at`, `returned_at`, `bank_ack_ref`, `bank_execution_date`, `bank_txn_id`, `return_bank_txn_id`, `failure_reason`, `return_reason`, `updated_at`) | 金额、状态、终态证据 CHECK；永久业务编号 UNIQUE | 改金额、业务编号、首次结果 42501；DELETE/TRUNCATE 42501；readonly 只读脱敏视图 |
+| `core.payout_status_history` | 只 INSERT/SELECT | UPDATE/DELETE/TRUNCATE 触发器 LL004；提现外键、状态和证据类型 CHECK | app 改删清空 42501；属主操作 LL004 |
+| `recon.bank_line` | INSERT/SELECT；UPDATE(`match_status`, `matched_batch_id`, `matched_payout_id`) | 原始证据不可改；提现匹配状态要求提现外键及对应方向 | 改原始列 42501；属主改原始证据 LL004；readonly 只读视图 |
 | `io.inbox_event` | INSERT；UPDATE(`status`, `result`, `attempts`, `next_attempt_at`, `lease_owner`, `lease_until`, `lease_epoch`, `parked_on`, `last_error`, `processed_at`) | `payload`、`payload_sha256`、`event_id` 不在授权里 | 改 `payload` 42501 |
 | `io.inbox_conflict` | 只 INSERT/SELECT | — | UPDATE、DELETE 42501 |
 | `io.webhook_delivery` | 只 INSERT/SELECT | 投递结果、哈希格式、事件外键；UPDATE/DELETE/TRUNCATE 触发器（LL004） | 改、删、清空 42501；属主操作 LL004；readonly 只读 core 摘要视图 |
@@ -166,6 +169,21 @@ P3 T04b 实现备注：退款队列通过 `Ledger.balance(Account.MERCHANT_AVAIL
 ### `core.payout`
 
 `id mpo_…`（同时是 `bank_request_id`）、`merchant_payout_ref` UNIQUE、`amount` > 0、`status`、`initial_result`、`request_fingerprint`、`bank_ack_ref` NULL、`bank_txn_id` NULL（出账流水）、`return_bank_txn_id` NULL、`failure_reason` NULL、各状态时刻。
+
+### P5 T04 实现备注（V22：提现出站脱敏摘要）
+
+- `core.v_payout_command_summary` 暴露 `command_id/payout_id/kind/status/attempts/next_attempt_at/first_sent_at/created_at/recorded_at/last_outcome`，包含 `SUBMIT_PAYOUT` 与 `QUERY_PAYOUT`。`core.v_payout_attempt_summary` 暴露 `payout_id/command_id/attempt_no/sent_at/finished_at/recorded_at/response_status/result_code`；结果码沿用退款视图的 `HTTP_<状态码>` / `NO_RESPONSE`。
+- migrator 拥有两视图；readonly 仅 SELECT；app 沿用 io 底表的既有最小授权，不额外授视图权限。视图不公开请求、响应原文、错误文本、租约持有人；readonly 仍不能访问 io。详情在既有 REPEATABLE READ 快照中读取两类摘要。
+
+### P5 T02 实现备注（V21：提现、银行匹配与命令唯一性）
+
+- `core.payout.id` 为 `mpo_` 加 26 位 ULID（首位 0～7），直接作为 `bank_request_id`，不重复存储同值列。`merchant_payout_ref` 为 1～64 位可见 ASCII（0x21～0x7e）且永久唯一；`amount bigint` 为 1～99999999，`currency` 非空且固定 `CAD`。`initial_result jsonb`、`request_fingerprint text` 非空，和身份、金额、币种、`recorded_at` 一样不授 app UPDATE；JSON 内部形状由受理接口负责。
+- 状态限 `RESERVED/SUBMITTED/UNKNOWN/ACCEPTED/PAID/FAILED/RETURNED`；`PAID/RETURNED` 必须有 `bank_txn_id`，`RETURNED` 必须有 `return_bank_txn_id`，`FAILED` 必须有 `failure_reason`。证据列为 text，非空要求使用 IS NOT NULL；不限制其他状态保留历史证据，支持 FAILED 经纠错变 PAID 后保留失败原因。
+- `reserved_at/updated_at/recorded_at` 为非空 timestamptz；`submitted_at/unknown_at/accepted_at/paid_at/failed_at/returned_at` 可空，`bank_execution_date` 为可空 date，`bank_ack_ref/return_reason` 为可空 text。状态时刻按任务授权可更新，首次进入的具体语义由后续状态处理器维护；数据库不新增状态迁移图或时刻与状态的双向约束。所有时刻由应用注入 Clock 提供，不设数据库当前时间默认值。
+- 历史表采用既有历史表的 `id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY`，另有非空 `payout_id` 外键、可空 `from_status`、非空 `to_status/evidence_type/evidence_id/occurred_at/recorded_at`；两种状态列使用相同枚举，证据类型限 `api/bank_api/bank_txn/correction/operator`。触发器拒绝包括属主在内的改删清空（LL004）。migrator 拥有新表和视图，app 权限见 0.1；readonly 只读 `core.v_payout`、`core.v_payout_status_history`，提现视图不公开 `initial_result/request_fingerprint`。
+- `bank_line.matched_payout_id` 为可空提现外键；`PAYOUT_PAID/PAYOUT_RETURNED` 要求它非空，分别限 DEBIT/CREDIT。不做双向非空约束，允许 `UNMATCHED_NO_POSTING` 保存 FAILED 提现的冲突候选（ADR-0006 第 5 节）。原批次、PENDING、币种等约束保持；保护触发器仅增加这一个可改匹配列，`recon.v_bank_line` 末尾追加该列，既有视图列顺序不变。
+- `ledger.correction.correction_type` 增加 `CONFIRM_FAILED_PAYOUT_PAID`，仅提供结构前置，业务留 T07。差异的 `payout` subject 与 `PAYOUT_STATE_CONFLICT/PAYOUT_UNRESOLVED` 已被现有约束接受，无需重复修改。（后续：T07 已实现。）
+- 出站 kind 扩为 `SUBMIT_REFUND/SUBMIT_PAYOUT/QUERY_REFUND/QUERY_PAYOUT`。去掉全局 `request_id` UNIQUE，改为 `outbound_command_submit_request_unique`：`UNIQUE(request_id) WHERE kind IN ('SUBMIT_REFUND','SUBMIT_PAYOUT')`；以及 `outbound_command_active_query_unique`：`UNIQUE(kind,request_id) WHERE kind IN ('QUERY_REFUND','QUERY_PAYOUT') AND status <> 'DONE'`。提交键跨提交类型永久唯一，SUBMIT 与 QUERY 可共存，同类查询完成后可再建；旧退款提交保证与其余命令授权、首次发送保护不变。P3 退款恢复仍是同一提交命令的尝试。
 
 ### `core.settlement_batch` 与 `core.settlement_batch_line`
 
@@ -325,7 +343,7 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 ### P3 T03 实现备注（V15：io 表）
 
-- `outbound_command.id` 为 `cmd_` 加 26 位 ULID，`kind` 在 P3 只允许 `SUBMIT_REFUND`，P5 再扩展提现；恢复查询作为同一命令的尝试，不另建 QUERY 命令。`subject_id`、唯一 `request_id` 均为非空 text；保留通用命令表的跨对象引用，不设退款专用外键。`status` 限 `PENDING/IN_FLIGHT/UNKNOWN/DONE`，`attempts integer`、`lease_epoch bigint` 非负且默认 0。`next_attempt_at`、`created_at`、`recorded_at` 非空，租约两列、`first_sent_at`、`external_ref`、`last_outcome text` 可空。索引 `(status, next_attempt_at, created_at)` 支持抢占。`first_sent_at` 允许 NULL 首次写入、原值写回；一旦非空，触发器拒绝改值或清空（`23514`）。
+- `outbound_command.id` 为 `cmd_` 加 26 位 ULID，`kind` 在 P3 只允许 `SUBMIT_REFUND`；退款恢复查询作为同一命令的尝试，不另建 QUERY 命令。V21 扩展四种 kind，运营查询可另建命令（见 P5 T02 备注）。`subject_id`、`request_id` 均为非空 text；V15 的 request_id 全局唯一在 V21 改为提交键永久唯一、同类未完成查询唯一的两个部分索引。保留通用命令表的跨对象引用，不设退款专用外键。`status` 限 `PENDING/IN_FLIGHT/UNKNOWN/DONE`，`attempts integer`、`lease_epoch bigint` 非负且默认 0。`next_attempt_at`、`created_at`、`recorded_at` 非空，租约两列、`first_sent_at`、`external_ref`、`last_outcome text` 可空。索引 `(status, next_attempt_at, created_at)` 支持抢占。`first_sent_at` 允许 NULL 首次写入、原值写回；一旦非空，触发器拒绝改值或清空（`23514`）。
 - `outbound_attempt` 以 `(command_id, attempt_no)` 为联合主键，command_id 外键指向命令，attempt_no 为正 integer，lease_epoch 为非负 bigint；`sent_at/finished_at/recorded_at timestamptz`、`request_summary jsonb` 非空，`response_status integer`（若有则 100～599）、`response_body text`（保留原文）、`error text` 可空，以容纳超时或非 JSON 响应。每次调用结束后追加，包含旧租约迟到结果；UPDATE/DELETE/TRUNCATE 由触发器拒绝（`LL004`）。
 - `idempotency_record` 的 `(client_id, idem_key)` 为 text 联合主键；`request_fingerprint text`、`state`、`locked_until/created_at/expires_at/recorded_at timestamptz` 非空，state 限 `IN_PROGRESS/COMPLETED`；`response_status integer`（若有则 100～599）和 `response_body jsonb` 可空，允许处理中尚无响应。应用使用注入 Clock 写入 `expires_at = created_at + 24 小时`，数据库不使用当前时刻默认值。app 的 DELETE 是为清理过期 API 缓存而设的例外：清理条件由应用给出；永久业务去重和首次受理结果仍在不可删除的 refund 行中，不依赖此缓存。
 - V15 同时替换 `io.inbox_event.result` 与 `io.inbox_status_history.result` 的 CHECK，新增 `UNKNOWN_REFUND`。两表原有组合 CHECK 的 REJECTED 分支均允许它，PROCESSED 等分支仍拒绝；结果枚举有这两处 CHECK，以后必须一起改。
@@ -414,6 +432,12 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 ---
 
+### P5 T10 实现备注（提现页面，无新迁移）
+
+- `GET /api/payouts/{id}` 增加 `issues: [{id, category, status}]`，通过 readonly 的 `recon.v_issue` 读取该提现 subject 的差异；与其余详情共用 repeatable-read 快照，不暴露出站请求/响应原文。
+- 前端列表每页 20 条，按既有 reserved_at/id 倒序分页；详情显式刷新。总览直接显示后端的 `payoutInTransit`、`freeCash`，不在浏览器重算资金门槛；商户负可用以正数欠款呈现，零 free_cash 提示新提现暂无现金。
+- 表单以 `VITE_SIMULATOR_MODE=true` 显式启用，默认只读；网络失败保留原幂等键、金额与业务编号，4xx（处理中除外）允许修正后重新提交。此开关只控制界面，不代替服务端授权。AC-7.19 演示和运行说明见 `frontend/README.md`。
+
 ## 5. 模拟器（独立 schema，主应用不可见）
 
 - `sim_processor`（fake Stripe）：charge、refund、balance transaction、payout 的“真实”状态，字段命名跟 Stripe 一致；webhook 投递日志（每次尝试、是否故意重复/乱序/丢失/篡改）；结算单生成记录。
@@ -422,6 +446,15 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - `sim_truth`：场景编号、种子、注入的故障清单和预期差异（ground truth），对账测试和 Agent 评测共用。
 
 处理方和银行的状态分开存、分开推进，避免两边共享同一个错误（I6）。
+
+### P5 T01 实现备注（模拟器 V6）
+
+- `sim_bank.outgoing_payment`：`request_id text PK`（mpo_）、`payment_id text UNIQUE`（bpm_ 加请求号去掉 mpo_ 的后缀，确定性外部编号）、`account_ref FK account`、`amount bigint`（1～99999999）、`currency`（CAD）、非空 `destination`、`status`（ACCEPTED/EXECUTED/REJECTED/RETURNED）、可空 `reason`、`execution_date date`、可空 `return_due_date date`、冻结的 `plan jsonb` 对象、`recorded_at timestamptz`。新表由 simulator 拥有，PUBLIC、migrator、app、readonly 无权限。
+- `txn.payout_ref` 改为可空，增加 `request_id FK outgoing_payment`；CHECK 要求两个来源恰好一个非空，既有入账外键保留。出账/退回编号为 `bt_{requestId}_1` / `bt_{requestId}_R`，reference 均为 requestId。
+- `fault_plan` 扩展七种出站故障；HTTP 计划兼容 `payout_ref`，也接受 `target_ref`（两者不可同时出现），支持 mpo_ 或 *。UNAVAILABLE 的 parameter 是持久化剩余次数，每次 POST/GET 在账户锁内递减；列表 GET 消费全局 * 规则。其余执行计划在受理时冻结。TIMEOUT 不建付款行，但请求与故障真值仍记录。
+- 账户锁同时串行化付款去重、计划计数、执行与退回。推进按事件日期、退回优先、请求号顺序处理；可用银行余额只累计执行日期及以前的 BOOKED 流水。REJECT_ON_QUERY 永不执行；EXECUTE_AFTER_REJECT 仅在没有执行流水时尝试一次，余额不足后不再尝试。
+- 通配计划按入账/出账故障类型隔离：对当前方向不适用的故障冻结为 NONE，不记伪故障真值。EXECUTE_AFTER_REJECT 的初始拒绝原因固定为 BANK_REJECTED（memo 原因码仅供 REJECT/REJECT_ON_QUERY），与实际执行时的 INSUFFICIENT_FUNDS 区分。
+- 请求、执行、退回真值复用 `sim_truth.injected_fault`，fault 分别为 PAYMENT_REQUEST、PAYMENT_EXECUTED、PAYMENT_RETURNED；实际故障另记原故障名，正常事件 expected_category 为 NONE。全部时间取注入的模拟 Clock。
 
 ### P3 T06 实现备注（模拟器 V5）
 

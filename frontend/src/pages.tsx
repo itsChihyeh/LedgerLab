@@ -28,6 +28,7 @@ import {
 } from "./components";
 import { PaymentCorrectionHistory, ReversedNotice } from "./corrections";
 import { issueCategoryLabel, issueCategoryLabels } from "./issue-categories";
+import { PayoutBalances } from "./payouts";
 import { RefundSection } from "./refunds";
 
 export function OverviewPage() {
@@ -45,6 +46,10 @@ export function OverviewPage() {
                 <Money amount={data.bankCash} />
               </Field>
               <MerchantBalance available={data.merchantAvailable} />
+              <PayoutBalances
+                inTransit={data.payoutInTransit}
+                freeCash={data.freeCash}
+              />
               <Field name="退款待付">
                 <Money amount={data.refund_payable} />
               </Field>

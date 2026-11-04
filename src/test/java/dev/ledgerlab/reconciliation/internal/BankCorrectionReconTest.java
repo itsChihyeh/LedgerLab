@@ -47,14 +47,25 @@ class BankCorrectionReconTest {
                 f.manager,
                 f.clock,
                 f.ids,
-                new ReconProperties(Duration.ofSeconds(60), "p4-v2"),
+                new ReconProperties(Duration.ofSeconds(60), "p5-v1"),
                 List.of(
                         new BankRule(evidence, calendar, policy, json, f.jdbc),
                         new AgingRule(f.jdbc, calendar, policy, evidence, json, f.mapper)),
                 json,
                 f.mapper,
                 new IssueStore(f.jdbc, f.ids, f.clock, f.manager));
-        banks = new BankStatements(f.jdbc, f.ledger, f.issues, f.clock, f.ids, calendar, f.mapper, f.manager, 2);
+        banks = new BankStatements(
+                f.jdbc,
+                f.ledger,
+                f.issues,
+                f.clock,
+                f.ids,
+                calendar,
+                f.mapper,
+                f.manager,
+                2,
+                new dev.ledgerlab.payouts.internal.JdbcPayoutBankEvidence(
+                        f.jdbc, f.ledger, f.queue, new BusinessCalendar(), f.clock));
     }
 
     @AfterEach
@@ -114,6 +125,8 @@ class BankCorrectionReconTest {
                 new IssueStore(f.jdbc, f.ids, f.clock, f.manager),
                 f.rechecks,
                 new SettlementCorrections(f.jdbc, f.ledger),
+                new dev.ledgerlab.payouts.PayoutCorrections(
+                        f.jdbc, f.ledger, new dev.ledgerlab.shared.BusinessCalendar(), f.clock),
                 f.clock,
                 f.mapper,
                 f.manager);
@@ -133,7 +146,7 @@ class BankCorrectionReconTest {
     }
 
     private RunReport run(RunRequest.Kind kind, Instant cutoff, Instant asOf, boolean dry) {
-        return runs.run(new RunRequest(kind, cutoff, asOf, "p4-v2", List.of(), dry));
+        return runs.run(new RunRequest(kind, cutoff, asOf, "p5-v1", List.of(), dry));
     }
 
     private List<String> dispositions() {
@@ -249,10 +262,10 @@ class BankCorrectionReconTest {
         String correction = correct(false);
         f.clock.set(CORRECTED.plusSeconds(120));
         var partial =
-                new RunRequest(RunRequest.Kind.AGING, CUTOFF, CORRECTED.plusSeconds(1), "p4-v2", List.of(first), true);
+                new RunRequest(RunRequest.Kind.AGING, CUTOFF, CORRECTED.plusSeconds(1), "p5-v1", List.of(first), true);
         assertThat(runs.run(partial).summary()).containsEntry("DEPOSIT_NOT_RECEIVED", 1L);
         var complete = new RunRequest(
-                RunRequest.Kind.AGING, CUTOFF, CORRECTED.plusSeconds(1), "p4-v2", List.of(first, second), true);
+                RunRequest.Kind.AGING, CUTOFF, CORRECTED.plusSeconds(1), "p5-v1", List.of(first, second), true);
         assertThat(runs.run(complete).findings()).isEmpty();
         var snapshot =
                 evidence.read(new ReconRule.Context(complete, runs.run(complete).inputHashes()));

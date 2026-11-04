@@ -53,6 +53,32 @@ public final class JdbcIngestionIssues implements IngestionIssues {
     }
 
     @Override
+    public void resolvePayoutPaid(String payoutId, String bankTxnId, String evidenceRefs) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("Payout disposition requires the caller's transaction");
+        }
+        var open = jdbc.sql("""
+                SELECT id FROM recon.issue WHERE subject_type='payout' AND subject_id=:payout
+                  AND category='PAYOUT_UNRESOLVED' AND status='OPEN' ORDER BY id FOR UPDATE
+                """).param("payout", payoutId).query(String.class).list();
+        OffsetDateTime now = clock.instant().atOffset(ZoneOffset.UTC);
+        String explanation = "Payout paid by bank transaction " + bankTxnId;
+        for (String value : open) {
+            String id = java.util.Objects.requireNonNull(value);
+            jdbc.sql("UPDATE recon.issue SET status='RESOLVED', explanation=?, updated_at=? WHERE id=?")
+                    .params(explanation, now, id)
+                    .update();
+            jdbc.sql("""
+                    INSERT INTO recon.issue_transition
+                        (id, issue_id, from_status, to_status, reason, explanation, evidence_refs, recorded_at)
+                    VALUES (?, ?, 'OPEN', 'RESOLVED', 'EXPLAINED', ?, CAST(? AS jsonb), ?)
+                    """)
+                    .params(ids.next("itr"), id, explanation, evidenceRefs, now)
+                    .update();
+        }
+    }
+
+    @Override
     public void resolveBankReturn(String creditId, String debitId, String evidenceRefs) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Bank return disposition requires the caller's transaction");

@@ -12,6 +12,8 @@ spring:
     schemas: sim_processor
     create-schemas: false
 sim:
+  bank:
+    timeout: ${SIM_BANK_TIMEOUT:PT30S}
   relay:
     target-url: ${SIM_RELAY_TARGET_URL:http://localhost:8080/webhooks/stripe}
   stripe:

@@ -9,5 +9,10 @@ public record CorrectionResult(
         List<Map<String, Object>> targets,
         List<Map<String, Object>> entries,
         Affected affected) {
-    public record Affected(List<String> payments, List<String> batches, List<String> bankLines, List<String> issues) {}
+    public record Affected(
+            List<String> payments,
+            List<String> batches,
+            List<String> bankLines,
+            List<String> issues,
+            List<String> payouts) {}
 }

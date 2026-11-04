@@ -34,6 +34,7 @@ final class RefundModel {
     final Map<String, Long> captured;
     final SettlementModel settlement;
     final long availableBefore;
+    java.util.function.LongSupplier otherAvailable = () -> 0;
 
     RefundModel(Map<String, Long> captured, SettlementModel settlement, long availableBefore) {
         this.captured = captured;
@@ -93,6 +94,7 @@ final class RefundModel {
     void release() {
         long capacity = Math.addExact(availableBefore, settlement.deltas().getOrDefault(2102, 0L));
         capacity = Math.addExact(capacity, deltas().getOrDefault(2102, 0L));
+        capacity = Math.addExact(capacity, otherAvailable.getAsLong());
         for (Refund r : refunds.values())
             if (r.status.equals("AWAITING_FUNDS")) capacity = Math.addExact(capacity, r.amount);
         for (Refund r : refunds.values()) {

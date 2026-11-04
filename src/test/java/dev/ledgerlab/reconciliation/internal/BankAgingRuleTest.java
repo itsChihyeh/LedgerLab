@@ -2,7 +2,6 @@ package dev.ledgerlab.reconciliation.internal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import dev.ledgerlab.ledger.internal.JdbcLedger;
 import dev.ledgerlab.settlement.BankStatements;
 import dev.ledgerlab.shared.BusinessCalendar;
 import dev.ledgerlab.shared.IdGenerator;
@@ -32,7 +31,7 @@ class BankAgingRuleTest {
                 manager,
                 f.clock,
                 ids,
-                new ReconProperties(java.time.Duration.ofSeconds(60), "p4-v2"),
+                new ReconProperties(java.time.Duration.ofSeconds(60), "p5-v1"),
                 List.of(
                         new ProcessorRule(f.jdbc, calendar, json, f.mapper, policy),
                         new BankRule(evidence, calendar, policy, json, f.jdbc),
@@ -42,14 +41,15 @@ class BankAgingRuleTest {
                 new IssueStore(f.jdbc, ids, f.clock, manager));
         bank = new BankStatements(
                 f.jdbc,
-                new JdbcLedger(f.source, f.clock, ids),
+                f.ledger,
                 new JdbcIngestionIssues(f.jdbc, ids, f.clock),
                 f.clock,
                 ids,
                 new BusinessCalendar(),
                 f.mapper,
                 manager,
-                2);
+                2,
+                f.payoutBankEvidence);
     }
 
     @AfterEach
@@ -58,7 +58,7 @@ class BankAgingRuleTest {
     }
 
     RunReport run(RunRequest.Kind kind, Instant cutoff, Instant evidence, boolean dry) {
-        return f.runs.run(new RunRequest(kind, cutoff, evidence, "p4-v2", List.of(), dry));
+        return f.runs.run(new RunRequest(kind, cutoff, evidence, "p5-v1", List.of(), dry));
     }
 
     String statement(String date, int version, long opening, long closing, String... rows) {
@@ -96,7 +96,7 @@ class BankAgingRuleTest {
         var rule = new AgingRule(f.jdbc, new BusinessCalendar(), policy, new BankEvidence(f.jdbc), json, f.mapper);
         java.util.function.Function<Instant, List<Finding>> inspect = asOf -> rule.evaluate(new ReconRule.Context(
                 new RunRequest(
-                        RunRequest.Kind.AGING, Instant.parse("2026-11-10T05:00:00Z"), asOf, "p4-v2", List.of(), true),
+                        RunRequest.Kind.AGING, Instant.parse("2026-11-10T05:00:00Z"), asOf, "p5-v1", List.of(), true),
                 java.util.Map.of()));
         assertThat(inspect.apply(known)).isEmpty();
         assertThat(inspect.apply(known.plusSeconds(1))).isEmpty();
@@ -132,6 +132,35 @@ class BankAgingRuleTest {
         assertThat(finding.subjectId()).isEqualTo(f.paymentId("ch_old"));
         assertThat(finding.expected()).contains("已过 3 个工作日", "2026-11-10T05:00:00Z");
         assertThat(report.summary().toString()).contains("老化只能发现有开始记录、没有结束记录的义务");
+    }
+
+    @Test
+    void ac_7_12_unknownPayoutDebitDoesNotPostAndBankBalanceReportsDifference() {
+        f.payment("ch_unknown_payout", 10000, ProcessorRuleTest.CAPTURED);
+        f.batch(
+                "po_unknown_payout",
+                ProcessorRuleTest.CAPTURED,
+                List.of(f.localLine("txn_unknown_payout", "ch_unknown_payout", 10000, 320)));
+        statement("2026-11-10", 1, 0, 9680, credit("deposit", 9680, "po_unknown_payout", "2026-11-10"));
+        long entries = f.jdbc.sql("SELECT count(*) FROM ledger.journal_entry")
+                .query(Long.class)
+                .single();
+        statement(
+                "2026-11-10",
+                2,
+                0,
+                0,
+                credit("deposit", 9680, "po_unknown_payout", "2026-11-10"),
+                "D,unknown-payout,DEBIT,9680,CAD,BOOKED,mpo_absent,2026-11-10,2026-11-10,Payout");
+        assertThat(f.jdbc.sql("SELECT count(*) FROM ledger.journal_entry")
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(entries);
+        assertThat(status("UNMATCHED_BANK_LINE", "unknown-payout")).isEqualTo("OPEN");
+        f.clock.set(ProcessorRuleTest.AS_OF.plusSeconds(61));
+        var report = run(RunRequest.Kind.BANK, ProcessorRuleTest.CUTOFF, ProcessorRuleTest.AS_OF, false);
+        assertThat(f.finding(report, "BANK_BALANCE_MISMATCH").actual())
+                .contains("\"difference\":-9680", "\"cash\":9680");
     }
 
     @Test
@@ -381,7 +410,7 @@ class BankAgingRuleTest {
                 RunRequest.Kind.BANK,
                 ProcessorRuleTest.CUTOFF,
                 ProcessorRuleTest.AS_OF.plusSeconds(1),
-                "p4-v2",
+                "p5-v1",
                 List.of(pending),
                 true));
         assertThat(pinned.summary())
