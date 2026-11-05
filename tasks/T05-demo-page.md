@@ -9,6 +9,9 @@ demo-and-delivery.md 第 2、6、7 节；现有前端（`frontend/src/*`、`fron
 3. AC-9.2 的故障开关：test profile 专用 `ledgerlab.test.break-refund-lock`（第 6 节），并加单元测试断言 demo/default 上下文里不存在该 bean。
 4. Playwright：`ac_9_1_everyActionUpdatesTimelineAndInvariants`（依次点 8 个按钮，每个 2 秒内时间线出现新条目、面板全绿、对应计数增加）；`ac_9_2_brokenLockShowsInv7Failure`（用 break-refund-lock 配置起后端，点 double-refund，面板显示 INV-7 失败和支付编号）；`ac_9_7_sandboxReportPanel`（有/无报告文件两种）。沿用现有 E2E 启动方式（自动起测试后端和 Vite）。
 
+## 审查补充（2026-11-05）
+见 `answers/T02-T03-review.md`：计数卡片区分“账本查询”和“演示动作观察到的”；kill-worker 的说明按“重新领取租约（代数 +1）”写；E2E 断言内部令牌头的值不出现在页面拿到的任何响应里。
+
 ## 可改范围
 `frontend/**`、`src/main/java/dev/ledgerlab/**`（只限 test profile 的故障开关和它的测试）、`docs/design/demo-and-delivery.md`。
 

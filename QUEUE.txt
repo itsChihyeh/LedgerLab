@@ -5,6 +5,7 @@ T01-runtime-invariants.md
 T02-demo-actions.md
 T03-public-guard-rate-limit.md
 T04-demo-stack-reset.md
+T04b-ci-simulator-jar-admin-sources.md
 T05-demo-page.md
 T06-perf-baseline.md
 T07-deploy-plan.md
