@@ -5,7 +5,7 @@
 ## 执行者（2026-11-05 起，用户定：架构与执行分开，换模型、换上下文）
 每个任务起一个**全新上下文**的 Sonnet 进程实现：
 `Get-Content <prompt> -Raw | claude -p --model claude-sonnet-5-5 --permission-mode acceptEdits --allowedTools "<白名单>" --output-format text *> <编号>-out.md`（工作目录＝仓库根；参数名在当前 CLI 版本不同就用等价参数）。
-白名单只放构建、测试、本地提交需要的：`Bash(./mvnw:*)`、`Bash(.\mvnw.cmd:*)`、`Bash(sh scripts/:*)`、`Bash(python:*)`、`Bash(npm:*)`、`Bash(npx:*)`、`Bash(git status:*)`、`Bash(git diff:*)`、`Bash(git log:*)`、`Bash(git add:*)`、`Bash(git commit:*)`、`Bash(docker:*)`，以及读写文件的内置工具。**不给** `git push`，不跳过权限审批；仓库 `.claude/settings.json` 和 hooks 照常生效。提示词只用 `tasks/_common.md`＋空行＋任务文件（＋`answers/<编号>.md`），不要塞你自己的上下文。提示词、日志、输出放 `C:\Users\zhiye\Documents\找工作\tmp\ledgerlab-p7\`。单个任务最长 3 小时；碰到 Claude 用量上限就停在等待、写报告。
+白名单只放构建、测试、本地提交需要的：`Bash(./mvnw:*)`、`Bash(.\mvnw.cmd:*)`、`Bash(python:*)`、`Bash(npm:*)`、`Bash(npx:*)`、`Bash(git status:*)`、`Bash(git diff:*)`、`Bash(git log:*)`、`Bash(git add:*)`、`Bash(git commit:*)`、`Bash(docker:*)`，以及读写文件的内置工具。**脚本用精确规则**（2026-11-05 实测前缀规则 `Bash(sh scripts/:*)` 在非交互模式不生效）：每个任务按任务文件里出现的脚本，逐个加 `Bash(sh <脚本路径>)` 和带参数的 `Bash(sh <脚本路径>:*)`，例如 T04：`scripts/demo/up.sh`、`down.sh`、`status.sh`、`reset.sh`、`check-reset.sh`；T06：`perf/run.sh`；以及 `Bash(python scripts/demo/selftest.py)` 这类自检。不放通配的 `sh`。**不给** `git push`，不跳过权限审批；仓库 `.claude/settings.json` 和 hooks 照常生效。提示词只用 `tasks/_common.md`＋空行＋任务文件（＋`answers/<编号>.md`），不要塞你自己的上下文。提示词、日志、输出放 `C:\Users\zhiye\Documents\找工作\tmp\ledgerlab-p7\`。单个任务最长 3 小时；碰到 Claude 用量上限就停在等待、写报告。
 
 ## 分支
 - `p7`：代码（从 `p6` 建）。只有你 push。
