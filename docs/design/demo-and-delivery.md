@@ -162,6 +162,6 @@ P6 的 T07/T08 在等 Stripe 首笔自动 payout。P7 分支 `p7` 从 `p6` 建�
 ## 19. 实现备注（P7 T07，2026-11-05）
 
 - **只写不做**：`docs/deploy/aws-plan.md`（开头是“需要用户做的事”）、`deploy/Caddyfile`、`deploy/cloud-init.yaml`（草稿，含待填占位符）、`deploy/README.md`、`deploy/price-check.py`（只读公开价格文件）。没有执行任何 AWS 操作。
-- **价格未核实**：执行环境不能联网，aws-plan.md 的月费是标明“未核实”的粗估，查询日期留空；用户运行 `deploy/price-check.py` 或看官方页后填入。AC-9.11 要求的官方价格和查询日期要等核实后才算完成。
+- **价格部分核实**：EC2 `t4g.small`／`t4g.medium` 按需价已由 `deploy/price-check.py` 在本机于 2026-11-05 查得（0.0184／0.0368 USD/小时，ca-central-1）；其余项在 aws-plan.md 中标“估算”并附官方链接，用户用 Pricing Calculator 核价。AC-9.11 在 T09 验收清单中标“部分满足：价格待用户核实”。
 - **Caddyfile**：对 `/api/demo/seed`、`/webhooks/*`、`/sim/*`、`/relay/*` 返回 404；覆盖写 `X-Forwarded-For`，去掉 `X-Real-IP`／`Forwarded`；关闭 SSE 缓冲。
-- **已知缺口**：限流器要识别真实访客，app 需收到 `LEDGERLAB_DEMO_TRUSTED_PROXIES=10.89.77.1/32`，而 `compose.demo.yaml` 目前不传这个变量（见 aws-plan.md），部署前需要一个小任务补上。
+- **依赖 T04c**：限流器要识别真实访客，部署时 app 需收到 `LEDGERLAB_DEMO_TRUSTED_PROXIES=10.89.77.1/32`；`compose.demo.yaml` 的传递由小任务 T04c 补上，T07 不改。

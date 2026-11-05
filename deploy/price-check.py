@@ -13,7 +13,7 @@ import urllib.request
 
 REGION = sys.argv[1] if len(sys.argv) > 1 else 'ca-central-1'
 URL = 'https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/%s/index.json' % REGION
-WANTED_TYPES = {'t4g.small', 't4g.medium'}
+WANTED_TYPES = {'t4g.small', 't4g.medium', 't3.small'}
 
 
 def on_demand_usd(terms, sku):
