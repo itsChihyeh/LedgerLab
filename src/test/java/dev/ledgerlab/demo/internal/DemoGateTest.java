@@ -107,6 +107,8 @@ class DemoGateTest {
         assertThat(DemoPathWhitelist.classify("POST", "/api/demo/seed")).isEqualTo(Kind.ACTION);
         assertThat(DemoPathWhitelist.classify("POST", "/api/demo/visit")).isEqualTo(Kind.OPEN);
         assertThat(DemoPathWhitelist.classify("GET", "/api/demo/summary")).isEqualTo(Kind.OPEN);
+        assertThat(DemoPathWhitelist.classify("GET", "/api/demo/archive")).isEqualTo(Kind.OPEN);
+        assertThat(DemoPathWhitelist.classify("POST", "/api/demo/archive")).isEqualTo(Kind.BLOCKED);
         assertThat(DemoPathWhitelist.classify("GET", "/api/demo/stream")).isEqualTo(Kind.STREAM);
         assertThat(DemoPathWhitelist.classify("POST", "/webhooks/stripe")).isEqualTo(Kind.WEBHOOK);
     }

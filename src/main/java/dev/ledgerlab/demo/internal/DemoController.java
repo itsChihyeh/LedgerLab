@@ -23,11 +23,13 @@ final class DemoController {
     private final DemoActions actions;
     private final DemoEvents events;
     private final DemoStats stats;
+    private final DemoArchive archive;
 
-    DemoController(DemoActions actions, DemoEvents events, DemoStats stats) {
+    DemoController(DemoActions actions, DemoEvents events, DemoStats stats, DemoArchive archive) {
         this.actions = actions;
         this.events = events;
         this.stats = stats;
+        this.archive = archive;
     }
 
     @PostMapping("/actions/{action}")
@@ -64,6 +66,11 @@ final class DemoController {
         body.put("pageViews", stats.pageViews());
         body.put("invariants", actions.lastInvariants());
         return body;
+    }
+
+    @GetMapping("/archive")
+    Map<String, Object> archive() {
+        return archive.read();
     }
 
     private ResponseEntity<Map<String, Object>> answer(java.util.function.Supplier<Map<String, Object>> action) {

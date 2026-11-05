@@ -123,3 +123,13 @@ P6 的 T07/T08 在等 Stripe 首笔自动 payout。P7 分支 `p7` 从 `p6` 建�
 - **配置项**：`ledgerlab.demo.trusted-proxies`、`webhook-allowed-sources`、`actions-per-ip-per-minute`（20）、`actions-per-minute`（300）、`streams-per-ip`（3），默认值在 `application-demo.yaml` 和 `DemoProperties`。
 - **已知缺口（留给后续）**：`POST /api/demo/seed` 按设计 5 节由 `reset.sh` 从外部调用，所以它在公开白名单里，只受动作限流约束；若要只允许运维调用，需要另加来源限制或口令（见任务输出里的问题）。
 - **测试**：`DemoGateTest`（无 Docker，手动时钟：白名单表、客户端地址、令牌桶、过滤器、SSE 名额归还）；`DemoPublicSurfaceTest`（真实应用和库：写接口逐一 404、读 200、默认 profile 写接口不变、webhook 来源、第 21 次动作 429 且分录数和 inbox 数不变、可信代理后的全站上限、不可信来源伪造头无效、第 4 个流 429）；`DemoModuleTest.ac_9_3_noModuleDependsOnDemo` 为 T02 已有。
+
+## 15. 实现备注（P7 T04，2026-11-05）
+
+- **前端怎么进 app**：选 Dockerfile 多阶段（`docker/demo/Dockerfile`）：node 阶段 `npm ci && npm run build`，JDK 阶段用 `jar --update` 把 `dist/` 放进已构建 jar 的 `BOOT-INF/classes/static/`，最终镜像仍是 JRE。Maven 默认构建和 CI 完全不变（没有加 `-Pwith-frontend`）；干净机器只需要 Docker 和 JDK，不需要装 Node。构建上下文是仓库根，`docker/demo/Dockerfile.dockerignore` 只放行前端源码和 app jar。
+- **栈**：`compose.demo.yaml` 独立文件（不读 `.env`，不叠加 `compose.yaml`），`name: ledgerlab-demo`，数据库 `ledgerlab_demo`，端口 28080/28081/25432 只绑 127.0.0.1。所有 Docker 调用由 `scripts/demo/demo.py` 发出，显式带 `-f`／`-p`，清掉 `COMPOSE_*` 环境变量，不会碰 `ledgerlab-sandbox`。数据库口令首次随机生成到 `.demo/secrets.env`（已 gitignore）；fake Stripe 的公开测试假值从 `compose.smoke.env` 读取，不在新文件里再写一份。
+- **webhook 来源**：Compose 网络固定为 `10.89.77.0/24`，simulator 固定 `10.89.77.10`，app 的 `LEDGERLAB_DEMO_WEBHOOK_SOURCES` 只放这一个地址。若这个网段与本机其他网络冲突，改 `compose.demo.yaml` 里两处。
+- **模拟时钟**：`up` 把 `SIM_CLOCK_START` 设为现在往前 14 天（第 5 节的建议），每次重置重新计算。
+- **脚本**：`up`（构建 jar、起栈、等健康、已有数据则不重复种子，否则调 `/api/demo/seed`、确认 12 条不变量全 ok、写 `last-reset.txt`）、`down`（`down -v`，保留 `.demo/` 里的口令与存档）、`status`、`reset`、`check-reset`。`reset`：先把 `GET /api/demo/summary`（不变量换成现取的审计结果）加 `archivedAt` 存到 `.demo/archive/<UTC 日期>.json`（同一天第二次重置加时间后缀，不覆盖第一份）；设置环境变量 `DEMO_ARCHIVE_EXTRA_DIR` 时同时复制一份到该目录；host 目录只保留最新 7 份；然后 down、up、种子、确认不变量。
+- **存档读取**：`.demo/archive` 以只读方式挂进 app（`/demo-archive`，`ledgerlab.demo.archive-dir`）。`GET /api/demo/archive`（在白名单里，只读）返回 `{lastReset, archive:[{file, summary}…最近 7 份，新的在前]}`；目录缺失或文件损坏时按空历史处理。`DemoArchiveTest` 无需 Docker。页面展示留给前端任务。
+- **验证**：`scripts/demo/selftest.py` 检查脚本里的纯函数；`check-reset.sh` 起栈、跑 `pay`／`replay-webhook`／`double-refund`、重置，断言存档存在且与重置前一致、动作计数归零、库回到 3 笔种子支付、不变量全 ok、`lastReset` 前进、`/api/demo/archive` 列出新存档、`down` 后无遗留容器／卷／网络、`ledgerlab-sandbox` 容器集合前后不变，证据写入 `target/demo/check-reset-*.json`。

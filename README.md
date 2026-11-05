@@ -20,6 +20,13 @@ sh scripts/sandbox/traffic.sh --count 20 --card pm_card_bypassPending --seed 1
 sh scripts/sandbox/accept.sh --only ac-8.4   # repeat without generating more payments
 sh scripts/sandbox/status.sh
 sh scripts/sandbox/down.sh                 # optional stop; preserves volumes
+
+# Local break-it demo (fake Stripe + simulated bank, project ledgerlab-demo, app on 127.0.0.1:28080):
+sh scripts/demo/up.sh                       # build, start, seed, check all invariants
+sh scripts/demo/status.sh
+sh scripts/demo/reset.sh                    # archive today's summary, down -v, up, seed (the daily reset)
+sh scripts/demo/down.sh                     # remove the stack and its volumes
+sh scripts/demo/check-reset.sh              # up -> actions -> reset -> assertions -> down; evidence in target/demo/
 ```
 
 ## 三进程本地演示

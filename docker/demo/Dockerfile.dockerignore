@@ -1,0 +1,9 @@
+*
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/index.html
+!frontend/tsconfig.json
+!frontend/vite.config.ts
+!frontend/biome.json
+!frontend/src
+!target/ledgerlab-0.0.1-SNAPSHOT.jar

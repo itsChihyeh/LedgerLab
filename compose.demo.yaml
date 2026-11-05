@@ -1,0 +1,100 @@
+# The local break-it demo stack (docs/design/demo-and-delivery.md section 1). Standalone: it does not read
+# .env or compose.yaml. Always start it through scripts/demo/*.sh, which pick the project name, generate the
+# database passwords into .demo/secrets.env and supply every ${...} below. Ports are bound to 127.0.0.1 only.
+# The simulator carries no real Stripe credential: fake Stripe signs with the public synthetic test values.
+name: ledgerlab-demo
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: ledgerlab_demo
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/demo/up.sh}
+      LEDGERLAB_MIGRATOR_PASSWORD: ${LEDGERLAB_MIGRATOR_PASSWORD:?run scripts/demo/up.sh}
+      LEDGERLAB_APP_PASSWORD: ${LEDGERLAB_APP_PASSWORD:?run scripts/demo/up.sh}
+      LEDGERLAB_READONLY_PASSWORD: ${LEDGERLAB_READONLY_PASSWORD:?run scripts/demo/up.sh}
+      LEDGERLAB_SIMULATOR_PASSWORD: ${LEDGERLAB_SIMULATOR_PASSWORD:?run scripts/demo/up.sh}
+    ports:
+      - "127.0.0.1:25432:5432"
+    volumes:
+      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
+      - demo-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ledgerlab_demo"]
+      interval: 2s
+      retries: 30
+    networks: [demo]
+
+  simulator:
+    build:
+      context: ./simulator/target
+      dockerfile: ../../docker/smoke/Dockerfile
+      args:
+        JAR_FILE: ledgerlab-simulator-0.0.1-SNAPSHOT.jar
+    environment:
+      SIM_DATABASE_URL: jdbc:postgresql://postgres:5432/ledgerlab_demo
+      LEDGERLAB_SIMULATOR_PASSWORD: ${LEDGERLAB_SIMULATOR_PASSWORD:?run scripts/demo/up.sh}
+      SIM_STRIPE_API_KEY: ${DEMO_FAKE_STRIPE_API_KEY:?run scripts/demo/up.sh}
+      SIM_STRIPE_WEBHOOK_SECRET: ${DEMO_FAKE_STRIPE_WEBHOOK_SECRET:?run scripts/demo/up.sh}
+      SIM_STRIPE_WEBHOOK_URL: http://localhost:8081/relay/stripe
+      SIM_RELAY_TARGET_URL: http://app:8080/webhooks/stripe
+      # Start the simulated clock in the past so the days the bank actions advance never outrun real time
+      # before the next daily reset.
+      SIM_CLOCK_START: ${DEMO_SIM_CLOCK_START:?run scripts/demo/up.sh}
+      SIM_SEED: "513"
+    ports:
+      - "127.0.0.1:28081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8081; printf 'GET /sim/clock HTTP/1.0\r\n\r\n' >&3; head -1 <&3 | grep -q ' 200 '"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+    networks:
+      demo:
+        ipv4_address: 10.89.77.10
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/demo/Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: demo
+      LEDGERLAB_DB_URL: jdbc:postgresql://postgres:5432/ledgerlab_demo
+      LEDGERLAB_MIGRATOR_PASSWORD: ${LEDGERLAB_MIGRATOR_PASSWORD:?run scripts/demo/up.sh}
+      LEDGERLAB_APP_PASSWORD: ${LEDGERLAB_APP_PASSWORD:?run scripts/demo/up.sh}
+      LEDGERLAB_READONLY_PASSWORD: ${LEDGERLAB_READONLY_PASSWORD:?run scripts/demo/up.sh}
+      STRIPE_API_KEY: ${DEMO_FAKE_STRIPE_API_KEY:?run scripts/demo/up.sh}
+      STRIPE_WEBHOOK_SECRET: ${DEMO_FAKE_STRIPE_WEBHOOK_SECRET:?run scripts/demo/up.sh}
+      STRIPE_API_BASE_URL: http://simulator:8081
+      LEDGERLAB_DEMO_SIMULATOR_URL: http://simulator:8081
+      # Only the stack's relay may deliver the processor webhook (section 4).
+      LEDGERLAB_DEMO_WEBHOOK_SOURCES: 10.89.77.10/32
+      LEDGERLAB_DEMO_ARCHIVE_DIR: /demo-archive
+    volumes:
+      - ${DEMO_ARCHIVE_DIR:?run scripts/demo/up.sh}:/demo-archive:ro
+    ports:
+      - "127.0.0.1:28080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      simulator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080; printf 'GET /api/overview HTTP/1.0\r\n\r\n' >&3; head -1 <&3 | grep -q ' 200 '"]
+      interval: 2s
+      timeout: 5s
+      retries: 90
+    networks: [demo]
+
+networks:
+  demo:
+    ipam:
+      config:
+        - subnet: 10.89.77.0/24
+
+volumes:
+  demo-pgdata:

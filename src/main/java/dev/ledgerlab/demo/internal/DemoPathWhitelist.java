@@ -54,6 +54,7 @@ final class DemoPathWhitelist {
         if (post && size == 3 && name.equals("seed")) return Kind.ACTION;
         if (post && size == 3 && name.equals("visit")) return Kind.OPEN;
         if (get && size == 3 && name.equals("summary")) return Kind.OPEN;
+        if (get && size == 3 && name.equals("archive")) return Kind.OPEN;
         if (get && size == 3 && name.equals("stream")) return Kind.STREAM;
         return Kind.BLOCKED;
     }
