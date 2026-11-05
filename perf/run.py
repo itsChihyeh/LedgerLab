@@ -456,8 +456,10 @@ def report_md(doc):
         if m['drained_in_rounds'] == cfg['rounds']:
             drain = '%s s（实测）' % f(m['drain_seconds_measured'], 0)
         else:
-            drain = '%d/%d 轮在 %d s 内排空；其余按实测处理速度估算 %s s' % (
-                m['drained_in_rounds'], cfg['rounds'], cfg['w1_drain_cap_s'], f(m['drain_seconds_estimated'], 0))
+            total = (cfg['w1_drain_cap_s'] + m['drain_seconds_estimated']) if m['drain_seconds_estimated'] else None
+            drain = '%d/%d 轮在 %d s 上限内排空；到上限时剩 %s 条，按实测速度估算总计约 %s s' % (
+                m['drained_in_rounds'], cfg['rounds'], cfg['w1_drain_cap_s'], f(m['backlog_left_at_cap'], 0),
+                f(total, 0))
         lines.append('| %d | %s | %s | %s | %s | %s | %s | %s | %s |' % (
             rate, f(m['achieved_rps']), pct(m['error_rate']), f(m['p50_ms'], 2), f(m['p95_ms'], 2),
             f(m['p99_ms'], 2), f(m['backlog_at_load_end'], 0), f(m['inbox_processing_rate_per_s']), drain))
@@ -498,7 +500,7 @@ def analysis_text(med, cfg):
     parts.append(
         '**退款受理被 2102 串行。** 1 并发实测 %s TPS，%d 并发实测 %s TPS（%s 倍）。并发没有把吞吐按比例抬高，'
         '而是把等待时间转成延迟：%d 并发下 p95 为 %s ms，1 并发下为 %s ms。这与 ADR-0004 的预期一致：单商户下所有改余额的事务'
-        '先锁同一行 `funds_lock`，临界区内要读额度、写分录和命令，所以吞吐上限约等于 1 / 临界区时长。' % (
+        '先锁同一行 `funds_lock`，并发的请求在锁上排队。本基线没有单独测量锁等待时间，这是由吞吐和延迟的形状做出的判断。' % (
             f(s['tps']), cfg['w2_concurrency'], f(c['tps']), f(ratio, 2) if ratio else '—', cfg['w2_concurrency'],
             f(c['p95_ms'], 1), f(s['p95_ms'], 1)))
     parts.append(
@@ -514,6 +516,14 @@ def analysis_text(med, cfg):
 
 
 def main():
+    if '--report' in sys.argv:
+        path = Path(sys.argv[sys.argv.index('--report') + 1])
+        doc = json.loads(path.read_text(encoding='utf-8'))
+        doc['analysis'] = analysis_text(doc['median'], doc['config'])
+        path.with_suffix('.json').write_text(json.dumps(doc, indent=2, sort_keys=True) + '\n',
+                                           encoding='utf-8')
+        path.with_suffix('.md').write_text(report_md(doc), encoding='utf-8')
+        return 0
     started = utcnow()
     say('config: %s' % json.dumps(CFG))
     build_artifacts()

@@ -27,6 +27,8 @@ sh scripts/demo/status.sh
 sh scripts/demo/reset.sh                    # archive today's summary, down -v, up, seed (the daily reset)
 sh scripts/demo/down.sh                     # remove the stack and its volumes
 sh scripts/demo/check-reset.sh              # up -> actions -> reset -> assertions -> down; evidence in target/demo/
+# k6 performance baseline (own project ledgerlab-perf, about an hour): sh perf/run.sh
+# Report: docs/perf/baseline-2026-11-05.md
 ```
 
 ## 三进程本地演示

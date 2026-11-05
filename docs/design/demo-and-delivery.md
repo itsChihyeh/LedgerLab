@@ -149,3 +149,12 @@ P6 的 T07/T08 在等 Stripe 首笔自动 payout。P7 分支 `p7` 从 `p6` 建�
 - **故障开关（AC-9.2）**：`ledgerlab.test.break-refund-lock=true` 对应测试源码集里的 `BrokenRefundLimitGuard`（`@Primary`、`@ConditionalOnProperty`）：不锁资金锁、不锁支付行，读出已退额后等第二个请求到达同一点（最多 2 秒），再写入过期的合计，之后才取资金锁（与 AC-3.13 的丢失更新变体同一手法）。退款 HTTP 入口（幂等层）本来就先取资金锁，单换守卫挡不住串行化（首次 E2E 实测两笔里仍有一笔被拒），所以同一开关还启用 `BrokenRefundApiPostProcessor`：把 `RefundApi` 重建在一个 `lockFunds` 什么都不做的账本视图上，真正的锁推迟到守卫里。主代码唯一改动：`JdbcRefunds` 的 Spring 构造器通过 `ObjectProvider<RefundLimitGuard>` 取守卫，没有别的守卫时仍用 `LockedRefundLimitGuard`；原公开构造器保留。`RefundLockSwitchTest` 断言默认和 demo 上下文里没有这个 bean、实际使用的是锁定版本，显式打开时才换成故障版。
 - **E2E 后端**：`DemoE2eApplication`（测试源码集）= `DemoStack`（固定端口 8080）＋真实 simulator jar＋与 reset 相同的种子；8090 的回环控制口提供 `/ready` 和 `/internal-token`（仅供“令牌不外泄”断言）。场景 `demo`（`demo.spec.ts`）与 `demo-broken-lock`（`demo-broken.spec.ts`）并入 `npm run test:e2e`；`npm run test:e2e -- --scenario=demo` 只跑一个场景。启动后端的参数是 `-Dspring-boot.run.main-class`（原来的 `spring-boot.test-run.main-class` 不被插件识别，只是以前只有一个候选主类所以碰巧可用）。simulator jar 不存在时 `run.mjs` 先构建。
 - **令牌不外泄**：`ac_9_3_internalTokenNeverReachesThePage` 收集页面收到的每个响应（头和正文）以及页面自己 EventSource 收到的每条原始消息，断言搜不到令牌值和头名。
+
+## 18. 实现备注（P7 T06，2026-11-05）
+
+- **栈**：`compose.perf.yaml` 是独立文件（不是叠加文件），项目 `ledgerlab-perf`，端口 38080/38081/35432，数据库 `ledgerlab_perf`，**默认 Spring profile**（demo profile 会把 webhook 和退款路由关掉，负载场景要直接调它们）。口令首次随机生成到 `perf/.state/secrets.env`（已 gitignore）；fake Stripe 的公开测试假值来自 `compose.smoke.env`。k6 用 `grafana/k6:2.3.0`（2026-11-05 从官方 `latest` 镜像读到的当前版本 v2.3.0，镜像创建于 2026-10-24），挂进被测栈的 Compose 网络直接访问 `app:8080`，不经宿主端口转发。
+- **每次测量一个全新的栈**：W1 的每个速率档、W2＋W3 各用一个新栈，一轮 = 4 个栈，3 轮共 12 个栈；这样 inbox 积压不会带进下一次测量。每个栈测完都调 `/api/audit/invariants`，任何一项失败或 inbox 事件数与 k6 记到的 2xx 数不符，整轮作废（退出码 1，报告标明）。
+- **W1**：`charge.succeeded`，事件号唯一，签名在 k6 里用 `k6/crypto` 的 HMAC-SHA256 算。默认配置下 inbox worker 每秒轮询、每次最多领 20 条，实测处理速度约 18 条/秒，所以 50/100/200 rps 的积压都排不完；排空等待上限 180 秒，没排空的用这段时间内实测的处理速度估算总排空时间，报告里明确标为估算。任务说明里“20～40 分钟”的估计偏低：完整一次实测约 54 分钟。
+- **W2**：200 笔 20000 分的支付由 fake Stripe 创建、一个 payout 确认；对它们受理退款，先 1 并发再 20 并发各 200 笔（每笔 1000 分）。没有单独测锁等待，报告的“2102 串行”是由吞吐与延迟形状得出的判断，已写明。
+- **未做**：多商户场景；调大 inbox 批量或缩短轮询的对照（需要另一组配置，也许值得作为后续任务）。
+- `perf/run.py --report <json>` 用已存的原始数据重新生成 Markdown，不重跑。
