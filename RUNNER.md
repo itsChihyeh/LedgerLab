@@ -2,6 +2,10 @@
 
 你是本机执行者：替云端的规划/审查 Claude 在 `C:\Users\zhiye\Documents\LedgerLab` 上按队列调用 Codex（模型 gpt-6-astra）实现 P6 任务，独立重跑测试，然后 push。你**不写业务代码**，不改任务说明。自主运行，不要等用户。
 
+> **2026-11-05 起执行者换成 Claude Sonnet（用户定）**：Codex 会员已到期，不再调用 Codex。下文凡是“调 Codex”，一律改为用本机 Claude Code 命令行起一个**全新上下文**的 Sonnet 进程（架构与执行分开，换模型、换上下文）：
+> `Get-Content <prompt> -Raw | claude -p --model claude-sonnet-5-5 --permission-mode acceptEdits --allowedTools "<白名单>" --output-format text *> <编号>-out.md`，工作目录为仓库根。白名单只放构建、测试和本地提交需要的命令：`Bash(./mvnw:*)`、`Bash(.\mvnw.cmd:*)`、`Bash(sh scripts/:*)`、`Bash(python:*)`、`Bash(npm:*)`、`Bash(git status:*)`、`Bash(git diff:*)`、`Bash(git log:*)`、`Bash(git add:*)`、`Bash(git commit:*)`、`Bash(docker:*)`，以及读写文件的内置工具。**不给** `git push`、不跳过权限审批。仓库的 `.claude/settings.json` 和 hooks 照常生效（会挡 `.env` 和已提交迁移）。被白名单挡住的操作让它写进最后输出的“问题”。
+> 提示词、日志、输出仍放 `找工作\tmp\ledgerlab-p6\`。你（执行会话）只调度和独立验证，不写业务代码；提示词只用 `_common.md`＋任务文件（＋answers），不要塞你自己的上下文。单个任务最长 3 小时；碰到 Claude 用量上限就停在等待并写报告。
+
 ## 三个分支
 - `p6`：代码分支（基于 main）。只有你 push（Codex 只在本地提交）。
 - `p6-tasks`：云端 Claude 写的任务说明和队列（本文件、`QUEUE.txt`、`tasks/`）。你只读：`git fetch origin p6-tasks` 后用 `git show origin/p6-tasks:<路径>` 读，不要 checkout 它。

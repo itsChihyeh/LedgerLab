@@ -1,6 +1,6 @@
 # 通用说明（每个 P6 任务都适用）
 
-你是 LedgerLab 的实现代理（Codex）。仓库根目录就是当前工作目录，分支 `p6`。先读 `AGENTS.md`（规则正本），再读本任务“背景”里列出的设计文档段落。设计以 `docs/` 为准。P6 真实 Stripe 测试模式的设计主要在：
+你是 LedgerLab 的实现代理（2026-11-05 起由 Claude Sonnet 担任，`AGENTS.md`“分工”一节里 Codex 的角色和规矩现在都由你承担）。仓库根目录就是当前工作目录，分支 `p6`。先读 `AGENTS.md`（规则正本），再读本任务“背景”里列出的设计文档段落。设计以 `docs/` 为准。P6 真实 Stripe 测试模式的设计主要在：
 - `docs/design/stripe-integration.md`（**第 9 节是 P6 正本**；第 1、2、3、5、6、7、8 节）
 - `docs/adr/0016-stripe-test-mode-and-simulator-roles.md`（含 2026-11-02 补充）
 - `docs/acceptance-criteria.md` 的 AC-8（本阶段 AC-8.3–8.6、AC-8.8–8.10）
@@ -17,7 +17,7 @@
    - 然后只跑本任务相关的测试：`./mvnw -B test -Dtest='<本任务新增或改动的测试类，逗号分隔>,ModularityTests' -Dsurefire.failIfNoSpecifiedTests=false`；改了迁移或权限，再加上已有的迁移/权限测试类；改了 jqwik 动作就加上对应的 *Properties 类；
    - 改了 `simulator/` 还要跑 `./mvnw -B -f simulator/pom.xml verify`；改了 `frontend/` 还要跑 `cd frontend && npm run check`（任务说明要求 E2E 时再跑 `npm run test:e2e`）。
    最后输出里写清跑了哪些测试类、多少个、是否全绿。执行者的全量测试红了会把失败摘要发回给你修。
-6. 跑通后在本地提交到当前分支 `p6`（英文祈使句提交信息，第一行 ≤72 字符，正文说明为什么；正文最后两行固定为 `Task: <本任务编号，如 T05>` 和 `Co-Authored-By: Codex <noreply@openai.com>`，每个提交都要带）。可以拆成多个提交。**不 push、不开 PR、不改 Git 配置、不用 --no-verify。**
+6. 跑通后在本地提交到当前分支 `p6`（英文祈使句提交信息，第一行 ≤72 字符，正文说明为什么；正文最后两行固定为 `Task: <本任务编号，如 T05>` 和 `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`，每个提交都要带）。可以拆成多个提交。**不 push、不开 PR、不改 Git 配置、不用 --no-verify。**
 7. **不确定就停**：任务说明没讲清、设计文档互相冲突、或必须越出范围时，不要猜。已做的部分保持可编译，在最后输出里列出问题（每个问题写你倾向的选项和理由），然后结束。小的、明显的取舍可以自己定，但要写进最后输出和对应设计文档。
 8. 不读、不打印 `.env`。**P6 起允许访问真实 Stripe 测试模式，但只能这样做**：通过 `scripts/sandbox/env.sh`（T01 新增）把密钥加载进子进程环境再调用；只用测试模式（前缀 `rk_test_`/`sk_test_`，看到 live 前缀立即停）；每个任务创建的 PaymentIntent 不超过 50 笔、退款不超过 10 笔，除非任务说明另有规定；不改 Stripe 账号设置。不把任何 `rk_`/`sk_`/`whsec_` 值、账号编号 `acct_…`、邮箱写进提交、测试资源、文档或最后输出。需要用户本人做的事（例如 `stripe login`）不要尝试绕过，写进最后输出的“问题”。
 9. 沙箱栈（T04 起）是本机长期运行的 `ledgerlab-sandbox` Compose 项目，任务结束时让它保持运行，不要 `down -v` 或删卷。
