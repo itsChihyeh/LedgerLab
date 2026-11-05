@@ -1,8 +1,15 @@
+import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
+import { sandboxReportPlugin } from "./sandbox-report.ts";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    sandboxReportPlugin(
+      fileURLToPath(new URL("../docs/runs", import.meta.url)),
+    ),
+  ],
   server: {
     host: "localhost",
     port: 5173,

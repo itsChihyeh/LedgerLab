@@ -6,6 +6,8 @@ WORKDIR /web
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
+# The newest redacted sandbox report, if one exists, is copied into the build by vite.config.ts (AC-9.7).
+COPY docs/ /docs/
 RUN npm run build
 
 FROM eclipse-temurin:25-jdk AS jar

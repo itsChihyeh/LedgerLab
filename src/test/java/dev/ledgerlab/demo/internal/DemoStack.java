@@ -52,9 +52,14 @@ final class DemoStack implements AutoCloseable {
     private final @Nullable Process simulator;
 
     DemoStack(boolean demo, boolean withSimulator, String... extra) {
+        this(demo, withSimulator, 0, extra);
+    }
+
+    /** {@code port} 0 picks a free port; the browser end-to-end run needs the Vite proxy's fixed one. */
+    DemoStack(boolean demo, boolean withSimulator, int port, String... extra) {
         simulatorPort = freePort();
         List<String> args = new ArrayList<>(List.of(
-                "--server.port=0",
+                "--server.port=" + port,
                 "--spring.datasource.url=" + db.url(),
                 "--LEDGERLAB_APP_PASSWORD=" + TestDatabase.APP_PASSWORD,
                 "--LEDGERLAB_MIGRATOR_PASSWORD=" + TestDatabase.MIGRATOR_PASSWORD,

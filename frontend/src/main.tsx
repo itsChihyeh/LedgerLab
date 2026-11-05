@@ -18,13 +18,28 @@ import {
   CorrectionsPage,
   LedgerEntryPage,
 } from "./corrections";
+import { DemoPage } from "./demo";
 import { PayoutPage, PayoutsPage } from "./payouts";
 import { RefundPage } from "./refunds";
 
 function currentRoute() {
   return window.location.hash.slice(1) || window.location.pathname;
 }
-function Route({ route }: { route: string }) {
+/** The public demo exists only under the demo profile; elsewhere its read endpoint is a 404. */
+function useDemoEnabled(): boolean | null {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/demo/archive", { signal: controller.signal })
+      .then((response) => setEnabled(response.ok))
+      .catch(() => {
+        if (!controller.signal.aborted) setEnabled(false);
+      });
+    return () => controller.abort();
+  }, []);
+  return enabled;
+}
+function Route({ route, demo }: { route: string; demo: boolean }) {
   const [path, search = ""] = route.split("?");
   let parts: string[];
   try {
@@ -33,7 +48,10 @@ function Route({ route }: { route: string }) {
     return <p role="alert">页面地址无效</p>;
   }
   const [kind, id, third, fourth] = parts;
-  if (path === "/") return <OverviewPage />;
+  if (path === "/") return demo ? <DemoPage /> : <OverviewPage />;
+  if (path === "/demo")
+    return demo ? <DemoPage /> : <p role="alert">这个部署没有开启演示页</p>;
+  if (path === "/overview") return <OverviewPage />;
   if (path === "/corrections") return <CorrectionsPage />;
   if (path === "/payouts") return <PayoutsPage />;
   if (kind === "batch-lines" && id && third && parts.length === 3)
@@ -65,6 +83,7 @@ function Route({ route }: { route: string }) {
 }
 function App() {
   const [route, setRoute] = useState(currentRoute);
+  const demo = useDemoEnabled();
   useEffect(() => {
     const changed = () => {
       setRoute(currentRoute());
@@ -78,14 +97,19 @@ function App() {
       <header>
         <a href="#/">LedgerLab</a>
         <nav aria-label="主导航">
-          <a href="#/">总览</a>
+          {demo && <a href="#/demo">演示</a>}
+          <a href={demo ? "#/overview" : "#/"}>总览</a>
           <a href="#/recon">对账工作台</a>
           <a href="#/corrections">纠错记录</a>
           <a href="#/payouts">提现</a>
         </nav>
         <span>合成测试数据 · CAD</span>
       </header>
-      <Route key={route} route={route} />
+      {demo === null ? (
+        <p role="status">加载中…</p>
+      ) : (
+        <Route key={route} route={route} demo={demo} />
+      )}
     </main>
   );
 }

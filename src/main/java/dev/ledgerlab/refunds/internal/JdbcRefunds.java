@@ -18,6 +18,8 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import org.jspecify.annotations.Nullable;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -40,7 +42,6 @@ public final class JdbcRefunds implements Refunds {
     private final TransactionTemplate transactions;
     private final Runnable refundInserted;
 
-    @Autowired
     public JdbcRefunds(
             JdbcClient jdbc,
             Ledger ledger,
@@ -51,11 +52,29 @@ public final class JdbcRefunds implements Refunds {
             IdGenerator ids,
             ObjectMapper mapper,
             PlatformTransactionManager manager) {
+        this(jdbc, ledger, payments, queue, history, clock, ids, mapper, manager, null);
+    }
+
+    @Autowired
+    JdbcRefunds(
+            JdbcClient jdbc,
+            Ledger ledger,
+            PaymentRefunds payments,
+            RefundQueue queue,
+            RefundHistory history,
+            Clock clock,
+            IdGenerator ids,
+            ObjectMapper mapper,
+            PlatformTransactionManager manager,
+            @Nullable ObjectProvider<RefundLimitGuard> guards) {
         this(
                 jdbc,
                 ledger,
                 payments,
-                new LockedRefundLimitGuard(ledger, payments),
+                // Exactly one guard exists everywhere except a test run that opts into the AC-9.2 fault switch.
+                guards == null
+                        ? new LockedRefundLimitGuard(ledger, payments)
+                        : guards.getIfAvailable(() -> new LockedRefundLimitGuard(ledger, payments)),
                 queue,
                 history,
                 clock,
