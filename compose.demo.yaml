@@ -76,6 +76,9 @@ services:
       # The seed run comes from scripts/demo through the published port, which the app sees as the network
       # gateway; a reverse proxy would look the same but adds forwarded headers, which are refused.
       LEDGERLAB_DEMO_ADMIN_SOURCES: 127.0.0.1/32,::1/128,10.89.77.1/32
+      # Empty = use the connection address only. scripts/demo sets 10.89.77.1/32 behind a reverse proxy
+      # (LEDGERLAB_DEMO_BEHIND_PROXY=1) so each visitor is limited by his own X-Forwarded-For address.
+      LEDGERLAB_DEMO_TRUSTED_PROXIES: ${LEDGERLAB_DEMO_TRUSTED_PROXIES:-}
       LEDGERLAB_DEMO_ARCHIVE_DIR: /demo-archive
     volumes:
       - ${DEMO_ARCHIVE_DIR:?run scripts/demo/up.sh}:/demo-archive:ro

@@ -3,6 +3,8 @@
 Commands: up, down, status, reset, check-reset. Every Docker call names the project `ledgerlab-demo` and the
 compose file explicitly, so the persistent `ledgerlab-sandbox` stack is never touched. The database passwords are
 generated on first use into .demo/secrets.env (git-ignored); .env is never read. Python 3.9+, standard library only.
+`--behind-proxy` (or LEDGERLAB_DEMO_BEHIND_PROXY=1, which the cron reset needs too) makes the app trust the Compose
+gateway 10.89.77.1 as a reverse proxy, so each visitor is rate limited by his own X-Forwarded-For address (AC-9.10).
 """
 import json
 import os
@@ -17,6 +19,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+GATEWAY_CIDR = '10.89.77.1/32'
 ROOT = Path(__file__).resolve().parents[2]
 STATE = ROOT / '.demo'
 SECRETS = STATE / 'secrets.env'
@@ -137,12 +140,18 @@ def load_or_create_secrets():
     return values
 
 
+def trusted_proxies(environ):
+    """The Compose gateway is the reverse proxy's address when the stack sits behind one (AC-9.10)."""
+    return GATEWAY_CIDR if environ.get('LEDGERLAB_DEMO_BEHIND_PROXY', '').strip() in ('1', 'true') else ''
+
+
 def compose_env(passwords, now=None):
     fake = parse_env(FAKE_ENV_FILE.read_text(encoding='utf-8'))
     env = python_env()
     env.update(passwords)
     for source, target in FAKE_ENV_NAMES.items():
         env[target] = fake[source]
+    env['LEDGERLAB_DEMO_TRUSTED_PROXIES'] = trusted_proxies(os.environ)
     env['DEMO_SIM_CLOCK_START'] = sim_clock_start(now or utcnow())
     ARCHIVE.mkdir(parents=True, exist_ok=True)
     env['DEMO_ARCHIVE_DIR'] = ARCHIVE.as_posix()
@@ -424,10 +433,12 @@ def cmd_check_reset():
 
 def main(argv):
     if len(argv) < 2 or argv[1] not in ('up', 'down', 'status', 'reset', 'check-reset'):
-        print('usage: demo.py up|down|status|reset|check-reset', file=sys.stderr)
+        print('usage: demo.py up|down|status|reset|check-reset [--behind-proxy]', file=sys.stderr)
         return 2
     sys.stdout.reconfigure(encoding='utf-8')
     command = argv[1]
+    if '--behind-proxy' in argv[2:]:
+        os.environ['LEDGERLAB_DEMO_BEHIND_PROXY'] = '1'
     try:
         if command == 'up':
             cmd_up()

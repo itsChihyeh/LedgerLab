@@ -15,7 +15,7 @@
 1. **[用户]** 阅读并批准 `aws-plan.md` 的方案和月费上限。EC2 价格已核实（2026-11-05）；**用 AWS Pricing Calculator（<https://calculator.aws/>）核价**其余项（EBS、公网 IPv4、流量、域名），把结果和日期填回 `aws-plan.md`。
 2. **[用户]** 开 AWS 账号（或专用 IAM 用户），开 MFA，建月度预算告警。
 3. **[用户]** （可选）准备域名。
-4. 等 T04c 合入，部署时设 `LEDGERLAB_DEMO_TRUSTED_PROXIES=10.89.77.1/32`（见 `aws-plan.md` 安全要点）。
+4. T04c 已合入：`cloud-init.yaml` 里 `up.sh` 和每日重置都带 `LEDGERLAB_DEMO_BEHIND_PROXY=1`（或给 `demo.py` 加 `--behind-proxy`），app 会收到 `LEDGERLAB_DEMO_TRUSTED_PROXIES=10.89.77.1/32`，按访客真实 IP 限流（见 `aws-plan.md` 安全要点）。
 5. 填 `cloud-init.yaml` 里的占位符：`<DEMO_DOMAIN>`、`<REPO_URL>`、`<GIT_TAG_OR_COMMIT>`、`<COMPOSE_VERSION>`、`<CADDY_VERSION>`；核对 Compose 插件的校验和，并核实 JDK 25 的包名。**[用户]** 确认这些值；私有仓库的只读部署密钥由用户建，不写进文件。
 6. **[用户]** 在 AWS 控制台创建（用户本人账号）：
    - 一个只有入站 80、443 的安全组（不开 22）；

@@ -165,3 +165,7 @@ P6 的 T07/T08 在等 Stripe 首笔自动 payout。P7 分支 `p7` 从 `p6` 建�
 - **价格部分核实**：EC2 `t4g.small`／`t4g.medium` 按需价已由 `deploy/price-check.py` 在本机于 2026-11-05 查得（0.0184／0.0368 USD/小时，ca-central-1）；其余项在 aws-plan.md 中标“估算”并附官方链接，用户用 Pricing Calculator 核价。AC-9.11 在 T09 验收清单中标“部分满足：价格待用户核实”。
 - **Caddyfile**：对 `/api/demo/seed`、`/webhooks/*`、`/sim/*`、`/relay/*` 返回 404；覆盖写 `X-Forwarded-For`，去掉 `X-Real-IP`／`Forwarded`；关闭 SSE 缓冲。
 - **依赖 T04c**：限流器要识别真实访客，部署时 app 需收到 `LEDGERLAB_DEMO_TRUSTED_PROXIES=10.89.77.1/32`；`compose.demo.yaml` 的传递由小任务 T04c 补上，T07 不改。
+
+## 20. 实现备注（P7 T04c，2026-11-05）
+
+- **按真实 IP 限流的接线**：`compose.demo.yaml` 把 `LEDGERLAB_DEMO_TRUSTED_PROXIES`（默认空）传给 app；`scripts/demo/demo.py` 在 `--behind-proxy` 或 `LEDGERLAB_DEMO_BEHIND_PROXY=1` 时设为 `10.89.77.1/32`，否则为空，本地行为不变。该变量每次调用 Compose 都会带上，所以每日重置（cron）也必须设，`cloud-init.yaml` 已设。管理接口不借道代理：`directFrom` 见到 `X-Forwarded-For`／`Forwarded`／`X-Real-IP` 就拒绝，网关地址即使同时是可信代理和管理来源也一样（`DemoGateTest` 的 `ac_9_10_*`）。

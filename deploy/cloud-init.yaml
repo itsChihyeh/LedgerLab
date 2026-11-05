@@ -54,7 +54,7 @@ write_files:
       mkdir -p /var/lib/ledgerlab/archive && chown ledger:ledger /var/lib/ledgerlab/archive
 
       # The demo stack (ports bound to 127.0.0.1 only), then Caddy on the host network for HTTPS.
-      su -s /bin/sh ledger -c 'cd /opt/ledgerlab && sh scripts/demo/up.sh'
+      su -s /bin/sh ledger -c 'cd /opt/ledgerlab && LEDGERLAB_DEMO_BEHIND_PROXY=1 sh scripts/demo/up.sh'
       docker rm -f ledgerlab-caddy >/dev/null 2>&1 || true
       docker run -d --name ledgerlab-caddy --restart unless-stopped --network host \
         --env-file /etc/ledgerlab/demo.env \
@@ -66,7 +66,7 @@ write_files:
     permissions: "0644"
     content: |
       # Daily reset at 03:15 UTC. The archive copy lives outside the repo so a re-clone never deletes it.
-      15 3 * * * ledger cd /opt/ledgerlab && DEMO_ARCHIVE_EXTRA_DIR=/var/lib/ledgerlab/archive sh scripts/demo/reset.sh >> /var/log/ledgerlab-reset.log 2>&1
+      15 3 * * * ledger cd /opt/ledgerlab && LEDGERLAB_DEMO_BEHIND_PROXY=1 DEMO_ARCHIVE_EXTRA_DIR=/var/lib/ledgerlab/archive sh scripts/demo/reset.sh >> /var/log/ledgerlab-reset.log 2>&1
 
 runcmd:
   - [ sh, -c, "systemctl enable --now crond" ]

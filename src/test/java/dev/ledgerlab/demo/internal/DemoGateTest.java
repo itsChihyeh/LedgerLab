@@ -51,6 +51,11 @@ class DemoGateTest {
     }
 
     private static DemoProperties properties(List<String> trusted, int perIp, int site, int streams) {
+        return properties(trusted, List.of("127.0.0.1/32"), perIp, site, streams);
+    }
+
+    private static DemoProperties properties(
+            List<String> trusted, List<String> admin, int perIp, int site, int streams) {
         return new DemoProperties(
                 "http://127.0.0.1:1",
                 null,
@@ -60,7 +65,7 @@ class DemoGateTest {
                 Duration.ofSeconds(20),
                 trusted,
                 List.of("10.1.0.0/16"),
-                List.of("127.0.0.1/32"),
+                admin,
                 perIp,
                 site,
                 streams);
@@ -75,6 +80,13 @@ class DemoGateTest {
     private static Gate gate(List<String> trusted, int perIp, int site, int streams) {
         ManualClock clock = new ManualClock();
         DemoProperties properties = properties(trusted, perIp, site, streams);
+        DemoRateLimiter limiter = new DemoRateLimiter(clock, properties);
+        return new Gate(new DemoGateFilter(limiter, properties, new DemoInternalToken(TOKEN)), limiter, clock);
+    }
+
+    private static Gate gate(List<String> trusted, List<String> admin, int perIp) {
+        ManualClock clock = new ManualClock();
+        DemoProperties properties = properties(trusted, admin, perIp, 300, 3);
         DemoRateLimiter limiter = new DemoRateLimiter(clock, properties);
         return new Gate(new DemoGateFilter(limiter, properties, new DemoInternalToken(TOKEN)), limiter, clock);
     }
@@ -379,6 +391,56 @@ class DemoGateTest {
         assertThat(Cidr.parse("10.1.0.0/12").contains(ip("10.16.0.1"))).isFalse();
         assertThat(Cidr.parse("::1/128").contains(ip("0:0:0:0:0:0:0:1"))).isTrue();
         assertThat(Cidr.parse("10.0.0.0/8").contains(ip("::1"))).isFalse();
+    }
+
+    /** The Compose gateway Caddy reaches the published port through (deploy/Caddyfile, compose.demo.yaml). */
+    private static final String GATEWAY = "10.89.77.1";
+
+    private static int[] actionFrom(Gate gate, String remote, String forwardedFor) throws Exception {
+        var request = request("POST", "/api/demo/actions/pay", remote);
+        if (forwardedFor != null) request.addHeader("X-Forwarded-For", forwardedFor);
+        return pass(gate.filter(), request, new MockHttpServletResponse());
+    }
+
+    @Test
+    void ac_9_10_behindTheTrustedGatewayEachVisitorHasHisOwnTwentyActionBucket() throws Exception {
+        Gate gate = gate(List.of(GATEWAY + "/32"), List.of("127.0.0.1/32", GATEWAY + "/32"), 20);
+        for (int i = 1; i <= 20; i++) {
+            assertThat(actionFrom(gate, GATEWAY, "198.51.100.1"))
+                    .as("A, action " + i)
+                    .containsExactly(1, 200);
+        }
+        assertThat(actionFrom(gate, GATEWAY, "198.51.100.1")).containsExactly(0, 429);
+        assertThat(actionFrom(gate, GATEWAY, "198.51.100.2"))
+                .as("B is unaffected")
+                .containsExactly(1, 200);
+    }
+
+    @Test
+    void ac_9_10_withoutATrustedProxyAForgedForwardedForSharesOneBucket() throws Exception {
+        Gate gate = gate(List.of(), List.of("127.0.0.1/32", GATEWAY + "/32"), 20);
+        for (int i = 1; i <= 20; i++) {
+            assertThat(actionFrom(gate, GATEWAY, "198.51.100." + i))
+                    .as("action " + i)
+                    .containsExactly(1, 200);
+        }
+        assertThat(actionFrom(gate, GATEWAY, "198.51.100.200")).containsExactly(0, 429);
+    }
+
+    @Test
+    void ac_9_10_theSeedRunStaysClosedWhenItComesThroughTheTrustedProxyWithForwardedHeaders() throws Exception {
+        // The gateway is both a trusted proxy and an admin source, as in the deployed stack.
+        Gate gate = gate(List.of(GATEWAY + "/32"), List.of("127.0.0.1/32", GATEWAY + "/32"), 20);
+        for (String header : List.of("X-Forwarded-For", "Forwarded", "X-Real-IP")) {
+            var viaProxy = request("POST", "/api/demo/seed", GATEWAY);
+            viaProxy.addHeader(header, "198.51.100.7");
+            assertThat(pass(gate.filter(), viaProxy, new MockHttpServletResponse()))
+                    .as(header)
+                    .containsExactly(0, 404);
+        }
+        // The operator's script reaches it through the same gateway address without any proxy header.
+        assertThat(pass(gate.filter(), request("POST", "/api/demo/seed", GATEWAY), new MockHttpServletResponse()))
+                .containsExactly(1, 200);
     }
 
     @Test

@@ -47,6 +47,13 @@ class DemoHelpers(unittest.TestCase):
         self.assertTrue(demo.all_zero({'pay': 0, 'x': 0}))
         self.assertFalse(demo.all_zero({'pay': 1}))
 
+    def test_proxy_trust_is_off_unless_asked_for(self):
+        self.assertEqual(demo.trusted_proxies({}), '')
+        self.assertEqual(demo.trusted_proxies({'LEDGERLAB_DEMO_BEHIND_PROXY': '0'}), '')
+        self.assertEqual(demo.trusted_proxies({'LEDGERLAB_DEMO_BEHIND_PROXY': '1'}), '10.89.77.1/32')
+        text = (demo.ROOT / 'compose.demo.yaml').read_text(encoding='utf-8')
+        self.assertIn('LEDGERLAB_DEMO_TRUSTED_PROXIES: ${LEDGERLAB_DEMO_TRUSTED_PROXIES:-}', text)
+
     def test_the_stack_never_names_another_project(self):
         self.assertEqual(demo.PROJECT, 'ledgerlab-demo')
         text = (demo.ROOT / 'compose.demo.yaml').read_text(encoding='utf-8')
