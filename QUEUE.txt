@@ -9,5 +9,6 @@ T04b-ci-simulator-jar-admin-sources.md
 T05-demo-page.md
 T06-perf-baseline.md
 T07-deploy-plan.md
+T04c-trusted-proxies-compose.md
 T08-video-article.md
 T09-handoff-p7.md
