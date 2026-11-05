@@ -1,0 +1,12 @@
+# P7 队列：按顺序处理；每行一个任务文件（tasks/ 下）。已完成以 p7 分支提交信息里的 “Task: P7-<编号>” 判定。
+# 设计正本：p7 分支 docs/design/demo-and-delivery.md（2026-11-05）。
+# P6 的 T07/T08 仍在等 payout，按 RUNNER.md 第 1 步并行检查。
+T01-runtime-invariants.md
+T02-demo-actions.md
+T03-public-guard-rate-limit.md
+T04-demo-stack-reset.md
+T05-demo-page.md
+T06-perf-baseline.md
+T07-deploy-plan.md
+T08-video-article.md
+T09-handoff-p7.md
