@@ -44,6 +44,8 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
+      # The demo tests start the real simulator jar; with CI=true they fail instead of skipping when it is missing.
+      - run: ./mvnw -B -f simulator/pom.xml -DskipTests package
       # Testcontainers uses the runner's Docker daemon. verify = tests, Error Prone, NullAway,
       # Modulith boundaries, JaCoCo floor, Spotless check.
       - run: ./mvnw -B verify

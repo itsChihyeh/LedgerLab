@@ -15,6 +15,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param httpTimeout read timeout of every call to the simulator or the loopback API
  * @param trustedProxies CIDRs of reverse proxies whose {@code X-Forwarded-For} is believed; empty = connection address only
  * @param webhookAllowedSources CIDRs the processor webhook may come from (the stack's relay); others get 404
+ * @param adminAllowedSources CIDRs the seed run may come from (direct local connection only, no proxy headers); others get 404
  * @param actionsPerIpPerMinute action rate limit per client address
  * @param actionsPerMinute action rate limit for the whole site
  * @param streamsPerIp concurrent live-feed connections per client address
@@ -29,6 +30,7 @@ public record DemoProperties(
         @DefaultValue("20s") Duration httpTimeout,
         @DefaultValue List<String> trustedProxies,
         @DefaultValue({"127.0.0.0/8", "::1/128"}) List<String> webhookAllowedSources,
+        @DefaultValue({"127.0.0.1/32", "::1/128"}) List<String> adminAllowedSources,
         @DefaultValue("20") int actionsPerIpPerMinute,
         @DefaultValue("300") int actionsPerMinute,
         @DefaultValue("3") int streamsPerIp) {

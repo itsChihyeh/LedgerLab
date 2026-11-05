@@ -8,6 +8,8 @@ ledgerlab:
     # processor webhook may come from (the stack's relay); the default is loopback only.
     trusted-proxies: ${LEDGERLAB_DEMO_TRUSTED_PROXIES:}
     webhook-allowed-sources: ${LEDGERLAB_DEMO_WEBHOOK_SOURCES:127.0.0.0/8,::1/128}
+    # The seed run (scripts/demo only): a direct local connection without X-Forwarded-For, Forwarded or X-Real-IP.
+    admin-allowed-sources: ${LEDGERLAB_DEMO_ADMIN_SOURCES:127.0.0.1/32,::1/128}
     actions-per-ip-per-minute: 20
     actions-per-minute: 300
     streams-per-ip: 3

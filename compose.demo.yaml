@@ -73,6 +73,9 @@ services:
       LEDGERLAB_DEMO_SIMULATOR_URL: http://simulator:8081
       # Only the stack's relay may deliver the processor webhook (section 4).
       LEDGERLAB_DEMO_WEBHOOK_SOURCES: 10.89.77.10/32
+      # The seed run comes from scripts/demo through the published port, which the app sees as the network
+      # gateway; a reverse proxy would look the same but adds forwarded headers, which are refused.
+      LEDGERLAB_DEMO_ADMIN_SOURCES: 127.0.0.1/32,::1/128,10.89.77.1/32
       LEDGERLAB_DEMO_ARCHIVE_DIR: /demo-archive
     volumes:
       - ${DEMO_ARCHIVE_DIR:?run scripts/demo/up.sh}:/demo-archive:ro

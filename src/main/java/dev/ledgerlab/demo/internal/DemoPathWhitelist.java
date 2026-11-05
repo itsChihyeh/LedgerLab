@@ -15,11 +15,13 @@ final class DemoPathWhitelist {
         BLOCKED,
         /** Answered without further checks. */
         OPEN,
-        /** A scenario action or the seed run: counts against the action limits. */
+        /** The seed run: only from a direct local connection without proxy headers, otherwise 404. */
+        ADMIN,
+        /** A scenario action: counts against the action limits. */
         ACTION,
         /** The live feed: counts against the per-address stream limit. */
         STREAM,
-        /** The processor's webhook: only from an allowed source address. */
+        /** The processor's webhook: only from an allowed source address, never through a proxy. */
         WEBHOOK
     }
 
@@ -51,7 +53,7 @@ final class DemoPathWhitelist {
         int size = segments.size();
         String name = size >= 3 ? segments.get(2) : "";
         if (post && size == 4 && name.equals("actions")) return Kind.ACTION;
-        if (post && size == 3 && name.equals("seed")) return Kind.ACTION;
+        if (post && size == 3 && name.equals("seed")) return Kind.ADMIN;
         if (post && size == 3 && name.equals("visit")) return Kind.OPEN;
         if (get && size == 3 && name.equals("summary")) return Kind.OPEN;
         if (get && size == 3 && name.equals("archive")) return Kind.OPEN;

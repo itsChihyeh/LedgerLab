@@ -50,7 +50,7 @@
 
 ## 4. 公开配置下的接口白名单（AC-9.3）
 
-demo profile 下只开放：静态页面、`GET /api/**` 的只读查询（investigation 模块已有的）、`/api/demo/**`、`/webhooks/stripe`（只接受来自本栈 relay 的地址，配置 `ledgerlab.demo.webhook-allowed-sources`）。其余写接口（纠错、退款 API、提现 API、批次重核、对账运行、银行导入、处置差异、出站查询）一律 404（用一个按路径白名单的过滤器实现，不靠逐个控制器加注解，避免漏网）。故障钩子在 demo 只能经演示动作触发，没有直接 HTTP 入口。调查接口（P8）以后不能调用 demo 动作：demo 模块不暴露任何 Java 公开接口给其他模块（Modulith 测试断言没有模块依赖 demo）。
+demo profile 下只开放：静态页面、`GET /api/**` 的只读查询（investigation 模块已有的）、`/api/demo/**`、`/webhooks/stripe`（只接受来自本栈 relay 的地址，配置 `ledgerlab.demo.webhook-allowed-sources`；且请求不得带 `X-Forwarded-For`／`Forwarded`／`X-Real-IP`，见第 16 节）。`POST /api/demo/seed` 只给运维脚本：连接地址在 `ledgerlab.demo.admin-allowed-sources`（默认仅回环）且无上述转发头，否则 404。其余写接口（纠错、退款 API、提现 API、批次重核、对账运行、银行导入、处置差异、出站查询）一律 404（用一个按路径白名单的过滤器实现，不靠逐个控制器加注解，避免漏网）。故障钩子在 demo 只能经演示动作触发，没有直接 HTTP 入口。调查接口（P8）以后不能调用 demo 动作：demo 模块不暴露任何 Java 公开接口给其他模块（Modulith 测试断言没有模块依赖 demo）。
 
 ## 5. 每日重置（AC-9.5）
 
@@ -79,7 +79,7 @@ demo profile 下只开放：静态页面、`GET /api/**` 的只读查询（inves
 ## 9. 部署方案与报价（新增 AC-9.11，执行需用户确认）
 
 - `docs/deploy/aws-plan.md`：推荐单台 EC2（t4g.small，ARM）跑 `compose.demo.yaml`＋Caddy 自动 HTTPS，RDS 不用（演示数据每天重置，本机 PostgreSQL 容器即可），EventBridge Scheduler 或 cron 每日重置，CloudWatch 只开基础指标。列出按需价格的月费估算（含 EBS、流量、域名可选），以及更便宜/更稳的两个备选（Lightsail；ECS Fargate＋RDS）。价格查 AWS 官方价格页并写明查询日期。
-- 提供 `deploy/` 下的 Caddyfile、cloud-init 草稿、`deploy/README.md` 的步骤，但**不执行**任何 AWS 操作。需要用户做的：开 AWS 账号或 IAM 用户、批准报价、（可选）域名。
+- 提供 `deploy/` 下的 Caddyfile、cloud-init 草稿、`deploy/README.md` 的步骤，但**不执行**任何 AWS 操作。Caddyfile 里必须显式拒绝 `/api/demo/seed` 和 `/webhooks/stripe` 的外部访问（直接返回 404），作为应用内来源检查之后的第二道防线。需要用户做的：开 AWS 账号或 IAM 用户、批准报价、（可选）域名。
 
 ## 10. 演示视频与技术文章（新增 AC-9.12）
 
@@ -121,7 +121,7 @@ P6 的 T07/T08 在等 Stripe 首笔自动 payout。P7 分支 `p7` 从 `p6` 建�
 - **令牌桶**（`DemoRateLimiter`，注入的 `Clock`）：连续补充，容量 = 每分钟上限；先扣本 IP 的桶再扣全站桶，全站拒绝时把 IP 的令牌还回去，所以被全站限额挡掉的人不会再丢自己的额度；IP 桶表超过 1 万项时清掉已满的闲置桶。计入“动作”的是 `POST /api/demo/actions/*` 和 `POST /api/demo/seed`（未知动作名也算，防止扫描）；`visit`、`summary` 不限。429 带 `Retry-After`（整数秒，≥1）和 `{"error":"RATE_LIMITED"}`。
 - **SSE**：每 IP 最多 `streams-per-ip`（默认 3）个并发连接，第 4 个 429（`TOO_MANY_STREAMS`，`Retry-After: 5`）；名额在 `AsyncListener` 的完成／超时／出错回调里归还，只归还一次。全站 200 的上限（503）仍在 `DemoEvents`，先判每 IP 再判全站。客户端断开要等服务器下一次写失败（至多一个 15 秒心跳）才会被发现，名额在那之后归还。
 - **配置项**：`ledgerlab.demo.trusted-proxies`、`webhook-allowed-sources`、`actions-per-ip-per-minute`（20）、`actions-per-minute`（300）、`streams-per-ip`（3），默认值在 `application-demo.yaml` 和 `DemoProperties`。
-- **已知缺口（留给后续）**：`POST /api/demo/seed` 按设计 5 节由 `reset.sh` 从外部调用，所以它在公开白名单里，只受动作限流约束；若要只允许运维调用，需要另加来源限制或口令（见任务输出里的问题）。
+- **已知缺口（已由第 16 节解决）**：`POST /api/demo/seed` 按设计 5 节由 `reset.sh` 从外部调用，所以它在公开白名单里，只受动作限流约束；若要只允许运维调用，需要另加来源限制或口令（见任务输出里的问题）。
 - **测试**：`DemoGateTest`（无 Docker，手动时钟：白名单表、客户端地址、令牌桶、过滤器、SSE 名额归还）；`DemoPublicSurfaceTest`（真实应用和库：写接口逐一 404、读 200、默认 profile 写接口不变、webhook 来源、第 21 次动作 429 且分录数和 inbox 数不变、可信代理后的全站上限、不可信来源伪造头无效、第 4 个流 429）；`DemoModuleTest.ac_9_3_noModuleDependsOnDemo` 为 T02 已有。
 
 ## 15. 实现备注（P7 T04，2026-11-05）
@@ -133,3 +133,10 @@ P6 的 T07/T08 在等 Stripe 首笔自动 payout。P7 分支 `p7` 从 `p6` 建�
 - **脚本**：`up`（构建 jar、起栈、等健康、已有数据则不重复种子，否则调 `/api/demo/seed`、确认 12 条不变量全 ok、写 `last-reset.txt`）、`down`（`down -v`，保留 `.demo/` 里的口令与存档）、`status`、`reset`、`check-reset`。`reset`：先把 `GET /api/demo/summary`（不变量换成现取的审计结果）加 `archivedAt` 存到 `.demo/archive/<UTC 日期>.json`（同一天第二次重置加时间后缀，不覆盖第一份）；设置环境变量 `DEMO_ARCHIVE_EXTRA_DIR` 时同时复制一份到该目录；host 目录只保留最新 7 份；然后 down、up、种子、确认不变量。
 - **存档读取**：`.demo/archive` 以只读方式挂进 app（`/demo-archive`，`ledgerlab.demo.archive-dir`）。`GET /api/demo/archive`（在白名单里，只读）返回 `{lastReset, archive:[{file, summary}…最近 7 份，新的在前]}`；目录缺失或文件损坏时按空历史处理。`DemoArchiveTest` 无需 Docker。页面展示留给前端任务。
 - **验证**：`scripts/demo/selftest.py` 检查脚本里的纯函数；`check-reset.sh` 起栈、跑 `pay`／`replay-webhook`／`double-refund`、重置，断言存档存在且与重置前一致、动作计数归零、库回到 3 笔种子支付、不变量全 ok、`lastReset` 前进、`/api/demo/archive` 列出新存档、`down` 后无遗留容器／卷／网络、`ledgerlab-sandbox` 容器集合前后不变，证据写入 `target/demo/check-reset-*.json`。
+
+## 16. 实现备注（P7 T04b，2026-11-05）
+
+- **管理入口只认本机直连**：`DemoPathWhitelist` 新增 `ADMIN` 类，`POST /api/demo/seed` 归它（不再计入动作限流）。`DemoGateFilter` 的 `directFrom` 同时要求：连接地址在配置的 CIDR 内，且请求没有 `X-Forwarded-For`、`Forwarded`、`X-Real-IP` 任一头；否则 `sendError(404)`。原因：同机反向代理转发的公网请求连接地址也是回环，但代理会加转发头；relay 与运维脚本是直连，没有。
+- **配置**：`ledgerlab.demo.admin-allowed-sources`（默认 `127.0.0.1/32,::1/128`；环境变量 `LEDGERLAB_DEMO_ADMIN_SOURCES`）。`compose.demo.yaml` 里加上网络网关 `10.89.77.1/32`，因为脚本经发布端口访问时应用看到的是网关地址。若某个 Docker 版本给出别的网关地址，`up` 的种子步骤会得到 404，需按报错调整这一项。
+- **webhook** 复用同一个检查：来源在 `webhook-allowed-sources` 里（compose 里是 relay 固定地址 `10.89.77.10/32`，直连、无转发头）且无转发头。
+- **CI**：主应用 job 在 `./mvnw verify` 之前先 `./mvnw -B -f simulator/pom.xml -DskipTests package`。`DemoStack.simulatorAvailable()` 在 `CI=true` 且 jar 缺失时抛 `IllegalStateException`（测试失败，不再 `assumeTrue` 跳过）；本地缺 jar 时仍跳过，并在标准错误打印构建命令。

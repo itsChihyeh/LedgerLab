@@ -90,6 +90,40 @@ class DemoPublicSurfaceTest {
     }
 
     @Test
+    void ac_9_3_theWebhookRefusesAnyRequestThatCarriesAProxyHeader() {
+        try (var stack = new DemoStack(true, false)) {
+            // Loopback is an allowed source, but a reverse proxy on the same machine looks the same: it is the
+            // forwarded-for style headers that tell a public request from the relay's direct call.
+            for (String header : List.of("X-Forwarded-For", "Forwarded", "X-Real-IP")) {
+                assertThat(stack.call("POST", "/webhooks/stripe", Map.of(header, "203.0.113.9"), "{}")
+                                .status())
+                        .as(header)
+                        .isEqualTo(404);
+            }
+        }
+    }
+
+    @Test
+    void ac_9_3_theSeedRunAnswersOnlyToADirectLocalCaller() {
+        try (var stack = new DemoStack(true, false)) {
+            // Loopback without proxy headers passes the gate (the run itself fails here: there is no simulator).
+            assertThat(stack.post("/api/demo/seed").status()).isNotEqualTo(404);
+            for (String header : List.of("X-Forwarded-For", "Forwarded", "X-Real-IP")) {
+                assertThat(stack.post("/api/demo/seed", Map.of(header, "203.0.113.9"))
+                                .status())
+                        .as(header)
+                        .isEqualTo(404);
+            }
+        }
+        try (var stack = new DemoStack(true, false, "--ledgerlab.demo.admin-allowed-sources=10.99.0.0/16")) {
+            assertThat(stack.post("/api/demo/seed").status()).isEqualTo(404);
+            assertThat(stack.post("/api/demo/seed", Map.of("X-Forwarded-For", "10.99.0.5"))
+                            .status())
+                    .isEqualTo(404);
+        }
+    }
+
+    @Test
     void ac_9_3_theWebhookAnswersOnlyToTheConfiguredSources() {
         try (var stack = new DemoStack(true, false)) {
             // This test process is on loopback, which is an allowed source by default: the request reaches the

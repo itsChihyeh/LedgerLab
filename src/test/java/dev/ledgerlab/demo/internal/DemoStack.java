@@ -133,8 +133,22 @@ final class DemoStack implements AutoCloseable {
         throw new IllegalStateException("The simulator did not become ready");
     }
 
+    /**
+     * Whether the simulator jar is there. Locally a missing jar skips the tests that need it, with a hint; in CI
+     * ({@code CI=true}) a missing jar is a failure, so the job cannot go green without running them.
+     */
     static boolean simulatorAvailable() {
-        return Files.exists(SIMULATOR_JAR);
+        return simulatorAvailable(System.getenv("CI"), Files.exists(SIMULATOR_JAR));
+    }
+
+    static boolean simulatorAvailable(@Nullable String ciEnv, boolean jarExists) {
+        if (jarExists) return true;
+        String how = "build it first: ./mvnw -B -f simulator/pom.xml -DskipTests package";
+        if ("true".equalsIgnoreCase(ciEnv)) {
+            throw new IllegalStateException("CI=true but " + SIMULATOR_JAR + " is missing; " + how);
+        }
+        System.err.println("SKIPPING the demo tests that need the simulator: " + SIMULATOR_JAR + " is missing; " + how);
+        return false;
     }
 
     Answer get(String path) {

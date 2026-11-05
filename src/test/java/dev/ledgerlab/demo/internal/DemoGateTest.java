@@ -60,6 +60,7 @@ class DemoGateTest {
                 Duration.ofSeconds(20),
                 trusted,
                 List.of("10.1.0.0/16"),
+                List.of("127.0.0.1/32"),
                 perIp,
                 site,
                 streams);
@@ -104,7 +105,7 @@ class DemoGateTest {
         assertThat(DemoPathWhitelist.classify("GET", "/api/payments/pi_1")).isEqualTo(Kind.OPEN);
         assertThat(DemoPathWhitelist.classify("GET", "/api/audit/invariants")).isEqualTo(Kind.OPEN);
         assertThat(DemoPathWhitelist.classify("POST", "/api/demo/actions/pay")).isEqualTo(Kind.ACTION);
-        assertThat(DemoPathWhitelist.classify("POST", "/api/demo/seed")).isEqualTo(Kind.ACTION);
+        assertThat(DemoPathWhitelist.classify("POST", "/api/demo/seed")).isEqualTo(Kind.ADMIN);
         assertThat(DemoPathWhitelist.classify("POST", "/api/demo/visit")).isEqualTo(Kind.OPEN);
         assertThat(DemoPathWhitelist.classify("GET", "/api/demo/summary")).isEqualTo(Kind.OPEN);
         assertThat(DemoPathWhitelist.classify("GET", "/api/demo/archive")).isEqualTo(Kind.OPEN);
@@ -378,5 +379,15 @@ class DemoGateTest {
         assertThat(Cidr.parse("10.1.0.0/12").contains(ip("10.16.0.1"))).isFalse();
         assertThat(Cidr.parse("::1/128").contains(ip("0:0:0:0:0:0:0:1"))).isTrue();
         assertThat(Cidr.parse("10.0.0.0/8").contains(ip("::1"))).isFalse();
+    }
+
+    @Test
+    void ac_9_8_inCiAMissingSimulatorJarFailsInsteadOfSkipping() {
+        assertThat(DemoStack.simulatorAvailable("true", true)).isTrue();
+        assertThat(DemoStack.simulatorAvailable(null, false)).isFalse();
+        assertThat(DemoStack.simulatorAvailable("false", false)).isFalse();
+        assertThatThrownBy(() -> DemoStack.simulatorAvailable("true", false))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("CI=true");
     }
 }
