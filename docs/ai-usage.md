@@ -10,10 +10,10 @@ These are the decisions the repository attributes to Zhiye.
 |---|---|---|
 | Replace the invented processor side with real Stripe test mode webhooks, and use Stripe's balance transactions and payouts as reconciliation data | The project had no real users or live data, and everything on the processor side was made up, which limited how far it could be trusted | [ADR-0016](adr/0016-stripe-test-mode-and-simulator-roles.md) |
 | Register a Canadian Stripe account and use its default test sandbox instead of creating another one, with a restricted key kept only in a local `.env` | The account has to settle in CAD. The record gives no reason for choosing the default sandbox | [Stripe integration, section 7](design/stripe-integration.md) |
-| Split the work: Claude Code plans, sets acceptance criteria and reviews; Codex implements | The record gives the split, not the reasoning | [AGENTS.md](../AGENTS.md), [P1a handoff](handoff/p1a.md) |
-| Let Codex run with full access, with each task naming the files it may change and pushing left to Claude | On Windows, the default sandbox can't run the Maven tests or write to `.git` | [AGENTS.md](../AGENTS.md) |
+| Confirm the split of work: Claude Code plans, sets acceptance criteria and reviews; Codex implements | The record gives the split, not the reasoning | [AGENTS.md](../AGENTS.md), [P1a handoff](handoff/p1a.md) |
+| Approve full access for Codex. Each task then names the files it may change, and Codex doesn't push | On Windows, the default sandbox can't run the Maven tests or write to `.git` | [AGENTS.md](../AGENTS.md) |
 | Run the full `./mvnw verify` once on the local machine after Codex finishes, rather than having Codex run it too | Avoids running it twice on the critical path | [AGENTS.md](../AGENTS.md) |
-| Stop P6 partway through instead of finishing it another way, leaving T07 and T08 undone | Zhiye's Codex membership expired. The stop was recorded as a pause, not as completion | [P6 pause notes](https://github.com/itsChihyeh/LedgerLab/blob/p6/docs/handoff/p6-pause.md) |
+| Stop P6 partway through, leaving T07 and T08 undone | Zhiye's Codex membership expired. The stop was recorded as a pause, not as completion | [P6 pause notes](https://github.com/itsChihyeh/LedgerLab/blob/p6/docs/handoff/p6-pause.md) |
 
 Zhiye also merges the pull requests, including all of those in this repository so far.
 
