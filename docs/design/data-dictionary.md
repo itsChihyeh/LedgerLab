@@ -432,6 +432,17 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 
 ---
 
+### `demo.*`（P7 T02，V23：演示聚合计数）
+
+只在 demo profile 写入，迁移本身不分 profile。全部只存日期聚合，不存 IP、UA、cookie（AC-9.6）。
+
+- `demo.action_count(day date, action text, count bigint, recorded_at)`：主键 `(day, action)`；`action` 的 CHECK 只允许八个白名单动作加 `over-refund-rejected`（被拒绝的超额退款回滚后不留行，只能由 `double-refund` 动作观察到 409 后计数）；`count > 0`。
+- `demo.page_view(day date PK, count bigint, recorded_at)`：当日页面访问量。
+- 授权：`app` 只有 SELECT、INSERT 和 `UPDATE (count)`（够 `INSERT … ON CONFLICT DO UPDATE` 累加；日期、动作、首次写入时间不可改，无 DELETE/TRUNCATE）。`readonly` 只读视图 `demo.v_action_count`、`demo.v_page_view`，不碰底表。
+- `core.v_inbox_status_history`（`readonly` 只读）：`io.inbox_status_history` 的脱敏视图，只有 id、事件号、前后状态、结果码、停放原因和时间，不含载荷、错误文本、租约信息。演示页用它统计“被停放后又处理完成的事件”。
+
+---
+
 ### P5 T10 实现备注（提现页面，无新迁移）
 
 - `GET /api/payouts/{id}` 增加 `issues: [{id, category, status}]`，通过 readonly 的 `recon.v_issue` 读取该提现 subject 的差异；与其余详情共用 repeatable-read 快照，不暴露出站请求/响应原文。

@@ -1,0 +1,22 @@
+# The public break-it demo (ADR-0017, docs/design/demo-and-delivery.md). Active only with Spring profile `demo`;
+# the default profile, the smoke stacks and CI never read this file.
+ledgerlab:
+  demo:
+    simulator-base-url: ${LEDGERLAB_DEMO_SIMULATOR_URL:http://localhost:8081}
+  # The scenarios wait for real workers, so everything that retries runs on a demo-sized clock: a lost
+  # processor answer is noticed after 3 seconds, a crashed worker's lease lapses after 8.
+  stripe:
+    api-base-url: ${STRIPE_API_BASE_URL:${ledgerlab.demo.simulator-base-url}}
+    read-timeout: 3s
+  bank:
+    payments:
+      enabled: true
+      base-url: ${LEDGERLAB_BANK_PAYMENTS_BASE_URL:${ledgerlab.demo.simulator-base-url}}
+      read-timeout: 3s
+  outbound:
+    lease-duration: 8s
+    base: 1s
+    cap: 5s
+    poll-interval: 500ms
+  inbox:
+    poll-interval: 500ms

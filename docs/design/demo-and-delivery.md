@@ -99,3 +99,15 @@ demo profile 下只开放：静态页面、`GET /api/**` 的只读查询（inves
 ## 12. 与 P6 并行
 
 P6 的 T07/T08 在等 Stripe 首笔自动 payout。P7 分支 `p7` 从 `p6` 建；P6 收尾后把 `p6` 合并进 `p7`（不 rebase），再开 P7 的 PR。演示站用 fake Stripe，不依赖 P6 的真实运行；只有报告面板要等 P6 T08 的报告文件。
+
+## 13. 实现备注（P7 T02，2026-11-05）
+
+- **模块与装配**：`dev.ledgerlab.demo`，全部 bean 带 `@Profile("demo")`，实现类都在 `demo.internal`，不暴露公开类型；Modulith 测试 `DemoModuleTest` 断言没有模块依赖 demo，且 demo 只依赖 `outbound`（崩溃钩子）和 `shared`。默认 profile 下 `/api/demo/**` 是 404（`DemoProfileTest`）。配置：`ledgerlab.demo.simulator-base-url`（必填）、`app-base-url`（空 = 本机监听端口，`WebServerInitializedEvent` 取得）、`max-streams`（默认 200）、`timeline-poll`（500ms）、`step-timeout`（60s）。`application-demo.yaml` 把重试节奏缩到演示尺度（处理方读超时 3s、命令租约 8s、退避基数 1s）。
+- **动作经 HTTP 驱动**：动作脚本通过 simulator 控制接口和主应用自己的公开 REST（本机回环）驱动，不直接写库、不调其他模块内部类，所以 demo 与业务模块之间没有编译期依赖。读（时间线、计数）用 `readonly` 角色的视图；只有每日聚合计数用 `app` 角色写。
+- **`batch-first`**：设计原文写 `HOLD_AND_REORDER`。实测 `payout.created` 只登记批次（ANNOUNCED），明细在 `payout.reconciliation_completed` 时才核对，所以“批次早于支付”真正出现在核对那一刻：动作用 relay 的 `DELAY`（60 模拟秒）扣住支付事件，创建并核对 payout → 批次因 `UNKNOWN_PAYMENT` 进入 HELD，再推进模拟时钟放出支付事件 → 批次自动重核为 CONFIRMED。`parkedThenResolved` 统计“进过 HELD 之后又离开 HELD 的批次”加“进过 PARKED 之后又 PROCESSED 的 inbox 事件”。
+- **`kill-worker`**：`DemoCrashHooks`（demo 下 `@Primary` 的 `OutboundHooks`）在被武装后，让下一条出站命令在 `beforeWriteback` 抛异常，也就是处理方已执行、结果还没写回的最坏时刻；租约过期后命令以新的租约代数被接管完成，处理方只有一笔退款。同进程里接管的仍是同一个 worker 实例（租约代数 +1），不是第二个进程。`workerCrashesRecovered` = 第 1 次尝试已经拿到 2xx、却还有第 2 次尝试的命令数。
+- **计数来源**：除 `overRefundsRejected` 外都来自 readonly 视图的真实查询。被拒绝的退款整体回滚，库里不留行，这一项只能记观察到的 409 次数（`demo.action_count` 的 `over-refund-rejected`）。
+- **前置自动补齐**：需要“已结算且可退的支付”的动作，先建支付并生成、确认 payout；退款类动作另建一笔未打出的支付给处理方余额，使退款能执行；需要银行现金的动作先建支付、批次、推进模拟时钟并导入银行流水直到批次 BANKED。每一步都在时间线上可见。
+- **模拟时钟**：银行动作会 `POST /sim/clock/advance` 按天推进。演示站的模拟器应把 `SIM_CLOCK_START` 设在部署时刻之前（建议 14 天），这样每天重置之前推进的天数不会超过现实时间。
+- **测试**：`DemoActionsTest` 用 simulator 的 jar 起子进程（`simulator/target/ledgerlab-simulator-0.0.1-SNAPSHOT.jar`，用同一个测试库和 `simulator` 角色，fake Stripe → relay → 应用与 Compose 同构），jar 不存在时用 `assumeTrue` 跳过；CI 里要先 `./mvnw -B -f simulator/pom.xml -DskipTests package` 才会真正运行。
+- **本任务未做**：限流与公开接口白名单过滤器（第 3、4 节，AC-9.3/9.4）、每日重置（第 5 节）和前端页面属于后续任务；`POST /api/demo/seed` 已实现，调用方（`reset.sh`）在后续任务。
