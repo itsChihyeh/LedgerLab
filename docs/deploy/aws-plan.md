@@ -16,10 +16,10 @@
 
 ## 价格说明（重要）
 
-- **已核实**：EC2 `t4g.small`、`t4g.medium` 的 Linux 按需价格，来自 AWS 公开价格文件 <https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/ca-central-1/index.json>，由 `deploy/price-check.py` 在本机查询，**查询日期 2026-11-05（UTC）**，区域 ca-central-1：
+- **已核实**：EC2 `t4g.small`、`t4g.medium`、`t3.small` 的 Linux 按需价格，来自 AWS 公开价格文件 <https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/ca-central-1/index.json>，由 `deploy/price-check.py` 在本机查询，**查询日期 2026-11-05（UTC）**，区域 ca-central-1：
   - `t4g.small`：0.0184 USD/小时 → 按 730 小时/月约 **13.43 USD/月**
   - `t4g.medium`：0.0368 USD/小时 → 约 **26.86 USD/月**
-  - `t3.small`（x86 退路）：脚本已加入，**尚未查询，待核实**。
+  - `t3.small`（x86 退路）：0.0232 USD/小时 → 约 **16.94 USD/月**，比 `t4g.small` 多 0.0048 USD/小时，约 +3.50 USD/月。
 - **估算（标“估算”，未核实）**：脚本查不到的项目，数字只用来比较三个方案的量级，不是报价。官方来源：
   - EBS：<https://aws.amazon.com/ebs/pricing/>
   - 公网 IPv4 地址（含运行中的实例）：<https://aws.amazon.com/vpc/pricing/>

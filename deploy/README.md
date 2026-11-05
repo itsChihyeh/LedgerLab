@@ -44,7 +44,7 @@
 | 问题 | 退路 | 价格差（ca-central-1 按需，2026-11-05） |
 |---|---|---|
 | 内存不够 | 换 `t4g.medium`（4 GiB） | 0.0368 − 0.0184 = 0.0184 USD/小时，约 +13.43 USD/月 |
-| ARM 上跑不通 | 换 x86 `t3.small`（2 GiB），Compose 下载链接改为 x86_64 | 价格待核实（运行 `python3 deploy/price-check.py` 会一并输出 `t3.small`） |
+| ARM 上跑不通 | 换 x86 `t3.small`（2 GiB），Compose 下载链接改为 x86_64 | 0.0232 USD/小时（2026-11-05 查得，约 16.94 USD/月），比 `t4g.small` 多 0.0048 USD/小时，约 +3.50 USD/月 |
 
 ## 域名
 
