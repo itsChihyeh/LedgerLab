@@ -348,7 +348,7 @@ T04 实现备注（2026-11-02）：按任务补充，`up.sh` 新 run 的窗口�
 
 篡改用例由脚本用本地签名密钥和当前时间戳生成 HMAC，再改正文一个字节、去掉签名头、或用早 400 秒时间戳，三次直接发 app 均须 401；这些是脚本签名而非 Stripe 原签名，不发送“正确正文＋正确签名”。真实验签证据是此前至少 20 笔经 listen → relay → inbox 的真实事件。结果（包括失败）脱敏写 `target/sandbox/accept-<UTC时间>.json`，列出 charge/event、录制哈希、状态、协议版本、负例结果和不变量。
 
-`GET /api/audit/invariants` 仅在 sandbox profile 注册，返回 `{checkedAt, violations:[{invariant,detail}]}`，checkedAt 来自注入 Clock，沿用本地只读接口无额外 HTTP 鉴权的约定。为遵守 ADR-0014，新增向后兼容的 `LedgerAudit.readonly(DataSource)` 装配入口，在 readonly 凭证的 REPEATABLE READ 事务里对现有 `ledger.v_*` 视图运行同一套 `check()` SQL；分组显式列出视图所需字段，默认 app 审计路径结果不变，没有复制检查逻辑或放宽权限。仅检查 LedgerAudit 已有的 INV-1～5、INV-8；reconciliation、refunds、payouts 没有现成公开审计入口，未新增其检查逻辑。离线脚本单测及 MockMvc＋真实 PostgreSQL 覆盖解析、脱敏、幂等恢复、负例签名、限时等待、空库、正常记账、损坏余额和 readonly 权限。
+（P7 T01 起该接口在所有配置下可用，覆盖 INV-1～INV-12，返回 `{checkedAt, checks, violations}`，见 money-model 第 5 节的实现备注；下面是 P6 当时的说明。）`GET /api/audit/invariants` 仅在 sandbox profile 注册，返回 `{checkedAt, violations:[{invariant,detail}]}`，checkedAt 来自注入 Clock，沿用本地只读接口无额外 HTTP 鉴权的约定。为遵守 ADR-0014，新增向后兼容的 `LedgerAudit.readonly(DataSource)` 装配入口，在 readonly 凭证的 REPEATABLE READ 事务里对现有 `ledger.v_*` 视图运行同一套 `check()` SQL；分组显式列出视图所需字段，默认 app 审计路径结果不变，没有复制检查逻辑或放宽权限。仅检查 LedgerAudit 已有的 INV-1～5、INV-8；reconciliation、refunds、payouts 没有现成公开审计入口，未新增其检查逻辑。离线脚本单测及 MockMvc＋真实 PostgreSQL 覆盖解析、脱敏、幂等恢复、负例签名、限时等待、空库、正常记账、损坏余额和 readonly 权限。
 
 ### 9.9 已知差异（随实测补充）
 

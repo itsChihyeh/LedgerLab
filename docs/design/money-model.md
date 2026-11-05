@@ -161,6 +161,22 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订，见第 8 节）�
 | INV-12 | 2105 余额 = Σ 当前版本 `match_status = UNAPPLIED` 的入账流水金额；2101 按支付的当前金额（纠错改金额后用新值） | 模型测试每一步检查（ADR-0011 补充第 6 节） |
 | INV-11 | 银行侧核对：每份银行流水 期初 + Σ入账 − Σ出账 = 期末；截至流水期末，账上 1103 = 银行期末余额，否则差额必须作为差异显示 | 对账运行 |
 
+### P7 T01 实现备注：运行时检查
+
+`GET /api/audit/invariants`（默认、sandbox、demo 配置都开放，readonly 角色，只读 `v_*` 视图）在一个 `REPEATABLE READ` 只读事务里依次运行各模块的 `shared.InvariantCheck` 实现，返回 `{checkedAt, checks:[{id, ok, violations}], violations}`（`checks` 按 INV 编号排序且 12 条都在；顶层 `violations` 是全部违规的扁平列表，保持 P6 脚本兼容）。每条违规带 `invariant` 和 `detail`。
+
+| INV | 检查所在模块 | 运行时检查的口径和限制 |
+|---|---|---|
+| 1、2、3、4、5、8 | ledger（`LedgerInvariantCheck`，复用 `LedgerAudit` 的 SQL） | 一条 SQL 同时核对分录头（INV-1 与 INV-4），所以这两条的违规可能同时出现在两个编号下 |
+| 6 | payouts | 只验当前能验的部分：① 2102 的 posting 若使余额从非负变负，所属分录必须是 `REFUND_ACCEPTED`，或带 `correction_id`（纠错的冲销与重记分录）；② `PAYOUT_RESERVED` 之后 2102 ≥ 0；③ 没有存 free_cash 快照，改为用 seq 顺序的流水余额重建：每笔 `PAYOUT_RESERVED` 之后 1103 − 2104 − 2105 − max(0, −1101) ≥ 0，等价于“提现金额 ≤ 当时的 free_cash”（资金写入都在全局资金锁下，seq 顺序就是余额变化顺序） |
+| 7 | refunds | 每笔支付未失败、未取消的退款合计 ≤ 当前请款金额 |
+| 9 | payments（2101）、refunds（2103）、payouts（2104）、settlement（1102） | 用账户当前余额对业务行重算；2101 用支付当前金额，只计 `CAPTURED` |
+| 10 | refunds、payouts | 按分录的 `subject` 统计：退款预留 ≤ 1、结清（执行/失败/取消）≤ 1、未终结（含 UNKNOWN）为 0；提现预留 ≤ 1、出账＋失败 ≤ 1、退回 ≤ 1、未终结为 0；退款状态历史进入终态 ≤ 1 次。提现的状态历史不检查（纠错⑤可使 FAILED 改为 PAID） |
+| 11 | reconciliation | ① 每份银行流水：期初 + 已入账入账 − 出账 = 期末；② 最新一份流水：期末余额 − 账上 1103 为 0，或等于刻意未入账的已入账流水（WAITING 与 UNMATCHED_NO_POSTING，入账为正、出账为负），或有未关闭的 `BANK_BALANCE_MISMATCH`／`TIMING_DIFFERENCE` 差异（subject 为 bank_statement）。其他差异记录不能解释它 |
+| 12 | reconciliation | 2105 = 每个流水编号最高版本中 `UNAPPLIED` 的金额合计 |
+
+测试 `RuntimeInvariantsTest`（`ac_9_9_*`）每条 INV 先在业务路径造出的数据上断言全部 ok，再以 migrator 直连改库制造违规并断言接口报出。封存触发器、非负 CHECK、唯一 source_key 会挡住的违规，测试在同一事务里先关掉对应的保护再改，并在注释里写明。
+
 ### P2 T15 实现备注：应用级独立模型
 
 `PaymentModelProperties` 已在原 P1 动作链中加入批次、分页中断、失败重打、银行文件及 WAITING 到期。`PaymentModel`／`SettlementModel` 只用 JDK 独立计算，逐步比较全部账户增量、批次 posting 多重集合（省略 0 元）、状态和流水匹配，并检查全库 INV-9 的 2101／1102 与 INV-11 的“唯一 BOOKED 入账合计减 WAITING”。生成银行证据限定为 CAD CREDIT，包含待查收款；外币、出账及完整期间对账仍由专项测试负责。批次生成净额不超过单行银行／退回行的 99999999 上限，这是测试生成域，不改变汇总金额契约。每条场景独立设置起始 Clock，场景内只向前推进，避免共享测试库的 1000 条序列累计超出日历年份。日志重放原始处理方 HTTP 分页和银行文件，空库比较扩展到批次、明细、流水版本和差异状态。动作、边界、收缩演示与实测见 [model-tests.md](../testing/model-tests.md)。
