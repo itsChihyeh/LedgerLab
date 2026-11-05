@@ -23,6 +23,9 @@ const passed = process.argv
   .slice(2)
   .filter((arg) => !arg.startsWith("--scenario="));
 
+// Scenarios that only run when asked for by name (never in the default `npm run test:e2e`).
+const optional = ["demo-video"];
+
 // Separate launches give S3 and AC-5.7 their own real PostgreSQL database.
 for (const scenario of [
   "sample-a-1-3",
@@ -34,7 +37,8 @@ for (const scenario of [
   "payout-recovery",
   "demo",
   "demo-broken-lock",
-].filter((name) => !only || name === only)) {
+  ...optional,
+].filter((name) => (only ? name === only : !optional.includes(name)))) {
   const result = spawnSync(
     process.execPath,
     ["node_modules/@playwright/test/cli.js", "test", ...passed],
