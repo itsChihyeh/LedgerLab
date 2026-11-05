@@ -108,5 +108,5 @@ To start only a local PostgreSQL with the database roles, run `cp .env.example .
 
 - [Architecture overview](docs/architecture.md), the English entry point to the Chinese design documents
 - [Money model with worked examples](docs/design/money-model.md), [acceptance criteria](docs/acceptance-criteria.md) and [decision records](docs/adr/) (Chinese)
-- [How this was built](docs/ai-usage.md): Zhiye's decisions, and the implementation by AI agents, who wrote most of this code
+- [How this was built](docs/ai-usage.md): most of this code was written by AI agents, and this page says who did what
 - [Rules for coding agents](AGENTS.md) (Chinese)
