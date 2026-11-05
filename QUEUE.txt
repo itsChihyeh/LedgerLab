@@ -11,4 +11,5 @@ T06-perf-baseline.md
 T07-deploy-plan.md
 T04c-trusted-proxies-compose.md
 T08-video-article.md
+T08b-sse-release-seed-text.md
 T09-handoff-p7.md
