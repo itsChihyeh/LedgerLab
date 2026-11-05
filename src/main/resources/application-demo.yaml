@@ -3,6 +3,14 @@
 ledgerlab:
   demo:
     simulator-base-url: ${LEDGERLAB_DEMO_SIMULATOR_URL:http://localhost:8081}
+    # Public gate (docs/design/demo-and-delivery.md sections 3 and 4). Behind a reverse proxy set trusted-proxies
+    # to its CIDR(s); empty means only the connection address is used. webhook-allowed-sources is where the
+    # processor webhook may come from (the stack's relay); the default is loopback only.
+    trusted-proxies: ${LEDGERLAB_DEMO_TRUSTED_PROXIES:}
+    webhook-allowed-sources: ${LEDGERLAB_DEMO_WEBHOOK_SOURCES:127.0.0.0/8,::1/128}
+    actions-per-ip-per-minute: 20
+    actions-per-minute: 300
+    streams-per-ip: 3
   # The scenarios wait for real workers, so everything that retries runs on a demo-sized clock: a lost
   # processor answer is noticed after 3 seconds, a crashed worker's lease lapses after 8.
   stripe:

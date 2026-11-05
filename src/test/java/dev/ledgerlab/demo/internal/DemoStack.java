@@ -145,6 +145,23 @@ final class DemoStack implements AutoCloseable {
         return send(appPort, HttpRequest.newBuilder(uri(appPort, path)).POST(HttpRequest.BodyPublishers.noBody()));
     }
 
+    Answer post(String path, Map<String, String> headers) {
+        return call("POST", path, headers, "");
+    }
+
+    Answer get(String path, Map<String, String> headers) {
+        return call("GET", path, headers, "");
+    }
+
+    /** Any method, with extra request headers and a JSON body, as a caller from outside would send it. */
+    Answer call(String method, String path, Map<String, String> headers, String body) {
+        var request = HttpRequest.newBuilder(uri(appPort, path))
+                .method(method, HttpRequest.BodyPublishers.ofString(body))
+                .header("Content-Type", "application/json");
+        headers.forEach(request::header);
+        return send(appPort, request);
+    }
+
     Answer simPost(String path, String json) {
         return send(
                 simulatorPort,

@@ -30,6 +30,10 @@ final class JsonClient {
     private final Supplier<String> base;
 
     JsonClient(Supplier<String> base, Duration timeout, ObjectMapper mapper) {
+        this(base, timeout, mapper, Map.of());
+    }
+
+    JsonClient(Supplier<String> base, Duration timeout, ObjectMapper mapper, Map<String, String> defaultHeaders) {
         var http = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(timeout)
@@ -37,7 +41,9 @@ final class JsonClient {
                 .build();
         var factory = new JdkClientHttpRequestFactory(http);
         factory.setReadTimeout(timeout);
-        this.client = RestClient.builder().requestFactory(factory).build();
+        var builder = RestClient.builder().requestFactory(factory);
+        defaultHeaders.forEach(builder::defaultHeader);
+        this.client = builder.build();
         this.mapper = mapper;
         this.base = base;
     }

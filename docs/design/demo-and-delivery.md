@@ -110,4 +110,16 @@ P6 的 T07/T08 在等 Stripe 首笔自动 payout。P7 分支 `p7` 从 `p6` 建�
 - **前置自动补齐**：需要“已结算且可退的支付”的动作，先建支付并生成、确认 payout；退款类动作另建一笔未打出的支付给处理方余额，使退款能执行；需要银行现金的动作先建支付、批次、推进模拟时钟并导入银行流水直到批次 BANKED。每一步都在时间线上可见。
 - **模拟时钟**：银行动作会 `POST /sim/clock/advance` 按天推进。演示站的模拟器应把 `SIM_CLOCK_START` 设在部署时刻之前（建议 14 天），这样每天重置之前推进的天数不会超过现实时间。
 - **测试**：`DemoActionsTest` 用 simulator 的 jar 起子进程（`simulator/target/ledgerlab-simulator-0.0.1-SNAPSHOT.jar`，用同一个测试库和 `simulator` 角色，fake Stripe → relay → 应用与 Compose 同构），jar 不存在时用 `assumeTrue` 跳过；CI 里要先 `./mvnw -B -f simulator/pom.xml -DskipTests package` 才会真正运行。
-- **本任务未做**：限流与公开接口白名单过滤器（第 3、4 节，AC-9.3/9.4）、每日重置（第 5 节）和前端页面属于后续任务；`POST /api/demo/seed` 已实现，调用方（`reset.sh`）在后续任务。
+- **本任务未做**：限流与公开接口白名单过滤器（第 3、4 节，AC-9.3/9.4，见下一节）、每日重置（第 5 节）和前端页面属于后续任务；`POST /api/demo/seed` 已实现，调用方（`reset.sh`）在后续任务。
+
+## 14. 实现备注（P7 T03，2026-11-05）
+
+- **一个过滤器管两件事**：`DemoGateFilter`（demo profile、最高优先级）只看请求行，先判白名单再判限流；被拒的请求到不了任何控制器，所以不会有业务写入。白名单是 `DemoPathWhitelist` 里一张显式规则表：静态页（`/`、`/index.html`、`/assets/**`、顶层带扩展名的文件）、`GET /api/**`（不含 `/api/demo`）、`/api/demo` 下的 `POST actions/{名}`、`POST seed`、`POST visit`、`GET summary`、`GET stream`、`POST /webhooks/stripe`；其余一律 404（`sendError(404)`，和不存在的路由同一个响应）。新控制器默认不在表里。路径不是规范形式（含 `;`、`%`、反斜杠、空段、`.`／`..` 段、非 ASCII 可见字符）直接 404，防止换种写法绕过。
+- **场景自己的回环调用怎么过白名单**：动作脚本通过应用自己的写接口（退款、提现、银行导入、对账等）驱动，这些路由对公网是 404。`DemoInternalToken` 是启动时生成的随机密钥（32 字节，不落日志、不对外提供），场景用的回环 `JsonClient` 每个请求都带 `X-Ledgerlab-Demo-Internal`，过滤器常量时间比对后放行。模拟器客户端不带。密钥只在进程内存里。
+- **webhook 来源**：`ledgerlab.demo.webhook-allowed-sources`（CIDR 列表，默认 `127.0.0.0/8,::1/128`；Compose 里设成 relay 所在网段），只看连接地址，**不看** `X-Forwarded-For`。来源不在列表里是 404，不是 401。
+- **客户端地址**：`ClientAddress`。连接地址不在 `ledgerlab.demo.trusted-proxies` 里就只用连接地址（伪造的 `X-Forwarded-For` 无效）；在的话从 `X-Forwarded-For`（多行头也算）最右边往左，跳过可信代理，第一个非可信地址就是客户端；全是可信代理或没有头就退回连接地址。CIDR 只解析 IP 字面量，不做域名解析；启动时配置错误直接失败。IPv6 按地址比较。**不**把 IPv6 /64 合并成一个桶，所以单个 /64 的持有者能绕过每 IP 限额，但绕不过全站 300/分钟。
+- **令牌桶**（`DemoRateLimiter`，注入的 `Clock`）：连续补充，容量 = 每分钟上限；先扣本 IP 的桶再扣全站桶，全站拒绝时把 IP 的令牌还回去，所以被全站限额挡掉的人不会再丢自己的额度；IP 桶表超过 1 万项时清掉已满的闲置桶。计入“动作”的是 `POST /api/demo/actions/*` 和 `POST /api/demo/seed`（未知动作名也算，防止扫描）；`visit`、`summary` 不限。429 带 `Retry-After`（整数秒，≥1）和 `{"error":"RATE_LIMITED"}`。
+- **SSE**：每 IP 最多 `streams-per-ip`（默认 3）个并发连接，第 4 个 429（`TOO_MANY_STREAMS`，`Retry-After: 5`）；名额在 `AsyncListener` 的完成／超时／出错回调里归还，只归还一次。全站 200 的上限（503）仍在 `DemoEvents`，先判每 IP 再判全站。客户端断开要等服务器下一次写失败（至多一个 15 秒心跳）才会被发现，名额在那之后归还。
+- **配置项**：`ledgerlab.demo.trusted-proxies`、`webhook-allowed-sources`、`actions-per-ip-per-minute`（20）、`actions-per-minute`（300）、`streams-per-ip`（3），默认值在 `application-demo.yaml` 和 `DemoProperties`。
+- **已知缺口（留给后续）**：`POST /api/demo/seed` 按设计 5 节由 `reset.sh` 从外部调用，所以它在公开白名单里，只受动作限流约束；若要只允许运维调用，需要另加来源限制或口令（见任务输出里的问题）。
+- **测试**：`DemoGateTest`（无 Docker，手动时钟：白名单表、客户端地址、令牌桶、过滤器、SSE 名额归还）；`DemoPublicSurfaceTest`（真实应用和库：写接口逐一 404、读 200、默认 profile 写接口不变、webhook 来源、第 21 次动作 429 且分录数和 inbox 数不变、可信代理后的全站上限、不可信来源伪造头无效、第 4 个流 429）；`DemoModuleTest.ac_9_3_noModuleDependsOnDemo` 为 T02 已有。
