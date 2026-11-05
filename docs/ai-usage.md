@@ -8,8 +8,6 @@ Zhiye set the project's goal and scope, including the move to real Stripe test m
 
 ## What the AI agents did
 
-Zhiye did not write this code by hand.
-
 | Agent | Work |
 |---|---|
 | OpenAI Codex | Implemented the task-sized pieces of P1 through P6 T06: application code, migrations, tests, simulator, frontend and scripts. It ran the related tests and committed locally. It stopped on 2026-11-02 |
