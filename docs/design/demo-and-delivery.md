@@ -54,7 +54,7 @@ demo profile 下只开放：静态页面、`GET /api/**` 的只读查询（inves
 
 ## 5. 每日重置（AC-9.5）
 
-- 账本只追加、app 角色没有删除权，所以重置在应用之外做：`scripts/demo/reset.sh`（部署时由定时任务调用）先调 `GET /api/demo/summary` 把当日摘要（动作计数、不变量结果、分录/支付/退款数量）存档到 `demo-archive/<日期>.json`，然后 `docker compose down -v` 演示栈并重新 `up`，最后跑初始场景（`POST /api/demo/seed`：3 笔已结算支付、1 笔已完成退款、1 个已 BANKED 批次），确认不变量全部通过。
+- 账本只追加、app 角色没有删除权，所以重置在应用之外做：`scripts/demo/reset.sh`（部署时由定时任务调用）先调 `GET /api/demo/summary` 把当日摘要（动作计数、不变量结果、分录/支付/退款数量）存档到 `demo-archive/<日期>.json`，然后 `docker compose down -v` 演示栈并重新 `up`，最后跑初始场景（`POST /api/demo/seed`：3 笔已结算支付、1 笔为退款而建的已捕获支付（让处理方有余额可退）、1 笔已完成退款、1 个已 BANKED 批次），确认不变量全部通过。
 - 存档目录挂在演示栈之外的持久位置，重置不会删。演示页显示“上次重置时间”和最近 7 天的存档摘要。
 - AC-9.5 的自动化测试用一次性 Compose 项目跑 `reset.sh` 全流程（和冒烟同一风格），不进单元测试。
 
@@ -119,7 +119,7 @@ P6 的 T07/T08 在等 Stripe 首笔自动 payout。P7 分支 `p7` 从 `p6` 建�
 - **webhook 来源**：`ledgerlab.demo.webhook-allowed-sources`（CIDR 列表，默认 `127.0.0.0/8,::1/128`；Compose 里设成 relay 所在网段），只看连接地址，**不看** `X-Forwarded-For`。来源不在列表里是 404，不是 401。
 - **客户端地址**：`ClientAddress`。连接地址不在 `ledgerlab.demo.trusted-proxies` 里就只用连接地址（伪造的 `X-Forwarded-For` 无效）；在的话从 `X-Forwarded-For`（多行头也算）最右边往左，跳过可信代理，第一个非可信地址就是客户端；全是可信代理或没有头就退回连接地址。CIDR 只解析 IP 字面量，不做域名解析；启动时配置错误直接失败。IPv6 按地址比较。**不**把 IPv6 /64 合并成一个桶，所以单个 /64 的持有者能绕过每 IP 限额，但绕不过全站 300/分钟。
 - **令牌桶**（`DemoRateLimiter`，注入的 `Clock`）：连续补充，容量 = 每分钟上限；先扣本 IP 的桶再扣全站桶，全站拒绝时把 IP 的令牌还回去，所以被全站限额挡掉的人不会再丢自己的额度；IP 桶表超过 1 万项时清掉已满的闲置桶。计入“动作”的是 `POST /api/demo/actions/*` 和 `POST /api/demo/seed`（未知动作名也算，防止扫描）；`visit`、`summary` 不限。429 带 `Retry-After`（整数秒，≥1）和 `{"error":"RATE_LIMITED"}`。
-- **SSE**：每 IP 最多 `streams-per-ip`（默认 3）个并发连接，第 4 个 429（`TOO_MANY_STREAMS`，`Retry-After: 5`）；名额在 `AsyncListener` 的完成／超时／出错回调里归还，只归还一次。全站 200 的上限（503）仍在 `DemoEvents`，先判每 IP 再判全站。客户端断开要等服务器下一次写失败（至多一个 15 秒心跳）才会被发现，名额在那之后归还。
+- **SSE**：每 IP 最多 `streams-per-ip`（默认 3）个并发连接，第 4 个 429（`TOO_MANY_STREAMS`，`Retry-After: 5`）；名额在 `AsyncListener` 的完成／超时／出错回调里归还，只归还一次。全站 200 的上限（503）仍在 `DemoEvents`，先判每 IP 再判全站。客户端断开要等服务器下一次写失败（至多两个 5 秒心跳——关页后的第一次写通常还能成功，复位要到之后才到；实测约 8 秒。页面关闭时前端会主动 close()，以免依赖浏览器的清理，但服务端仍要靠写失败才知道，所以名额不是“立即”归还，要做到立即需要新增告知端点，未做）才会被发现，名额在那之后归还。
 - **配置项**：`ledgerlab.demo.trusted-proxies`、`webhook-allowed-sources`、`actions-per-ip-per-minute`（20）、`actions-per-minute`（300）、`streams-per-ip`（3），默认值在 `application-demo.yaml` 和 `DemoProperties`。
 - **已知缺口（已由第 16 节解决）**：`POST /api/demo/seed` 按设计 5 节由 `reset.sh` 从外部调用，所以它在公开白名单里，只受动作限流约束；若要只允许运维调用，需要另加来源限制或口令（见任务输出里的问题）。
 - **测试**：`DemoGateTest`（无 Docker，手动时钟：白名单表、客户端地址、令牌桶、过滤器、SSE 名额归还）；`DemoPublicSurfaceTest`（真实应用和库：写接口逐一 404、读 200、默认 profile 写接口不变、webhook 来源、第 21 次动作 429 且分录数和 inbox 数不变、可信代理后的全站上限、不可信来源伪造头无效、第 4 个流 429）；`DemoModuleTest.ac_9_3_noModuleDependsOnDemo` 为 T02 已有。
@@ -132,7 +132,7 @@ P6 的 T07/T08 在等 Stripe 首笔自动 payout。P7 分支 `p7` 从 `p6` 建�
 - **模拟时钟**：`up` 把 `SIM_CLOCK_START` 设为现在往前 14 天（第 5 节的建议），每次重置重新计算。
 - **脚本**：`up`（构建 jar、起栈、等健康、已有数据则不重复种子，否则调 `/api/demo/seed`、确认 12 条不变量全 ok、写 `last-reset.txt`）、`down`（`down -v`，保留 `.demo/` 里的口令与存档）、`status`、`reset`、`check-reset`。`reset`：先把 `GET /api/demo/summary`（不变量换成现取的审计结果）加 `archivedAt` 存到 `.demo/archive/<UTC 日期>.json`（同一天第二次重置加时间后缀，不覆盖第一份）；设置环境变量 `DEMO_ARCHIVE_EXTRA_DIR` 时同时复制一份到该目录；host 目录只保留最新 7 份；然后 down、up、种子、确认不变量。
 - **存档读取**：`.demo/archive` 以只读方式挂进 app（`/demo-archive`，`ledgerlab.demo.archive-dir`）。`GET /api/demo/archive`（在白名单里，只读）返回 `{lastReset, archive:[{file, summary}…最近 7 份，新的在前]}`；目录缺失或文件损坏时按空历史处理。`DemoArchiveTest` 无需 Docker。页面展示留给前端任务。
-- **验证**：`scripts/demo/selftest.py` 检查脚本里的纯函数；`check-reset.sh` 起栈、跑 `pay`／`replay-webhook`／`double-refund`、重置，断言存档存在且与重置前一致、动作计数归零、库回到 3 笔种子支付、不变量全 ok、`lastReset` 前进、`/api/demo/archive` 列出新存档、`down` 后无遗留容器／卷／网络、`ledgerlab-sandbox` 容器集合前后不变，证据写入 `target/demo/check-reset-*.json`。
+- **验证**：`scripts/demo/selftest.py` 检查脚本里的纯函数；`check-reset.sh` 起栈、跑 `pay`／`replay-webhook`／`double-refund`、重置，断言存档存在且与重置前一致、动作计数归零、库回到 4 笔种子支付（3 笔已结算＋1 笔退款用的支付）、不变量全 ok、`lastReset` 前进、`/api/demo/archive` 列出新存档、`down` 后无遗留容器／卷／网络、`ledgerlab-sandbox` 容器集合前后不变，证据写入 `target/demo/check-reset-*.json`。
 
 ## 16. 实现备注（P7 T04b，2026-11-05）
 

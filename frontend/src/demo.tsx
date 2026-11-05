@@ -50,7 +50,15 @@ export function useDemoStream() {
         ),
       );
     }
-    return () => source.close();
+    // Free the server-side stream slot at once when the tab goes away, not at the next heartbeat.
+    const close = () => source.close();
+    window.addEventListener("pagehide", close);
+    window.addEventListener("beforeunload", close);
+    return () => {
+      window.removeEventListener("pagehide", close);
+      window.removeEventListener("beforeunload", close);
+      source.close();
+    };
   }, []);
   return { state, connected, setState };
 }

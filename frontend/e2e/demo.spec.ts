@@ -25,7 +25,7 @@ const newestFeedId = (page: Page) =>
   );
 
 async function openDemo(page: Page) {
-  // The server frees a closed browser's stream slot only on its next write (a 15 s heartbeat at most), and one
+  // The server frees a closed browser's stream slot only on its next write (a 5 s heartbeat at most), and one
   // address may hold three, so right after earlier tests a page may have to retry until a slot is free.
   for (let attempt = 1; ; attempt++) {
     await page.goto("/");
@@ -56,7 +56,7 @@ test("ac_9_1_everyActionUpdatesTimelineAndInvariants", async ({ page }) => {
   test.setTimeout(600_000);
   await openDemo(page);
   await expect(page.locator("[data-action]")).toHaveCount(8);
-  // The seeded scenario is the starting point: three settled payments, one finished refund.
+  // The seeded scenario is the starting point: three settled payments, one funding payment, one finished refund.
   expect(await counter(page, "payments")).toBeGreaterThanOrEqual(3);
 
   for (const [action, key] of ACTIONS) {
@@ -232,4 +232,39 @@ test("ac_9_3_internalTokenNeverReachesThePage", async ({ page, request }) => {
   // The closed write routes stay closed to a browser that does not hold the token.
   const refused = await request.post("/api/refunds", { data: {} });
   expect(refused.status()).toBe(404);
+});
+
+test("ac_9_2_closingAPageFreesItsStreamSlotAtOnce", async ({ context }) => {
+  // One address may hold three streams. Probe: 200 means a slot was free (the probe stream is dropped at once).
+  const probe = (page: Page) =>
+    page.evaluate(async () => {
+      const abort = new AbortController();
+      const response = await fetch("/api/demo/stream", {
+        signal: abort.signal,
+      });
+      abort.abort();
+      return response.status;
+    });
+  const pages: Page[] = [];
+  for (let i = 0; i < 3; i++) {
+    const page = await context.newPage();
+    await page.goto("/");
+    await expect(page.locator("[data-stream]")).toHaveAttribute(
+      "data-stream",
+      "open",
+      { timeout: 15_000 },
+    );
+    pages.push(page);
+  }
+  const fourth = await context.newPage();
+  await fourth.goto("/#/overview");
+  // The fourth connection is refused while the three are open.
+  expect(await probe(fourth)).toBe(429);
+  // Closing one page gives its slot back once the server's heartbeat write fails. The first write after the
+  // browser closed its end usually still succeeds (the reset only arrives afterwards), so allow two 5 s
+  // heartbeats; before the page closed its stream itself this took up to two 15 s ones. Poll, never sleep.
+  await pages[0].close({ runBeforeUnload: true });
+  await expect
+    .poll(() => probe(fourth), { timeout: 12_000, intervals: [100] })
+    .toBe(200);
 });

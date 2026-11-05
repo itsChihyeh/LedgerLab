@@ -115,7 +115,7 @@ final class DemoEvents {
         }
     }
 
-    @Scheduled(fixedDelay = 15_000)
+    @Scheduled(fixedDelay = 5_000)
     void keepAlive() {
         for (SseEmitter emitter : emitters) {
             try {

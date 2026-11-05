@@ -276,7 +276,7 @@ def cmd_up(build=True):
     wait_for(app_reachable, 60, 'the app')
     counters = app_json('GET', '/api/demo/summary')['counters']
     if counters.get('payments', 0) == 0:
-        say('Running the seed scenario (3 settled payments, 1 refund, 1 BANKED batch)...')
+        say('Running the seed scenario (3 settled payments + 1 funding payment, 1 refund, 1 BANKED batch)...')
         app_json('POST', '/api/demo/seed', 300)
         write_last_reset(utcnow())
     else:
