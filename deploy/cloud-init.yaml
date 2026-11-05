@@ -1,0 +1,74 @@
+#cloud-config
+# DRAFT, not executed anywhere. First-boot setup for the recommended single-EC2 demo (docs/deploy/aws-plan.md).
+# Target image: Amazon Linux 2023, arm64 (t4g.small). Fill the three <...> placeholders before use; see
+# deploy/README.md. Nothing secret belongs in this file: database passwords are generated on the instance by
+# scripts/demo (into .demo/secrets.env), and the demo uses only fake Stripe values.
+
+package_update: true
+packages:
+  - docker
+  - git
+  - cronie
+  # Needed on the host by scripts/demo (mvnw builds the two jars). Verify the package name before use.
+  - java-25-amazon-corretto-devel
+  - python3
+
+write_files:
+  - path: /etc/ledgerlab/demo.env
+    permissions: "0644"
+    content: |
+      DEMO_DOMAIN=<DEMO_DOMAIN>
+      REPO_URL=<REPO_URL>
+      REPO_REF=<GIT_TAG_OR_COMMIT>
+      # Pin and verify: the Docker Compose plugin release and its published checksum.
+      COMPOSE_VERSION=<COMPOSE_VERSION>
+
+  - path: /usr/local/sbin/ledgerlab-demo-bootstrap
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      . /etc/ledgerlab/demo.env
+
+      # 2 GiB of RAM is tight for the Maven build plus two JVMs and PostgreSQL: add swap once.
+      if [ ! -f /swapfile ]; then
+        dd if=/dev/zero of=/swapfile bs=1M count=2048
+        chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+        echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      fi
+
+      systemctl enable --now docker
+      mkdir -p /usr/local/lib/docker/cli-plugins
+      curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+        "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-aarch64"
+      # TODO(user): compare with the sha256 published for that release before the next line.
+      chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+      id ledger >/dev/null 2>&1 || useradd --system --create-home --shell /sbin/nologin -G docker ledger
+      if [ ! -d /opt/ledgerlab/.git ]; then
+        git clone "$REPO_URL" /opt/ledgerlab
+      fi
+      git -C /opt/ledgerlab fetch --tags origin
+      git -C /opt/ledgerlab checkout "$REPO_REF"
+      chown -R ledger:ledger /opt/ledgerlab
+      mkdir -p /var/lib/ledgerlab/archive && chown ledger:ledger /var/lib/ledgerlab/archive
+
+      # The demo stack (ports bound to 127.0.0.1 only), then Caddy on the host network for HTTPS.
+      su -s /bin/sh ledger -c 'cd /opt/ledgerlab && sh scripts/demo/up.sh'
+      docker rm -f ledgerlab-caddy >/dev/null 2>&1 || true
+      docker run -d --name ledgerlab-caddy --restart unless-stopped --network host \
+        --env-file /etc/ledgerlab/demo.env \
+        -v /opt/ledgerlab/deploy/Caddyfile:/etc/caddy/Caddyfile:ro \
+        -v ledgerlab-caddy-data:/data \
+        caddy:<CADDY_VERSION>
+
+  - path: /etc/cron.d/ledgerlab-demo-reset
+    permissions: "0644"
+    content: |
+      # Daily reset at 03:15 UTC. The archive copy lives outside the repo so a re-clone never deletes it.
+      15 3 * * * ledger cd /opt/ledgerlab && DEMO_ARCHIVE_EXTRA_DIR=/var/lib/ledgerlab/archive sh scripts/demo/reset.sh >> /var/log/ledgerlab-reset.log 2>&1
+
+runcmd:
+  - [ sh, -c, "systemctl enable --now crond" ]
+  - [ sh, -c, "touch /var/log/ledgerlab-reset.log && chown ledger:ledger /var/log/ledgerlab-reset.log || true" ]
+  - [ /usr/local/sbin/ledgerlab-demo-bootstrap ]

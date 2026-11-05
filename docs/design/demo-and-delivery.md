@@ -158,3 +158,10 @@ P6 的 T07/T08 在等 Stripe 首笔自动 payout。P7 分支 `p7` 从 `p6` 建�
 - **W2**：200 笔 20000 分的支付由 fake Stripe 创建、一个 payout 确认；对它们受理退款，先 1 并发再 20 并发各 200 笔（每笔 1000 分）。没有单独测锁等待，报告的“2102 串行”是由吞吐与延迟形状得出的判断，已写明。
 - **未做**：多商户场景；调大 inbox 批量或缩短轮询的对照（需要另一组配置，也许值得作为后续任务）。
 - `perf/run.py --report <json>` 用已存的原始数据重新生成 Markdown，不重跑。
+
+## 19. 实现备注（P7 T07，2026-11-05）
+
+- **只写不做**：`docs/deploy/aws-plan.md`（开头是“需要用户做的事”）、`deploy/Caddyfile`、`deploy/cloud-init.yaml`（草稿，含待填占位符）、`deploy/README.md`、`deploy/price-check.py`（只读公开价格文件）。没有执行任何 AWS 操作。
+- **价格未核实**：执行环境不能联网，aws-plan.md 的月费是标明“未核实”的粗估，查询日期留空；用户运行 `deploy/price-check.py` 或看官方页后填入。AC-9.11 要求的官方价格和查询日期要等核实后才算完成。
+- **Caddyfile**：对 `/api/demo/seed`、`/webhooks/*`、`/sim/*`、`/relay/*` 返回 404；覆盖写 `X-Forwarded-For`，去掉 `X-Real-IP`／`Forwarded`；关闭 SSE 缓冲。
+- **已知缺口**：限流器要识别真实访客，app 需收到 `LEDGERLAB_DEMO_TRUSTED_PROXIES=10.89.77.1/32`，而 `compose.demo.yaml` 目前不传这个变量（见 aws-plan.md），部署前需要一个小任务补上。
