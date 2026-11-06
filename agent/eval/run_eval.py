@@ -1,12 +1,13 @@
 """Command line around the evaluator: runs splits, writes reports, keeps the test-set run log.
 
-    python agent/ledgerlab-agent.py eval --split dev|test --model baseline|stub [--out result.json]
+    python agent/ledgerlab-agent.py eval --split dev|test|hard --model baseline|stub [--out result.json]
     python agent/ledgerlab-agent.py eval-report [--out-dir docs/eval] [--date YYYY-MM-DD] [--check]
 
 All file writes of the evaluation live here (agent/src is write-free, see tests/test_static.py).
 
 Test-set discipline (docs/design/investigation-agent.md section 8.4): every evaluation of the test split first makes
-sure `agent/eval/data/test/runs.log` has a line for this (model configuration, code fingerprint). The fingerprint is a
+sure `agent/eval/data/test/runs.log` has a line for this (model configuration, code fingerprint); the hard split, which
+is kept for reporting only, has the same kind of log in `agent/eval/data/hard/runs.log`. The fingerprint is a
 hash of the agent source and the SOP, so re-running unchanged code adds nothing, while running the test set again
 after any change to rules, prompts or SOP adds a line and the report shows how often the set has been looked at.
 """
@@ -33,6 +34,8 @@ from ledgerlab_agent import evaluate  # noqa: E402
 from ledgerlab_agent.sop import SopIndex, load_sop  # noqa: E402
 
 RUNS_LOG = AGENT_DIR / "eval" / "data" / "test" / "runs.log"
+HARD_RUNS_LOG = AGENT_DIR / "eval" / "data" / "hard" / "runs.log"
+LOGGED_SPLITS: dict[str, Path] = {"test": RUNS_LOG, "hard": HARD_RUNS_LOG}
 RUNS_LOG_HEADER = "# utc_time\tmodel\tcode_fingerprint\tcommit"
 FINGERPRINT_SUFFIXES = {".py", ".md", ".json"}
 REPRODUCE = (
@@ -42,6 +45,19 @@ REPRODUCE = (
     "python agent/ledgerlab-agent.py eval --split dev --model stub",
     "python agent/ledgerlab-agent.py eval --split test --model baseline",
     "python agent/ledgerlab-agent.py eval --split test --model stub",
+    "python agent/ledgerlab-agent.py eval --split hard --model baseline",
+    "python agent/ledgerlab-agent.py eval --split hard --model stub",
+    "sh scripts/agent/verify-eval.sh --split hard   # regenerate the hard set from its seed and compare (needs Docker)",
+)
+
+# Written by hand after reading the numbers of the report this was last run for; shown under the failure modes.
+HARD_INTERPRETATION: tuple[str, ...] = (
+    "规则基线在难题集上没有一次答错，所有失分都是拒答：26 道连带差异题和 6 道放在连带差异上的注入题全部拒答"
+    "（规则只认主类别，其余类别按 SOP-2 交人处理）。它诚实但帮不上忙。",
+    "14 道组合题全对：同一提现叠两种主类别故障，规则已经够用，难处不在组合，而在要从别的差异反推出造成它的原因。",
+    "所以这一列真正能拉开差距的是 32/46 的拒答：外部模型若能凭银行流水和批次推出少到账、拆分、币种错标等，就是增量；"
+    "但它也可能答错，比较时要同时看错答数（基线为 0），不能只看准确率。",
+    "注入题基线全部拒答，没有机会被带偏，这个指标对基线没有区分力；这批新写法的注入文字要到外部模型上才有意义。",
 )
 
 
@@ -109,12 +125,14 @@ def run_one(
     model: str,
     sop: SopIndex,
     now: Callable[[], dt.datetime],
-    log_path: Path = RUNS_LOG,
+    log_path: Path | None = None,
     data_dir: Path = evaluate.DATA_DIR,
 ) -> evaluate.RunResult:
-    if split_name == "test":
+    if split_name in LOGGED_SPLITS:
         commit, dirty = git_commit()
-        record_test_run(model, code_fingerprint(), commit + ("+uncommitted" if dirty else ""), now, log_path)
+        record_test_run(
+            model, code_fingerprint(), commit + ("+uncommitted" if dirty else ""), now, log_path or LOGGED_SPLITS[split_name]
+        )
     return evaluate.run_split(evaluate.load_split(split_name, data_dir), model, sop)
 
 
@@ -148,7 +166,7 @@ def _parser() -> argparse.ArgumentParser:
     one.add_argument("--split", choices=evaluate.SPLITS, required=True)
     one.add_argument("--model", choices=evaluate.MODELS, required=True)
     one.add_argument("--out", type=Path, help="write this run's metrics and per-question rows as JSON")
-    rep = sub.add_parser("eval-report", help="run baseline and stand-in on dev and test, write docs/eval/agent-<date>.md/.json")
+    rep = sub.add_parser("eval-report", help="run baseline and stand-in on dev, test and hard, write docs/eval/agent-<date>.md/.json")
     rep.add_argument("--out-dir", type=Path, default=REPO_ROOT / "docs" / "eval")
     rep.add_argument("--date", help="report date, default today (local)")
     rep.add_argument("--check", action="store_true", help="write nothing; exit 1 when a hard line fails")
@@ -197,8 +215,9 @@ def _report(args: argparse.Namespace, sop: SopIndex, now: Callable[[], dt.dateti
         "commit": commit + (" (working tree had uncommitted changes)" if dirty else ""),
         "code_fingerprint": code_fingerprint(),
         "reproduce": list(REPRODUCE),
+        "hard_interpretation": list(HARD_INTERPRETATION),
     }
-    report = evaluate.build_report(runs, meta, read_runs_log())
+    report = evaluate.build_report(runs, meta, read_runs_log(), read_runs_log(HARD_RUNS_LOG))
     base = args.out_dir / f"agent-{date}"
     _write(base.with_suffix(".json"), json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     _write(base.with_suffix(".md"), evaluate.render_markdown(report))

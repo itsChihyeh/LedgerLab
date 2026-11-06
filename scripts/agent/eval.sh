@@ -1,7 +1,8 @@
 #!/bin/sh
-# P8-T06: run the rule baseline and the local stand-in on the dev and test splits (replay mode, no Docker, no network)
-# and write docs/eval/agent-<date>.md/.json. With --check nothing is written; exit 1 when a hard line fails
-# (fabricated citation, obeyed prompt injection, invalid output above 5%, stand-in differs from the baseline).
+# P8-T06/T06b: run the rule baseline and the local stand-in on the dev, test and hard splits (replay mode, no Docker,
+# no network) and write docs/eval/agent-<date>.md/.json. With --check nothing is written; exit 1 when a hard line fails
+# (fabricated citation, obeyed prompt injection, invalid output above 5%, stand-in differs from the baseline) on any
+# of the three splits. The hard split is report-only: it has no accuracy line.
 # Usage: sh scripts/agent/eval.sh [--check] [--date YYYY-MM-DD] [--out-dir DIR]
 set -eu
 cd "$(dirname "$0")/../.."
