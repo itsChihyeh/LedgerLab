@@ -1,0 +1,9 @@
+# P9 队列：按顺序处理；已完成以 p9 分支提交信息里的 "Task: P9-<编号>" 判定。
+# 设计正本：p9 分支 docs/design/agent-workbench-and-mcp.md（2026-11-06），ADR-0020，AC-11。
+# 执行：本线程的 Claude（Opus）在用户电脑上为每个任务起全新上下文的 Sonnet 5.5 进程（找工作/tmp/ledgerlab-p9/run-impl.ps1），
+# 提示词 = tasks/_common.md + 空行 + 任务文件（+ answers/<编号>.md）；独立重跑后 push p9，报告写 reports/。
+T01-investigation-service.md
+T02-mcp-server.md
+T03-workbench-panel.md
+T04-e2e-agent-workbench.md
+T05-handoff-p9.md
