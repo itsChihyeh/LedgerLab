@@ -12,7 +12,7 @@ export default defineConfig({
   ],
   server: {
     host: "localhost",
-    port: 5173,
+    port: Number(process.env.E2E_VITE_PORT ?? "5173"),
     strictPort: true,
     proxy: {
       "/api": "http://localhost:8080",

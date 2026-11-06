@@ -35,6 +35,7 @@ for (const scenario of [
   "refund-retry",
   "correction-e",
   "payout-recovery",
+  "agent-workbench",
   "demo",
   "demo-broken-lock",
   ...optional,

@@ -176,7 +176,12 @@ python agent/ledgerlab-agent-mcp.py (--base-url http://127.0.0.1:8080 | --snapsh
 - 调查服务只监听回环地址、只认 JSON POST、不回 CORS；一次只跑一个调查；模型固定为不花钱的替身或基线。
 - 不防：能在本机执行命令的人；人看都不看就点提交。
 
-## 6. 交付物
+### 3.5 实现备注（P9-T04）
+
+- 场景 `agent-workbench` 用做法 (b)：`src/test/resources/scenarios/agent-workbench/` 是 `ac-5-3` 的副本，区别只有三处：`bank/002.csv` 把 B2（净额 2883）拆成同 reference 的两笔入账 1441＋1442；`manifest.json` 去掉“first”之后的两个检查点，`truth.json` 只保留“first”。`TestLedgerLabApplication` 对该场景整份清单回放（`runUntil("")`，`ac-5-3` 仍在 `first` 停）。B2 因此是 `CONFIRMED` 且两笔流水为 `UNAPPLIED`。
+- 差异由 `agent.spec.ts` 的 `beforeAll` 造出：先 `POST /advance-clock`（+3720 秒）到 13:02Z，再 `POST /api/recon/runs`（`kind=ALL`，截止 2026-11-13T05:00Z，证据时点 13:00Z，即 `ac-5-3` 的 second 检查点）。得到两条 `DEPOSIT_AMOUNT_MISMATCH`（P8 基线判 `BANK_SPLIT_DEPOSIT`）和 `ac-5-3` 原有的一条 `FEE_MISMATCH`（判 `PROCESSOR_FEE_DIFFERS`）。
+- 端口：调查服务 8098（`playwright.config.ts` 在此场景多一个 `webServer`，就绪地址 `/agent/health`，Vite 用 `VITE_AGENT_PORT=8098`）；JSONL 存到 `frontend/test-results/agent-workbench/investigations.jsonl`。服务读的是测试后端 `http://127.0.0.1:8080`（任务说明写的 8090 是测试控制口，不是 API，已按 8080 做）。Vite 端口可用 `E2E_VITE_PORT` 覆盖（默认 5173，`strictPort`）。Windows 上 `python` 即可用（本机 3.12）。
+- 采纳不发请求、纠错与接受各只发一次写请求、全程主应用只收到这两次写（AC-11.6）、服务不在时页面其余部分照常（AC-11.5）均由该 spec 断言；银行流水引用跳转与返回也在其中。
 
 - `agent/service/`（调查服务、存储、测试）、`agent/ledgerlab-agent-service.py`
 - `agent/mcp/ledgerlab_agent_mcp/`、`agent/ledgerlab-agent-mcp.py`、测试
