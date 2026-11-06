@@ -1,7 +1,7 @@
 {
   "run_id": "sbx_20261102T224453022706Z",
   "window_start": "2026-10-20T00:00:00Z",
-  "generated_at": "2026-11-06T17:18:57.711516Z",
+  "generated_at": "2026-11-06T17:23:56.704990Z",
   "stripe": {
     "payments": {
       "count": 28,
@@ -63,7 +63,7 @@
       "HOLD_TIMEOUT_RELEASE": 0
     },
     "outbound": {
-      "PASS": 156,
+      "PASS": 186,
       "DROP_RESPONSE": 1,
       "FAIL_BEFORE_SEND": 0
     }
@@ -81,7 +81,7 @@
     "latest_catchup": "2026-11-06T16:53:04.454578Z"
   },
   "invariants": {
-    "checked_at": "2026-11-06T17:18:57.677406928Z",
+    "checked_at": "2026-11-06T17:23:56.675097502Z",
     "violations_now": 0,
     "checks_in_saved_results": 15,
     "violations_in_saved_results": 0,
@@ -95,6 +95,301 @@
     "acceptance_finding_count": 28,
     "untraceable": 0,
     "replay_identical": true
+  },
+  "fee_analysis": {
+    "count": 27,
+    "by_country": [
+      {
+        "country": "US",
+        "count": 27,
+        "brands": [
+          "visa"
+        ],
+        "amount_range": [
+          690,
+          19446
+        ],
+        "differences": [
+          6,
+          10,
+          19,
+          24,
+          29,
+          48,
+          51,
+          62,
+          66,
+          72,
+          92,
+          93,
+          96,
+          97,
+          103,
+          109,
+          118,
+          130,
+          134,
+          140,
+          145,
+          147,
+          150,
+          152,
+          154,
+          156
+        ],
+        "stripe_fee_rule": {
+          "fixed": 30,
+          "bps": 370
+        },
+        "surplus_over_local_rule": null,
+        "unexplained": []
+      }
+    ],
+    "rows": [
+      {
+        "charge": "ch_3UXVJGF5hIinUF491G8h6vW1",
+        "country": "US",
+        "brand": "visa",
+        "amount": 690,
+        "stripe_fee": 56,
+        "local_fee": 50,
+        "difference": 6
+      },
+      {
+        "charge": "ch_3UXQCaF5hIinUF490AcFsuFL",
+        "country": "US",
+        "brand": "visa",
+        "amount": 1234,
+        "stripe_fee": 76,
+        "local_fee": 66,
+        "difference": 10
+      },
+      {
+        "charge": "ch_3UXVJLF5hIinUF4907UrBi5u",
+        "country": "US",
+        "brand": "visa",
+        "amount": 2403,
+        "stripe_fee": 119,
+        "local_fee": 100,
+        "difference": 19
+      },
+      {
+        "charge": "ch_3UXWG3F5hIinUF490AL1MoKL",
+        "country": "US",
+        "brand": "visa",
+        "amount": 3065,
+        "stripe_fee": 143,
+        "local_fee": 119,
+        "difference": 24
+      },
+      {
+        "charge": "ch_3UXWG1F5hIinUF490VIvEm1u",
+        "country": "US",
+        "brand": "visa",
+        "amount": 3593,
+        "stripe_fee": 163,
+        "local_fee": 134,
+        "difference": 29
+      },
+      {
+        "charge": "ch_3UXVJ3F5hIinUF490mPLewb6",
+        "country": "US",
+        "brand": "visa",
+        "amount": 6024,
+        "stripe_fee": 253,
+        "local_fee": 205,
+        "difference": 48
+      },
+      {
+        "charge": "ch_3UXVJ7F5hIinUF491Jd2Haef",
+        "country": "US",
+        "brand": "visa",
+        "amount": 6414,
+        "stripe_fee": 267,
+        "local_fee": 216,
+        "difference": 51
+      },
+      {
+        "charge": "ch_3UXVJ8F5hIinUF490DURxNaE",
+        "country": "US",
+        "brand": "visa",
+        "amount": 7795,
+        "stripe_fee": 318,
+        "local_fee": 256,
+        "difference": 62
+      },
+      {
+        "charge": "ch_3UXVJIF5hIinUF491lFMMx7n",
+        "country": "US",
+        "brand": "visa",
+        "amount": 8219,
+        "stripe_fee": 334,
+        "local_fee": 268,
+        "difference": 66
+      },
+      {
+        "charge": "ch_3UXVJKF5hIinUF491oYhCYlj",
+        "country": "US",
+        "brand": "visa",
+        "amount": 8947,
+        "stripe_fee": 361,
+        "local_fee": 289,
+        "difference": 72
+      },
+      {
+        "charge": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+        "country": "US",
+        "brand": "visa",
+        "amount": 11500,
+        "stripe_fee": 456,
+        "local_fee": 364,
+        "difference": 92
+      },
+      {
+        "charge": "ch_3UXVJEF5hIinUF490xwOosYR",
+        "country": "US",
+        "brand": "visa",
+        "amount": 11654,
+        "stripe_fee": 461,
+        "local_fee": 368,
+        "difference": 93
+      },
+      {
+        "charge": "ch_3UXVJ9F5hIinUF490lpXVPLE",
+        "country": "US",
+        "brand": "visa",
+        "amount": 12051,
+        "stripe_fee": 476,
+        "local_fee": 379,
+        "difference": 97
+      },
+      {
+        "charge": "ch_3UXVJHF5hIinUF49169PYJWP",
+        "country": "US",
+        "brand": "visa",
+        "amount": 12063,
+        "stripe_fee": 476,
+        "local_fee": 380,
+        "difference": 96
+      },
+      {
+        "charge": "ch_3UXVJDF5hIinUF491SdmOPZb",
+        "country": "US",
+        "brand": "visa",
+        "amount": 12896,
+        "stripe_fee": 507,
+        "local_fee": 404,
+        "difference": 103
+      },
+      {
+        "charge": "ch_3UXWG5F5hIinUF491JaEZdV1",
+        "country": "US",
+        "brand": "visa",
+        "amount": 13610,
+        "stripe_fee": 534,
+        "local_fee": 425,
+        "difference": 109
+      },
+      {
+        "charge": "ch_3UXVJJF5hIinUF49018yzUkZ",
+        "country": "US",
+        "brand": "visa",
+        "amount": 14786,
+        "stripe_fee": 577,
+        "local_fee": 459,
+        "difference": 118
+      },
+      {
+        "charge": "ch_3UXVJ4F5hIinUF490TT1MW2v",
+        "country": "US",
+        "brand": "visa",
+        "amount": 16189,
+        "stripe_fee": 629,
+        "local_fee": 499,
+        "difference": 130
+      },
+      {
+        "charge": "ch_3UXVJFF5hIinUF4902OLG7ZH",
+        "country": "US",
+        "brand": "visa",
+        "amount": 16693,
+        "stripe_fee": 648,
+        "local_fee": 514,
+        "difference": 134
+      },
+      {
+        "charge": "ch_3UXVJCF5hIinUF490R3KtJdn",
+        "country": "US",
+        "brand": "visa",
+        "amount": 17481,
+        "stripe_fee": 677,
+        "local_fee": 537,
+        "difference": 140
+      },
+      {
+        "charge": "ch_3UXVJMF5hIinUF490VqzYb1p",
+        "country": "US",
+        "brand": "visa",
+        "amount": 18051,
+        "stripe_fee": 698,
+        "local_fee": 553,
+        "difference": 145
+      },
+      {
+        "charge": "ch_3UXVJ6F5hIinUF490JWzgFyF",
+        "country": "US",
+        "brand": "visa",
+        "amount": 18381,
+        "stripe_fee": 710,
+        "local_fee": 563,
+        "difference": 147
+      },
+      {
+        "charge": "ch_3UXWG7F5hIinUF490TOqZRVy",
+        "country": "US",
+        "brand": "visa",
+        "amount": 18732,
+        "stripe_fee": 723,
+        "local_fee": 573,
+        "difference": 150
+      },
+      {
+        "charge": "ch_3UXVJBF5hIinUF4902mb7UYE",
+        "country": "US",
+        "brand": "visa",
+        "amount": 18908,
+        "stripe_fee": 730,
+        "local_fee": 578,
+        "difference": 152
+      },
+      {
+        "charge": "ch_3UXWG6F5hIinUF491XMYHYl4",
+        "country": "US",
+        "brand": "visa",
+        "amount": 19179,
+        "stripe_fee": 740,
+        "local_fee": 586,
+        "difference": 154
+      },
+      {
+        "charge": "ch_3UXWG4F5hIinUF490a0eFovT",
+        "country": "US",
+        "brand": "visa",
+        "amount": 19272,
+        "stripe_fee": 743,
+        "local_fee": 589,
+        "difference": 154
+      },
+      {
+        "charge": "ch_3UXVJ5F5hIinUF491Ackc8cR",
+        "country": "US",
+        "brand": "visa",
+        "amount": 19446,
+        "stripe_fee": 750,
+        "local_fee": 594,
+        "difference": 156
+      }
+    ]
   },
   "acceptance": {
     "AC-8.4": {
@@ -222,7 +517,7 @@
     {
       "item": "国内费用公式对真实批次的差异（T07，2026-11-06）",
       "fake": "批次与 fake Stripe 公式一致时无 FEE_MISMATCH",
-      "real": "对账 PROCESSOR 对 payout `po_…` 的 27 笔支付全部报 `FEE_MISMATCH`（本地期望按国内公式、批次行是 Stripe 实际费用；该 payout 的支付大多是美国 bypass 卡，见“国际卡手续费”一条）。不是账本错误：批次净额与 Stripe payout 金额相等。真实对账会如实报这类差异"
+      "real": "对账 PROCESSOR 对 payout `po_…` 的 27 笔支付全部报 `FEE_MISMATCH`（本地期望按国内公式、批次行是 Stripe 实际费用；该 payout 的支付大多是美国 bypass 卡，见“国际卡手续费”一条）。不是账本错误：批次净额与 Stripe payout 金额相等。真实对账会如实报这类差异。T08 逐笔核对：27 笔都是美国 visa，Stripe 费用 = `30 + round(3.7%)`，无例外（见第 7 节第 2 条）"
     },
     {
       "item": "探测阶段的未结算支付（T07，2026-11-06）",

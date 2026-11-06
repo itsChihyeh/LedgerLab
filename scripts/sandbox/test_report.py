@@ -87,6 +87,27 @@ class ReportTests(unittest.TestCase):
                 r.scan_report('safe', text)
         r.scan_report('evt_123 po_456 ch_789 txn_1 acct_' + 'REDACTED')
 
+    def test_ac_8_9_fee_analysis_section_lists_rule_and_unexplained_payments(self):
+        analysis = {'count': 2, 'rows': [
+            {'charge': 'ch_1', 'country': 'US', 'brand': 'visa', 'amount': 690, 'stripe_fee': 56, 'local_fee': 50,
+             'difference': 6}],
+            'by_country': [{'country': 'US', 'count': 1, 'brands': ['visa'],
+                            'stripe_fee_rule': {'fixed': 30, 'bps': 370}, 'unexplained': []},
+                           {'country': 'FR', 'count': 1, 'brands': ['visa'], 'stripe_fee_rule': None,
+                            'unexplained': ['ch_9']}]}
+        text = '\n'.join(r.fee_section(analysis))
+        self.assertIn('30 + round(3.7%)', text)
+        self.assertIn('ch_9', text)
+        self.assertIn('未运行', '\n'.join(r.fee_section(None)))
+
+    def test_ac_8_9_missing_fee_analysis_file_is_none_and_malformed_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.assertIsNone(r.load_fee_analysis(directory))
+            (directory / 'fee-analysis.json').write_text('{"rows": 1, "by_country": []}', encoding='utf-8')
+            with self.assertRaises(Failure):
+                r.load_fee_analysis(directory)
+
     def test_ac_8_10_load_results_keeps_only_acceptance_shaped_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

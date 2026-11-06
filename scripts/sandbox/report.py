@@ -136,6 +136,37 @@ def dist_text(counts):
     return '，'.join(f'{k} {v}' for k, v in counts.items()) or '无'
 
 
+def load_fee_analysis(directory):
+    """Per-payment FEE_MISMATCH explanation saved by fee-analysis.sh; None when it was not run."""
+    path = directory / 'fee-analysis.json'
+    if not path.exists():
+        return None
+    value = json.loads(path.read_text(encoding='utf-8'))
+    require(isinstance(value.get('rows'), list) and isinstance(value.get('by_country'), list), 'FEE_ANALYSIS_MALFORMED')
+    keep = ('charge', 'country', 'brand', 'amount', 'stripe_fee', 'local_fee', 'difference')
+    return {'count': value['count'], 'by_country': value['by_country'],
+            'rows': [{k: row[k] for k in keep} for row in value['rows']]}
+
+
+def fee_rule_text(group):
+    rule = group['stripe_fee_rule']
+    return f"{rule['fixed']} + round({rule['bps'] / 100:g}%)" if rule else '无法归入固定＋比例规则'
+
+
+def fee_section(analysis):
+    if analysis is None:
+        return ['## 手续费差异逐笔说明', '', '未运行 `fee-analysis.sh`。', '']
+    rules = [[g['country'], g['count'], ','.join(g['brands']), fee_rule_text(g), ','.join(g['unexplained']) or '无']
+             for g in analysis['by_country']]
+    rows = [[x['charge'], x['country'], x['brand'], x['amount'], x['stripe_fee'], x['local_fee'], x['difference']]
+            for x in analysis['rows']]
+    return ['## 手续费差异逐笔说明（AC-8.9）', '',
+            f"`FEE_MISMATCH` 共 {analysis['count']} 笔，逐笔取自 Stripe 只读接口（卡只记国家和品牌）。"
+            '“本地”是国内公式 30 + round(2.9%)；本地手续费模型未改。', '',
+            table(rules, ['卡国家', '笔数', '品牌', 'Stripe 实测规则', '归不进规则的支付']), '',
+            table(rows, ['支付', '卡国家', '品牌', '金额（分）', 'Stripe 手续费', '本地手续费', '差额']), '']
+
+
 def render(report):
     s, loc, rel = report['stripe'], report['local'], report['relay']
     out = [f"# 沙箱运行报告 {report['run_id']}", '',
@@ -175,6 +206,7 @@ def render(report):
            f"- AC-8.9 最近一次：发现 {report['reconciliation']['acceptance_finding_count']} 条，"
            f"其中追不到 Stripe 编号 {report['reconciliation']['untraceable']} 条，"
            f"重放一致 {report['reconciliation']['replay_identical']}。", '',
+           *fee_section(report.get('fee_analysis')),
            '## 各 AC 最近一次验收', '',
            table([[ac, v['result'], v.get('finished_at', '—'), ' → '.join(v['history']) or '—']
                   for ac, v in report['acceptance'].items()], ['AC', '结果', '完成时间', '历次结果（旧 → 新）']), '',
@@ -255,6 +287,7 @@ def collect(run, results):
             'acceptance_finding_count': recon.get('finding_count'),
             'untraceable': len(recon.get('untraceable', [])),
             'replay_identical': recon.get('replay_identical')},
+        'fee_analysis': load_fee_analysis(OUT),
         'acceptance': acceptance,
         'fixtures': fixtures_status(),
         'known_differences': known_differences(DESIGN.read_text(encoding='utf-8')),

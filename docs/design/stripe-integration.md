@@ -201,6 +201,7 @@ P1b-5 请款服务的时间约定：`core.payment.received_at` 和 `recorded_at`
    **实测 2026-11-06 UTC（T07）**：自动 payout 会生成且按 payout 过滤可用。`po_…`（automatic、standard、CAD，金额 306651）创建于 11-06 00:47:29Z，含 27 笔支付，最早的 charge 在 11-02、最晚的 11-03 01:11Z，即最后一笔 charge 之后约 71.6 小时才出现首个 payout（新账号的初始等待期加上待结算时间；之后的节奏未观察）。`balance_transactions?payout=` 完整翻页后除 `type=payout` 行外 27 行，与本地批次行逐行（txn、类型、金额、手续费、净额）相等。
 2. 测试卡 `4000 0000 0000 0077` 能让资金直接进入可用余额，便于快速产生 payout。它是美国卡，不能用来验证加拿大国内卡费率；费率要用加拿大测试卡另测。
    **实测 2026-11-02（T01）**：审查确认改用 9.3 的 automatic payment methods 参数后，CAD 1234 分的 `pm_card_bypassPending` 成功，charge 类型断言为 card、卡国家 US；fee=76、net=1158、status=available、available_on=1793645009（与 charge.created 相同），直接进入可用余额。国内公式预期 66 分，实际多 10 分；不据国际卡修改国内公式。旧参数被拒；旧幂等键绑定旧参数，再用新参数返回 `HTTP_400 type=idempotency_error`，因此为修订请求固定分配编号 4，原编号 1 退役且本地记录保留。
+   **实测 2026-11-06 UTC（T08，逐笔）**：对账的 27 笔 `FEE_MISMATCH` 逐笔取 Stripe 的 charge 与 balance transaction（只读 GET）：27 笔全部是美国卡（visa），金额 690～19446 分，Stripe 手续费都等于 `30 + round(3.7%)`（整数四舍五入），27 笔零例外；本地期望是 `30 + round(2.9%)`。即美国卡比国内多 0.8 个百分点的比例费，固定 30 分不变，差额是 6～156 分、随金额增长。这是同一个 payout 内的实测；只观察到美国 visa 一种非加拿大卡，其他国家或品牌的费率没有数据，不推广。逐笔表在运行报告“手续费差异逐笔说明”一节。本地手续费模型和对账逻辑未改（是否加卡国家维度是业务决定，见 handoff 的“后续”）。
 3. 加拿大国内测试卡的手续费等于 `30 + round(2.9%)`；舍入方式不同就改合同公式，不加容差。
    **实测 2026-11-02（T01）**：官方[国际测试卡表](https://docs.stripe.com/testing#international-cards)的加拿大 Visa `pm_card_ca` 成功；charge 类型 card、国家 CA。10000 分的实际 fee=320，与 `30 + round(2.9%)` 相等，net=9680、status=pending、available_on=1794182400。此单验证通过，不改变合同公式或加容差，不把单个金额推广为完整舍入验证。
 4. 余额不足时退款进入 `pending` 的行为在测试模式下可复现（官方文档说卡退款只用可用余额、不够时 pending；fake Stripe 已按此建模）。
@@ -363,6 +364,12 @@ T04 实现备注（2026-11-02）：按任务补充，`up.sh` 新 run 的窗口�
 - **ac-8.6**：从本地已结算批次的行里按编号顺序取两笔支付，退款幂等键和 `merchant_refund_ref` 固定为 `t07-ac86-a/b`（重跑复用同两笔，不新建）。a：退 100 分到 `SUCCEEDED`，Stripe 按 charge 翻页恰一笔且 `metadata.ledgerlab_refund_id` 等于本地退款号、`re_` 与本地一致。b：relay 出站规则 `POST /v1/refunds` DROP_RESPONSE times=1；证据是命令观察到 `UNKNOWN`、退款历史有一条 `UNKNOWN`、第一次尝试 HTTP 504、第二次（先查询）200，Stripe 上仍恰一笔，relay stats 的 DROP_RESPONSE 增量为 1；结束或失败都清空计划。首次实跑通过。
 - **ac-8.9**：处理方快照接口按营业日取数，所以脚本从窗口起点的多伦多日期逐日到今天各导入一份快照（实跑 18 份全部 ACCEPTED），不是一次覆盖整个窗口。对账 cutoff 只接受多伦多零点（接口校验 `Toronto midnight cutoff <= evidenceAsOf <= now - evidenceGrace`），所以用当前多伦多日的零点，**与任务说明里的“当前整点”不同，已按接口约束做**；evidenceAsOf 取快照之后的整秒，等应用时钟超过证据宽限再跑。ALL 持久化运行一次，再用相同参数 dryRun 重放，比较输入哈希、cutoff、evidenceAsOf 和差异指纹，必须相同。差异逐条打印，subject 是本地 `pay_…` 时必须能在证据里追到 Stripe 编号（`po_/txn_/ch_/re_/evt_`），追不到才失败。首次实跑：28 条差异，全部可追到 Stripe 编号，重放一致（见 9.9）。
 
+**实测后修正的口径（T07 偏离，T08 审查接受，2026-11-06）**：
+
+- 对账截止时点（cutoff）取多伦多当日零点（接口只接受多伦多零点），不是“当前整点”。
+- 处理方快照按营业日逐日导入（从窗口起点的多伦多日期到今天各一份），不是一次覆盖整个窗口。
+- 差异的对象编号可以是 Stripe 前缀（`po_`、`txn_`、`ch_`、`re_`），也可以是本地编号但能在证据里追到 Stripe 编号，两者都算“能追到”。
+
 ### 9.9 已知差异（随实测补充）
 
 | 项目 | fake Stripe | 真实 Stripe 测试模式 |
@@ -371,7 +378,7 @@ T04 实现备注（2026-11-02）：按任务补充，`up.sh` 新 run 的窗口�
 | 本地 webhook 监听鉴权（T01，2026-11-02） | fake Stripe 直接发签名 webhook，不需要 Stripe CLI 登录 | CLI 1.55.6 用当前受限密钥获取签名密钥失败（`PERMISSION_ERROR`）；需要用户本人登录后再测 |
 | 国际卡手续费（T01，2026-11-02） | 默认按合同公式计算，故障计划可覆盖 fee；不模拟卡国家费率 | 美国 bypass 卡 CAD 1234 分 fee=76，比国内公式 66 多 10；加拿大卡 CAD 10000 分 fee=320，与合同相等。只记录实际差额，不推导完整国际卡费率 |
 | 资金可用时间（T01，2026-11-02） | 默认 availability-delay=PT0S；可显式配置延迟，使用模拟时钟 | bypass 净额 1158 分立即 available；加拿大卡净额 9680 分 pending、available_on=1794182400，不应要求普通卡立即可用 |
-| 国内费用公式对真实批次的差异（T07，2026-11-06） | 批次与 fake Stripe 公式一致时无 FEE_MISMATCH | 对账 PROCESSOR 对 payout `po_…` 的 27 笔支付全部报 `FEE_MISMATCH`（本地期望按国内公式、批次行是 Stripe 实际费用；该 payout 的支付大多是美国 bypass 卡，见“国际卡手续费”一条）。不是账本错误：批次净额与 Stripe payout 金额相等。真实对账会如实报这类差异 |
+| 国内费用公式对真实批次的差异（T07，2026-11-06） | 批次与 fake Stripe 公式一致时无 FEE_MISMATCH | 对账 PROCESSOR 对 payout `po_…` 的 27 笔支付全部报 `FEE_MISMATCH`（本地期望按国内公式、批次行是 Stripe 实际费用；该 payout 的支付大多是美国 bypass 卡，见“国际卡手续费”一条）。不是账本错误：批次净额与 Stripe payout 金额相等。真实对账会如实报这类差异。T08 逐笔核对：27 笔都是美国 visa，Stripe 费用 = `30 + round(3.7%)`，无例外（见第 7 节第 2 条） |
 | 探测阶段的未结算支付（T07，2026-11-06） | 无 | T01 探测创建的一笔支付（待结算余额）不在任何 payout 内，AGING 报 `PAYMENT_NOT_SETTLED`；等其进入后续 payout 才会消失 |
 | 退款 pending（T07，2026-11-06） | `force_pending` 可构造 pending | 余额充足时两笔 100 分退款都直接 `succeeded`，未观察到 pending |
 | payout 首次出现时间（T07，2026-11-06） | 按需创建 payout，可立即生成 | 首个自动 payout 在最后一笔 charge 之后约 71.6 小时出现；`payout.created` 与 `reconciliation_completed` 同一秒，`paid` 约 5 分钟后 |
