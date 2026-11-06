@@ -1,0 +1,12 @@
+# P8 队列：按顺序处理；已完成以 p8 分支提交信息里的 "Task: P8-<编号>" 判定。
+# 设计正本：p8 分支 docs/design/investigation-agent.md（2026-11-06）。
+# 执行：本线程的 Claude（Opus）在用户电脑上为每个任务起全新上下文的 Sonnet 5.5 进程，
+# 提示词 = tasks/_common.md + 空行 + 任务文件（+ answers/<编号>.md）；独立重跑后 push p8，报告写 reports/。
+T01-agent-skeleton.md
+T02-bank-line-search-route-proof.md
+T03-fault-probe.md
+T04-eval-datasets.md
+T05-sop-baseline-stub.md
+T06-evaluator-report.md
+# T07 外部模型适配器：等用户批准（SDK 依赖、密钥、费用上限）后再写任务
+# T08 验收清单 docs/handoff/p8.md、README 的 Agent 一节
