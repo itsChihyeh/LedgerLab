@@ -8,5 +8,6 @@ T03-fault-probe.md
 T04-eval-datasets.md
 T05-sop-baseline-stub.md
 T06-evaluator-report.md
+T06b-hard-set.md
+T08-handoff-p8.md
 # T07 外部模型适配器：等用户批准（SDK 依赖、密钥、费用上限）后再写任务
-# T08 验收清单 docs/handoff/p8.md、README 的 Agent 一节
