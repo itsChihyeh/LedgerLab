@@ -129,6 +129,10 @@ sh scripts/agent/eval.sh --check   # replay the frozen dev/test/hard sets; exit 
 
 See [agent/README.md](agent/README.md), the [P8 handoff](docs/handoff/p8.md) and the [evaluation report](docs/eval/agent-2026-11-06.md).
 
+### In the workbench and over MCP (P9)
+
+The issue page of the reconciliation workbench has an investigation panel: a small local service runs the agent on request, and the panel shows its conclusion with clickable citations. A person can adopt only two kinds of conclusion (a split bank deposit, a processor fee difference); adopting just opens a pre-filled form, and nothing is written until the person submits it through the existing correction or accept endpoint. The agent itself still has no write access. The same read-only tools are also offered as a stdio MCP server for other agent clients. Still no external model: the panel is labelled as a local stand-in. See the [P9 handoff](docs/handoff/p9.md) and the [design](docs/design/agent-workbench-and-mcp.md).
+
 Where to start:
 
 - [Money model and worked examples](docs/design/money-model.md)
