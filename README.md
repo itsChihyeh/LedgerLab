@@ -119,6 +119,16 @@ Responses, bank CSVs and service logs are saved under `target/smoke-p2/` and
 evidence directories for seven days. These are cross-process smoke tests; the two
 Maven `verify` suites still run separately.
 
+## Investigation agent (P8)
+
+A read-only agent that investigates one reconciliation issue: it calls a fixed set of GET-only tools against the investigation API, then returns a validated conclusion (root cause, cited records, recommended action) or abstains when the evidence is insufficient. It cannot write anything; the read-only guarantee is checked in the tool layer, in server-side route tests and by the `readonly` database role. **No external model is connected yet**: the evaluation report only covers a rule baseline and a local stand-in (the baseline run through the model interface), so its numbers say nothing about any language model. Standard-library Python, no network needed to try it:
+
+```sh
+sh scripts/agent/eval.sh --check   # replay the frozen dev/test/hard sets; exit 1 if a hard line fails
+```
+
+See [agent/README.md](agent/README.md), the [P8 handoff](docs/handoff/p8.md) and the [evaluation report](docs/eval/agent-2026-11-06.md).
+
 Where to start:
 
 - [Money model and worked examples](docs/design/money-model.md)
