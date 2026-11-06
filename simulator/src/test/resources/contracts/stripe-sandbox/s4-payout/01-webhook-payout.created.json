@@ -1,0 +1,47 @@
+{
+  "id": "evt_1UYbJWF5hIinUF49Rg8EfRuu",
+  "object": "event",
+  "api_version": "2026-09-30.endive",
+  "created": 1793926050,
+  "data": {
+    "object": {
+      "id": "po_1UYbJVF5hIinUF49s91fRqrI",
+      "object": "payout",
+      "amount": 306651,
+      "application_fee": null,
+      "application_fee_amount": null,
+      "arrival_date": 1793923200,
+      "automatic": true,
+      "balance_transaction": "txn_1UYbJVF5hIinUF498MEUYSkg",
+      "created": 1793926049,
+      "currency": "cad",
+      "description": "STRIPE PAYOUT",
+      "destination": "ba_1UYVnoF5hIinUF49qLRgEl94",
+      "failure_balance_transaction": null,
+      "failure_code": null,
+      "failure_message": null,
+      "livemode": false,
+      "metadata": {},
+      "method": "standard",
+      "original_payout": null,
+      "payout_method": null,
+      "reconciliation_status": "completed",
+      "reversed_by": null,
+      "source_type": "card",
+      "statement_descriptor": null,
+      "status": "in_transit",
+      "trace_id": {
+        "status": "pending",
+        "value": null
+      },
+      "type": "bank_account"
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 2,
+  "request": {
+    "id": null,
+    "idempotency_key": null
+  },
+  "type": "payout.created"
+}

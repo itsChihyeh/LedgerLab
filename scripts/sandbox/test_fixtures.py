@@ -69,8 +69,96 @@ class FixtureTests(unittest.TestCase):
                 list(f.recordings('webhook'))
 
 
+def refund(status='succeeded', identity='re_one'):
+    return {'id': identity, 'object': 'refund', 'amount': 100, 'charge': 'ch_one', 'currency': 'cad',
+            'status': status, 'metadata': {'ledgerlab_refund_id': 'rfd_one'}}
+
+
+def api(method, path, body, number):
+    return {'id': number, 'method': method, 'path': path, 'status': 200, 'body': body,
+            'recorded_at': '2026-11-06T00:00:00Z'}
+
+
+def refund_event(kind, identity='re_one'):
+    return {'recorded_at': '2026-11-06T00:00:01Z', 'body': {
+        'id': 'evt_' + kind, 'type': kind, 'api_version': f.VERSION, 'created': 1793932753,
+        'livemode': False, 'request': {'id': 'req_one', 'idempotency_key': 'rfd_one'},
+        'data': {'object': refund(identity=identity)}}}
+
+
+class RefundAndPayoutFixtureTests(unittest.TestCase):
+    def rows(self, status='succeeded'):
+        return [api('POST', '/v1/refunds', refund(status), 1),
+                api('GET', '/v1/refunds', {'data': [refund(status)], 'has_more': False}, 2),
+                api('GET', '/v1/refunds/re_one', refund(status), 3)]
+
+    def hooks(self):
+        return [refund_event('refund.created'), refund_event('refund.updated')]
+
+    def test_ac_8_3_s2_needs_current_run_charge_and_both_events(self):
+        bundle = f.select_refund(self.rows(), self.hooks(), {'ch_one'}, 'succeeded')
+        self.assertEqual(bundle['post']['id'], 1)
+        self.assertIsNotNone(bundle['retrieve'])
+        self.assertIsNone(f.select_refund(self.rows(), self.hooks(), {'ch_other'}, 'succeeded'))
+        self.assertIsNone(f.select_refund(self.rows(), self.hooks()[:1], {'ch_one'}, 'succeeded'))
+        incomplete = self.rows()
+        incomplete[1]['body']['has_more'] = True
+        self.assertIsNone(f.select_refund(incomplete, self.hooks(), {'ch_one'}, 'succeeded'))
+
+    def test_ac_8_3_s3_is_not_reproduced_when_no_refund_was_pending(self):
+        self.assertIsNone(f.select_refund(self.rows(), self.hooks(), {'ch_one'}, 'pending'))
+        self.assertIsNotNone(f.select_refund(self.rows('pending'), self.hooks(), {'ch_one'}, 'pending'))
+
+    def test_ac_8_3_refund_export_is_mirrored_and_rejects_secrets(self):
+        bundle = f.select_refund(self.rows(), self.hooks(), {'ch_one'}, 'succeeded')
+        with tempfile.TemporaryDirectory() as temporary:
+            dest, mirror = Path(temporary) / 'main', Path(temporary) / 'sim'
+            manifest = f.export_refund('s2', {'run_id': 'sbx_test'}, bundle, dest, mirror)
+            self.assertEqual([x['kind'] for x in manifest['files']], ['api', 'webhook', 'webhook', 'api', 'api'])
+            self.assertEqual(manifest['files'][0]['expected']['refund']['refundId'], 'rfd_one')
+            self.assertEqual({x.name: x.read_bytes() for x in dest.iterdir()},
+                             {x.name: x.read_bytes() for x in mirror.iterdir()})
+            self.assertNotIn(b'\r\n', (dest / 'manifest.json').read_bytes())
+            created = json.loads((dest / '02-webhook-refund.created.json').read_text(encoding='utf-8'))
+            self.assertEqual('IDEMPOTENCY_KEY_REDACTED', created['request']['idempotency_key'])
+            self.assertEqual('rfd_one', bundle['created']['body']['request']['idempotency_key'])
+            bundle['post']['body']['unknown'] = 'whsec_' + 'private'
+            with self.assertRaises(Failure):
+                f.export_refund('s2', {'run_id': 'sbx_test'}, bundle, dest, mirror)
+
+    def payout(self, status):
+        return {'id': 'po_one', 'object': 'payout', 'amount': 500, 'currency': 'cad', 'automatic': True,
+                'method': 'standard', 'status': status, 'reconciliation_status': 'completed',
+                'arrival_date': 1793923200, 'created': 1793926049, 'livemode': False}
+
+    def payout_hook(self, kind, status):
+        return {'recorded_at': '2026-11-06T00:47:30Z', 'body': {
+            'id': 'evt_' + kind, 'type': kind, 'api_version': f.VERSION, 'created': 1793926050,
+            'livemode': False, 'data': {'object': self.payout(status)}}}
+
+    def test_ac_8_3_s4_requires_full_lifecycle_retrieve_and_complete_lines(self):
+        hooks = [self.payout_hook('payout.created', 'in_transit'),
+                 self.payout_hook('payout.reconciliation_completed', 'in_transit'),
+                 self.payout_hook('payout.paid', 'paid')]
+        line = {'id': 'txn_p', 'type': 'payout', 'source': 'po_one', 'amount': -500, 'fee': 0, 'net': -500,
+                'currency': 'cad', 'created': 1793926049}
+        rows = [api('GET', '/v1/payouts/po_one', self.payout('in_transit'), 1),
+                api('GET', '/v1/balance_transactions', {'data': [line], 'has_more': False}, 2)]
+        bundle = f.select_s4(rows, hooks)
+        self.assertEqual(bundle['paid']['body']['type'], 'payout.paid')
+        self.assertIsNone(f.select_s4(rows, hooks[:2]))
+        self.assertIsNone(f.select_s4(rows[:1], hooks))
+        with tempfile.TemporaryDirectory() as temporary:
+            dest, mirror = Path(temporary) / 'main', Path(temporary) / 'sim'
+            manifest = f.export_s4({'run_id': 'sbx_test'}, bundle, dest, mirror)
+            expected = manifest['files'][4]['expected']
+            self.assertEqual(expected['pages'], 1)
+            self.assertEqual(expected['items'][0]['net'], -500)
+            self.assertEqual(manifest['files'][0]['expected']['payout']['arrivalDate'], '2026-11-06T00:00:00Z')
+
+
 class PayoutTests(unittest.TestCase):
-    START = '2026-11-02T00:00:00Z'
+    START ='2026-11-02T00:00:00Z'
 
     def payout(self, identity='po_one', **updates):
         return dict(id=identity, created=1793577600, livemode=False, automatic=True,

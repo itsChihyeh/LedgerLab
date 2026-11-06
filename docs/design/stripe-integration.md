@@ -316,6 +316,10 @@ T04 实现备注（2026-11-02）：按任务补充，`up.sh` 新 run 的窗口�
 
 `sh scripts/sandbox/check-payout.sh` 从当前 run.window_start 起完整翻页查询 Stripe，全部页成功后才判断 automatic=true、paid、reconciliation_status=completed；有符合对象输出编号并返回 0，没有或仍在处理输出状态并返回 75，调用或分页失败返回 2。T06 实跑窗口内暂无 payout，返回 75；此结果不表示 AC-8.8 已验收。
 
+**T08 实现备注（2026-11-06，AC-8.3）**：`record-fixtures.sh --scenario s1|s2|s3|s4|all`。S2 取本 run 内第一笔 `POST /v1/refunds` 成功响应、同一退款的 `refund.created`／`refund.updated` 两个事件、按 charge 的完整列表响应（`has_more=false`），以及一条单个退款的 GET（有则录）；S4 取一个 payout 的 created → reconciliation_completed → paid 三个事件、`GET /v1/payouts/{id}`，和该 payout 的 `balance_transactions?payout=` 响应（含 payout 自己的一行）。S3 只在录到 `status=pending` 的退款时导出；测试模式没出现过，脚本输出 `NOT_REPRODUCED`、不写任何文件，所以 S3 没有夹具目录。S4 的 28 行在一页内返回（limit=100），夹具没有多页；分页由适配器既有的分页单测覆盖。夹具 JSON 一律以 LF 写出（`write_json`），两份副本逐字节相同。退款和 payout 事件里的 `request.idempotency_key`（就是本地退款号）导出时换成占位值：没有解析器读它，而 gitleaks 的通用规则分不清它和密钥；`metadata.ledgerlab_refund_id` 保留。
+
+`StripeSandboxContractTest` 对 webhook 按事件类型分支重放：退款事件交给 `RefundParser`，payout 事件交给 `StripeReadParser.payout`；对 API 响应按对象类型分支：退款创建／单个查询／按 charge 列表走 `StripeRefundAdapter`（核对请求的路径、幂等键、表单、`Stripe-Version`），payout 查询和明细页走 `RestStripeReader`。遇到没有分支的事件或对象类型直接失败，不静默跳过。`FakeStripeContractTest` 增加 S2、S4：fake 跑退款和 payout 生命周期，比较事件序列和所用字段；联合类型字段（含 `missing`）只要求两边都落在声明的类型内，其余仍要求类型一致。差异见 9.9，测试里显式断言了这些差异，哪天 fake 改了会提醒更新本表。
+
 ### 9.6 契约测试（AC-8.3，进 CI，不联网）
 
 - 主应用：录制的 webhook 喂给 `StripeEventParser`、请款准入、退款解析、payout 解析；录制的 API 响应由 loopback HttpServer 回放给 `RestStripeReader`、`StripeRefundAdapter`。断言映射出的字段等于 manifest 里写的期望。
@@ -371,3 +375,7 @@ T04 实现备注（2026-11-02）：按任务补充，`up.sh` 新 run 的窗口�
 | 探测阶段的未结算支付（T07，2026-11-06） | 无 | T01 探测创建的一笔支付（待结算余额）不在任何 payout 内，AGING 报 `PAYMENT_NOT_SETTLED`；等其进入后续 payout 才会消失 |
 | 退款 pending（T07，2026-11-06） | `force_pending` 可构造 pending | 余额充足时两笔 100 分退款都直接 `succeeded`，未观察到 pending |
 | payout 首次出现时间（T07，2026-11-06） | 按需创建 payout，可立即生成 | 首个自动 payout 在最后一笔 charge 之后约 71.6 小时出现；`payout.created` 与 `reconciliation_completed` 同一秒，`paid` 约 5 分钟后 |
+| 退款事件序列（T08，2026-11-06） | 直接成功只发 `refund.created(succeeded)`；不发 `refund.updated` | 同一笔退款先 `refund.created`（`destination_details.card.reference_status=pending`），紧接着 `refund.updated`（status 仍是 succeeded，卡参考号填上、`reference_status=available`）。AC-8.6 带着这两个真实事件实测通过、不变量零违反。未改 fake：改了会动 P3 既有测试的事件序列，需要单独决定 |
+| payout 创建时的状态（T08，2026-11-06） | `payout.created` 的 status 是 `pending`、`reconciliation_status` 是 `in_progress`，要等 `reconcile` 动作才 `completed` | `payout.created` 时 status 已是 `in_transit`、`reconciliation_status` 已是 `completed`（同一秒又来 `reconciliation_completed`）。契约测试断言了两边的这个差异；第 7 节第 8 条已说明批次触发保留了查询 payout 对象的后备路径；未改 fake |
+| payout 明细分页（T08，2026-11-06） | 按 limit 分页，可注入第 N 页失败和重复行 | 夹具只有一页（28 行，包含 payout 自己的一行），真实多页行为未录到；分页正确性由适配器单测和 fake 的分页故障覆盖 |
+| 退款对象多出的字段（T08，2026-11-06） | 只有 id、charge、amount、status、metadata 等所用字段 | 真实对象还带 `balance_transaction`、`destination_details`、`payment_intent`、`payment_method`、`receipt_number` 等；`used-fields.json` 只列我们用到的字段，多出的字段被忽略 |
