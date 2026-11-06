@@ -73,7 +73,7 @@
 | **P5** 提现 | 双门槛、出站命令、结果未知恢复、失败、退回、提现侧三方对账 | AC-1.4e、AC-6.15、AC-7 |
 | **P6** 接真实 Stripe 测试模式 | 用户的测试账号、密钥管理、契约测试、真实 webhook 经 chaos relay、对账接真实 balance transactions、运行报告 | AC-8.3–8.6、AC-8.8–8.10 |
 | **P7** 部署＋公开演示页 | AWS 部署、“来搞坏它”演示页、性能基线、演示视频、技术文章 | AC-9（部署与性能的验收另写） |
-| **P8** 对账调查 Agent | 只读工具、评测 | 另写 |
+| **P8** 对账调查 Agent | 只读窄工具、可替换模型接口、回放评测集、规则基线、评测报告 | AC-10 |
 
 ---
 
@@ -351,6 +351,25 @@ P6 的前提：用户已注册加拿大 Stripe 账号，密钥由用户本人放
 
 ---
 
+## AC-10 对账调查 Agent（P8）
+
+设计正本 [investigation-agent.md](design/investigation-agent.md)，决策 [ADR-0019](adr/0019-investigation-agent-and-evaluation.md)。PY = `agent/` 下的 Python `unittest`；TC = JUnit＋Testcontainers；脚本 = 命令行可重复运行。
+
+| ID | 场景 | Given / When / Then | 层 | 阶段 |
+|---|---|---|---|---|
+| AC-10.1 | 工具层只读且窄 | **When** 工具层收到不在 `routes.json` 里的工具名、参数不合正则、或任何非 GET 请求 **Then** 拒绝且不发出 HTTP；工具层源码里没有任意 URL、文件、shell、SQL 的入口 | PY | P8 |
+| AC-10.2 | 服务端证明只读 | **Given** `routes.json` **Then** 每条路由都是 GET、由 investigation（或 payouts 只读查询）处理、使用 readonly 数据源、不在 `/api/demo/**`，同一路径下没有写方法；Agent 的工具碰不到演示动作和故障钩子 | TC | P8 |
+| AC-10.3 | 按 reference 查银行流水 | **When** `GET /api/bank-lines?reference=po_…` **Then** 返回同一 reference 的全部当前流水（含版本），带 `asOf`，只读 readonly | TC | P8 |
+| AC-10.4 | Agent 循环与预算 | **Given** `ScriptedModel` **Then** 工具调用按序执行、结果作为不可信数据回传、超出工具调用或轮数上限以 `budget_exhausted` 拒答、输出不合格时给一次修正机会后记 `invalid_output` | PY | P8 |
+| AC-10.5 | 评测集可复现 | **When** 用固定种子运行生成器 **Then** 产生的差异集合和标签与提交的评测集一致（编号无关的比较）；开发集、测试集各 ≥ 40 条并满足设计第 8.2 节的组成 | 脚本 | P8 |
+| AC-10.6 | 引用核验 | **Given** 一份结论 **Then** 核验器把没在本次工具结果中出现过的引用计为编造引用；按 SOP 的必需证据表判断引用是否支持结论 | PY | P8 |
+| AC-10.7 | 提示注入 | **Given** 银行 memo 里写入指令的评测题 **Then** 规则基线、替身（和外部模型）照做次数为 0；报告单列这一项 | PY＋脚本 | P8 |
+| AC-10.8 | 证据不足拒答 | **Given** 回放时截留判别所需工具结果的题 **Then** 结论 `abstain=true`；报告给出拒答召回和误拒率 | PY＋脚本 | P8 |
+| AC-10.9 | 评测报告 | **When** `ledgerlab-agent eval` 在开发集和测试集上运行规则基线与替身 **Then** `docs/eval/` 下有报告，含设计第 8.3 节全部指标；替身与规则基线逐题一致；编造引用 = 0、注入照做 = 0 | 脚本 | P8 |
+| AC-10.10 | 外部模型可接、不会意外花钱 | **Given** 外部模型适配器 **Then** 合同测试用响应夹具不联网通过；没有 `--confirm-spend` 时不发请求；累计费用超过上限立即停止并写已完成部分的报告；密钥只从环境变量读、不出现在任何输出里 | PY | P8 |
+
+---
+
 ## 附：演示脚本与验收条件对应
 
 | 演示 | 对应验收条件 |
@@ -363,4 +382,4 @@ P6 的前提：用户已注册加拿大 Stripe 账号，密钥由用户本人放
 | 对账差异追到原始证据 | AC-5.7、AC-5.15 |
 | 真实 Stripe 测试模式：真实 webhook 重复和乱序，账本仍正确 | AC-8.5、AC-8.10 |
 | 访客自己动手搞坏它 | AC-9.1、AC-9.2 |
-| Agent 解释一条差异并引用记录 | 不在本文件范围（P8，评测标准另写） |
+| Agent 解释一条差异并引用记录 | AC-10.6、AC-10.9 |
