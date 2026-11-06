@@ -15,7 +15,7 @@
   │                                     └─ 工具层：只读 GET ──► 主应用 /api/**（readonly 数据源）
   └─ POST /api/corrections、/api/recon/issues/{id}/accept（人工点“提交”，已有接口）──► 主应用
 
-MCP 客户端（如 Claude Code）── stdio JSON-RPC ──► MCP 服务（ledgerlab_agent.mcp_server）
+MCP 客户端（如 Claude Code）── stdio JSON-RPC ──► MCP 服务（ledgerlab_agent_mcp）
                                                     └─ 同一个工具层（routes.json＋search_sop）
 ```
 
@@ -84,7 +84,7 @@ python agent/ledgerlab-agent-service.py --base-url http://127.0.0.1:8080 --model
 `agent/service/tests/test_static.py`：
 - 服务包只能导入标准库、`ledgerlab_agent` 和它自己；**不得**导入 `urllib`、`http.client`、`socket`、`ledgerlab_agent.transport` 的内部函数——访问主应用只能经 `ledgerlab_agent` 的 `ToolRegistry`／`investigate()`。
 - 允许出现的“写”只有两处，用白名单写死：`http.server` 的入站 `do_POST`（一个方法），以及存储模块里以追加模式（`"a"`）打开那一个 JSONL 文件。其余与 P8 `FORBIDDEN` 同样的模式一律报错。
-- P8 核心包的 `test_static.py` 不改；新的 MCP 模块放在核心包里，必须通过它。
+- P8 核心包的 `test_static.py` 不改。MCP 服务也放在核心包外（第 4 节），但对它施加与核心包**完全相同**的检查。
 
 ### 2.5 实现备注（P9-T01）
 
@@ -127,7 +127,9 @@ python agent/ledgerlab-agent-service.py --base-url http://127.0.0.1:8080 --model
 
 `vite.config.ts` 加 `"/agent": "http://localhost:8097"`（与 `/api` 一样只在开发／E2E 时生效）。生产构建里没有调查服务，面板显示“调查助手未启动”。
 
-## 4. MCP 只读服务（`ledgerlab_agent.mcp_server`）
+## 4. MCP 只读服务（`ledgerlab_agent_mcp`）
+
+**位置（2026-11-06 审查 T01 后定）**：独立包 `agent/mcp/ledgerlab_agent_mcp/`，测试 `agent/mcp/tests/`。不放进核心包，因为评测的代码指纹覆盖整个 `ledgerlab_agent` 包，往里加一个不影响答案的模块也会让 `eval.sh` 往 test／hard 的 `runs.log` 追加记录。MCP 包的静态检查直接复用核心包 `test_static.py` 的 `FORBIDDEN` 表和导入规则（只许标准库、`ledgerlab_agent` 和自身），一条例外都没有。
 
 把 P8 的同一组工具（`routes.json` 的 11 个 HTTP 工具＋`search_sop`）通过 MCP 暴露给任何 MCP 客户端。标准库实现，不加 `mcp` SDK（铁律 5）。
 
@@ -163,7 +165,7 @@ python agent/ledgerlab-agent-mcp.py (--base-url http://127.0.0.1:8080 | --snapsh
 ## 6. 交付物
 
 - `agent/service/`（调查服务、存储、测试）、`agent/ledgerlab-agent-service.py`
-- `agent/src/ledgerlab_agent/mcp_server.py`、`agent/ledgerlab-agent-mcp.py`、测试
+- `agent/mcp/ledgerlab_agent_mcp/`、`agent/ledgerlab-agent-mcp.py`、测试
 - 前端：`frontend/src/agent.tsx`（面板与采纳表单）、`IssuePage` 接入、Vite 代理、单元测试
 - E2E：新场景 `agent-workbench`（测试后端种一条拆分到账和一条手续费差异，Playwright 起调查服务（替身）），覆盖调查、引用跳转、两种采纳、调查服务未启动
 - `docs/handoff/p9.md`、README 与 `agent/README.md` 的 P9 段落

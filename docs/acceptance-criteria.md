@@ -384,7 +384,7 @@ P6 的前提：用户已注册加拿大 Stripe 账号，密钥由用户本人放
 | AC-11.5 | 调查服务不在时工作台不受影响 | **Given** 调查服务未启动或返回错误 **Then** 面板只显示“调查助手未启动”（或错误提示），差异详情页的其余内容和已有“接受”表单照常可用 | VT＋PW | P9 |
 | AC-11.6 | 端到端：调查→引用跳转→采纳→处置 | **Given** 测试后端里有一笔拆分到账和一条手续费差异，调查服务用替身 **When** 在页面上调查、点引用、采纳并提交 **Then** 拆分到账的差异经 `APPLY_UNAPPLIED_CASH` 转 `RESOLVED` 并链到纠错记录（纠错备注含调查号），手续费差异转 `ACCEPTED`；采纳前后主应用只收到这两次写请求 | PW | P9 |
 | AC-11.7 | MCP 协议 | **When** MCP 客户端经 stdio 依次 `initialize`、`notifications/initialized`、`tools/list`、`tools/call` **Then** 握手按支持的版本协商；工具列表与 P8 工具层同源（含 `readOnlyHint`）；调用结果带 `text` 与 `structuredContent`，失败为 `isError`；未知方法 `-32601`、未知工具 `-32602`、批量请求 `-32600`、初始化前调用 `-32002`；stdout 只有协议消息 | PY | P9 |
-| AC-11.8 | MCP 只读且沿用工具层校验 | **Given** MCP 服务 **Then** 每次 `tools/call` 都经 P8 `ToolRegistry`（坏参数不发 HTTP、只 GET、不跟随重定向、16 KB 截断）；超过每进程调用上限返回 `call_limit_reached`；模块通过 P8 核心包的静态检查；在回放快照上能对真实冻结数据返回与 CLI 相同的工具结果 | PY | P9 |
+| AC-11.8 | MCP 只读且沿用工具层校验 | **Given** MCP 服务 **Then** 每次 `tools/call` 都经 P8 `ToolRegistry`（坏参数不发 HTTP、只 GET、不跟随重定向、16 KB 截断）；超过每进程调用上限返回 `call_limit_reached`；MCP 包通过与 P8 核心包完全相同的静态检查；在回放快照上能对真实冻结数据返回与 CLI 相同的工具结果 | PY | P9 |
 
 ---
 
