@@ -86,6 +86,10 @@ _ID_PREFIX_KINDS: tuple[tuple[str, str], ...] = (
     ("run_", "run"),
 )
 
+# Prefixes of every identifier that can appear as a record id in free text (the bank line prefix is not in the table above:
+# bank lines are recognised by the key they sit under, not by their prefix).
+RECORD_ID_PREFIXES: tuple[str, ...] = (*(prefix for prefix, _ in _ID_PREFIX_KINDS), "bt_")
+
 _TABLE_KINDS: dict[str, str] = {
     "core.settlement_batch": "batch",
     "core.payment": "payment",
