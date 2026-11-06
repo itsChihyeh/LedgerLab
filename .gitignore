@@ -9,6 +9,8 @@
 *.jar
 *.war
 *.log
+# The test-set run log is evidence that gets committed (docs/design/investigation-agent.md section 8.4).
+!agent/eval/data/test/runs.log
 hs_err_pid*
 .gradle/
 build/

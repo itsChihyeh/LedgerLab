@@ -30,6 +30,16 @@ Exactly one data source: `--base-url` reads a live backend, `--snapshot` replays
 
 Exit code: `0` conclusion accepted, `3` the run ended as `invalid_output` or `budget_exhausted` (an abstention is printed), `2` bad arguments.
 
+## Evaluate
+
+```sh
+sh scripts/agent/eval.sh            # baseline and stand-in on dev and test (replay, no Docker), writes docs/eval/agent-<date>.md/.json
+sh scripts/agent/eval.sh --check    # writes nothing; exit 1 when a hard line fails (CI runs this)
+python agent/ledgerlab-agent.py eval --split dev|test --model baseline|stub [--out run.json]
+```
+
+Evaluating the test split appends a line to `agent/eval/data/test/runs.log` unless this model configuration has already been run with the same code (source + SOP fingerprint). Tune rules and prompts on dev only.
+
 ## Layout
 
 | Path | Role |
@@ -43,6 +53,7 @@ Exit code: `0` conclusion accepted, `3` the run ended as `invalid_output` or `bu
 | `prompts/system.md` | System prompt |
 | `replay.py` | `ReplayTransport`: serves a recorded snapshot (404 `not_in_snapshot` for unknown requests, 503 for withheld ones) |
 | `eval/` | Evaluation tooling (not part of the agent runtime): stack, scenario, probe, catalog, crawl, generate, verify |
+| `verify.py`, `evaluate.py`, `eval/run_eval.py` | Citation verifier, metrics and report rendering (read-only), and the command line that writes reports and the test-set run log |
 | `eval/data/{dev,test}/` | Frozen evaluation sets: `snapshot.json`, `labels.json`, `manifest.json` |
 
 ## Evaluation sets
