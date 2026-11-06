@@ -1,0 +1,104 @@
+[
+  {
+    "tool": "get_issue",
+    "method": "GET",
+    "path_template": "/api/recon/issues/{issue_id}",
+    "description": "Reconciliation issue with expected/actual amounts, history, findings and references to related records.",
+    "params": {
+      "issue_id": {"in": "path", "pattern": "^iss_[A-Za-z0-9]{1,60}$", "required": true}
+    }
+  },
+  {
+    "tool": "list_issues",
+    "method": "GET",
+    "path_template": "/api/recon/issues",
+    "description": "List reconciliation issues, newest first.",
+    "params": {
+      "status": {"in": "query", "pattern": "^(OPEN|EXPLAINED|RESOLVED|ACCEPTED)$", "required": false},
+      "category": {"in": "query", "pattern": "^(MISSING_IN_LEDGER|MISSING_IN_STATEMENT|AMOUNT_MISMATCH|FEE_MISMATCH|DUPLICATE_STATEMENT_LINE|BATCH_TOTAL_MISMATCH|REFUND_NOT_IN_STATEMENT|DEPOSIT_MISSING|DEPOSIT_AMOUNT_MISMATCH|UNMATCHED_BANK_LINE|UNAPPLIED_CASH_OPEN|BANK_BALANCE_MISMATCH|BATCH_VERSION_CONFLICT|STATEMENT_VERSION_CONFLICT|TIMING_DIFFERENCE|PAYOUT_STATE_CONFLICT|BATCH_STATE_CONFLICT|REFUND_STATE_CONFLICT|UNSUPPORTED_PAYOUT|EVENT_CONTENT_CONFLICT|EVENT_BUSINESS_CONFLICT|UNSUPPORTED_EVENT|LIVEMODE_EVENT|PAYMENT_NOT_SETTLED|DEPOSIT_NOT_RECEIVED|REFUND_AWAITING_FUNDS_AGED|REFUND_NOT_EXECUTED|PAYOUT_UNRESOLVED|EVENT_PARKED_AGED|UNSUPPORTED_BATCH_LINE)$", "required": false},
+      "limit": {"in": "query", "pattern": "^([1-9]|[1-4][0-9]|50)$", "required": false, "type": "integer"}
+    }
+  },
+  {
+    "tool": "get_payment_timeline",
+    "method": "GET",
+    "path_template": "/api/payments/{payment_ref}",
+    "description": "Payment with postings, deliveries, refunds, batch and bank deposit. Accepts pay_..., ch_... or pi_... references.",
+    "params": {
+      "payment_ref": {"in": "path", "pattern": "^(pay|ch|pi)_[A-Za-z0-9]{1,60}$", "required": true}
+    }
+  },
+  {
+    "tool": "get_batch",
+    "method": "GET",
+    "path_template": "/api/batches/{batch_id}",
+    "description": "Settlement batch (processor payout po_...) with lines, history, entries, matched bank lines and deliveries.",
+    "params": {
+      "batch_id": {"in": "path", "pattern": "^po_[A-Za-z0-9_]{1,60}$", "required": true}
+    }
+  },
+  {
+    "tool": "get_bank_line",
+    "method": "GET",
+    "path_template": "/api/bank-lines/{bank_txn_id}",
+    "description": "Bank statement line with all of its versions and the entries it produced.",
+    "params": {
+      "bank_txn_id": {"in": "path", "pattern": "^[A-Za-z0-9_\\-]{1,64}$", "required": true}
+    }
+  },
+  {
+    "tool": "search_bank_lines",
+    "method": "GET",
+    "path_template": "/api/bank-lines",
+    "description": "Find bank statement lines carrying the given reference (a batch id or payout request id).",
+    "params": {
+      "reference": {"in": "query", "pattern": "^[A-Za-z0-9_\\-]{1,64}$", "required": true}
+    }
+  },
+  {
+    "tool": "get_statement_line",
+    "method": "GET",
+    "path_template": "/api/statement-lines/{file_id}/{seq}",
+    "description": "One line of a processor settlement statement file.",
+    "params": {
+      "file_id": {"in": "path", "pattern": "^[A-Za-z0-9_\\-]{1,64}$", "required": true},
+      "seq": {"in": "path", "pattern": "^[0-9]{1,6}$", "required": true, "type": "integer"}
+    }
+  },
+  {
+    "tool": "get_event",
+    "method": "GET",
+    "path_template": "/api/events/{event_id}",
+    "description": "Inbound processor event (metadata and deliveries, not the raw payload).",
+    "params": {
+      "event_id": {"in": "path", "pattern": "^evt_[A-Za-z0-9_]{1,60}$", "required": true}
+    }
+  },
+  {
+    "tool": "get_entry",
+    "method": "GET",
+    "path_template": "/api/entries/{entry_id}",
+    "description": "Ledger journal entry with its postings.",
+    "params": {
+      "entry_id": {"in": "path", "pattern": "^je_[A-Za-z0-9]{1,60}$", "required": true}
+    }
+  },
+  {
+    "tool": "get_refund",
+    "method": "GET",
+    "path_template": "/api/refunds/{refund_id}",
+    "description": "Refund with history, commands, attempts, entries and postings.",
+    "params": {
+      "refund_id": {"in": "path", "pattern": "^rfd_[A-Za-z0-9]{1,60}$", "required": true}
+    }
+  },
+  {
+    "tool": "get_payout",
+    "method": "GET",
+    "path_template": "/api/payouts/{payout_id}",
+    "description": "Merchant payout with history, commands, attempts, bank lines, entries and linked issues.",
+    "params": {
+      "payout_id": {"in": "path", "pattern": "^mpo_[A-Za-z0-9]{1,60}$", "required": true}
+    }
+  }
+]

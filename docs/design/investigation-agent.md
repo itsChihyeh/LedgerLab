@@ -112,6 +112,13 @@ ModelResponse = {content:[text | tool_use{id,name,input}], stop_reason, usage{in
 
 `recommended_action` 枚举（与 SOP 条款对应）：`WAIT_FOR_NEXT_STATEMENT`、`REQUEST_BANK_TRACE`、`CONTACT_PROCESSOR`、`PROPOSE_CORRECTION_FOR_REVIEW`、`MATCH_MANUALLY_AFTER_REVIEW`、`ESCALATE`。所有动作都是给人看的建议；Agent 没有执行它们的工具，`resolve`、纠错等写接口不在路由清单里。
 
+**实现备注（P8-T01）**：
+- `explanation` 的长度限制实际按 **800 个字符**校验（原文 120 词无法对中英文统一计数）；`citations` ≤ 20 条，每条 `{kind, id}`，`kind` 取 `issue, payment, event, entry, batch, batch_line, bank_line, statement_line, refund, payout, correction, run`；`sop_clauses` 每项匹配 `^SOP-\d+(\.\d+)*$`；`abstain=true` 当且仅当 `root_cause=INSUFFICIENT_EVIDENCE`；结论的 `issue_id` 必须等于被调查的差异。枚举集中在 `agent/src/ledgerlab_agent/enums.py`。
+- 结论不合格或模型只回文本时，共享**一次**修正机会（第二次不合格即 `invalid_output`，结论置为拒答）；无效参数的工具调用也计入 12 次预算。
+- `routes.json` 每条除第 3 节的字段外多两个字段：`description`（给模型看的工具说明）和参数的 `type`（`integer` 的参数在模型 schema 里是整数）。参数正则按已知编号前缀收窄（`iss_`、`po_`、`evt_`、`je_`、`rfd_`、`mpo_`、`pay_/ch_/pi_`）；`bank_txn_id`、`file_id`、`reference` 暂用 `^[A-Za-z0-9_\-]{1,64}$`。
+- 响应体超过 16 KB 时 `data` 只保留前 16 KB 文本，`records` 为空、`as_of` 为空：模型没看全的记录不能被引用，宁可让引用核验偏严。
+- `search_bank_lines` 的响应形状假定为 `{bankLines:[…], asOf}`，具体字段以 T02 实现为准（记录抽取按 `bankTxnId` 键通用识别，形状小改不影响）。
+
 ## 7. 规则基线
 
 `agent/src/ledgerlab_agent/baseline.py`：确定性规则，只用同一组工具，按 SOP 的判别特征写成 if/else（例如 DEPOSIT_AMOUNT_MISMATCH 且同 reference 有两条流水且合计等于提现 → SPLIT）。它**只看开发集调规则**。它是诚实对比的另一端：在封闭的原因表上，规则很可能很强；大模型的价值要在报告里如实写（解释质量、组合故障、规则没覆盖的情况、成本和延迟）。

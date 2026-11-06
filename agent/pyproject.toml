@@ -1,0 +1,9 @@
+[project]
+name = "ledgerlab-agent"
+version = "0.1.0"
+description = "Read-only investigation agent for LedgerLab reconciliation issues (standard library only)."
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
