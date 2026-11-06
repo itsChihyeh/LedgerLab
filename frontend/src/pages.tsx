@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AgentPanel } from "./agent";
 import type {
   BankDetail,
   BatchDetail,
@@ -519,6 +520,10 @@ export function IssuePage({ id }: { id: string }) {
               <p>暂无可跳转证据</p>
             )}
           </section>
+          <AgentPanel
+            issue={{ id, status: d.issue.status }}
+            onChanged={() => setRevision((v) => v + 1)}
+          />
           {d.issue.status === "OPEN" && (
             <AcceptIssue id={id} onAccepted={() => setRevision((v) => v + 1)} />
           )}

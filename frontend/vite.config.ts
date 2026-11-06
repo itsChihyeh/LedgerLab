@@ -16,6 +16,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/api": "http://localhost:8080",
+      "/agent": `http://localhost:${process.env.VITE_AGENT_PORT ?? "8097"}`,
       ...(process.env.VITE_E2E_REFUNDS === "true"
         ? {
             "/__e2e__": {

@@ -127,6 +127,13 @@ python agent/ledgerlab-agent-service.py --base-url http://127.0.0.1:8080 --model
 
 `vite.config.ts` 加 `"/agent": "http://localhost:8097"`（与 `/api` 一样只在开发／E2E 时生效）。生产构建里没有调查服务，面板显示“调查助手未启动”。
 
+### 3.4 实现备注（P9-T03）
+
+- 纯函数在 `frontend/src/agent-model.ts`（引用链接、`adoptionPlan`、请求体、中文名常量表），展示与表单在 `frontend/src/agent.tsx`（`AgentPanel`、`RunView`、`AgentUnavailable`、`Adoption`）。`adoptionPlan(run, issue)` 的 `none` 原因短码：`issue_not_open`、`run_not_ok`、`abstained`、`fabricated_citations`、`no_adoptable_action`、`insufficient_citations`；前两三种不显示任何提示，后两种显示固定文案。
+- 只有最近一次调查带“采纳”；更早的调查折叠在“更早的调查”里，只读。引用里重复的 `bank_line` 去重后再排序计数。`batch_line`／`statement_line` 的复合 id 按最后一个 `/` 拆分，格式不对则不做链接。
+- 接受差异的接口没有操作人字段，所以 FEE 表单只有可编辑的原因，没有“操作人”；纠错表单有必填“操作人”。接受接口的 409 没有 `code`，显示“差异状态已变化”。
+- 健康检查在 `IssuePage` 里每次进入时做一次；检查期间面板不渲染，失败只显示“调查助手未启动”。Vite 代理端口可用 `VITE_AGENT_PORT` 覆盖（默认 8097）。
+
 ## 4. MCP 只读服务（`ledgerlab_agent_mcp`）
 
 **位置（2026-11-06 审查 T01 后定）**：独立包 `agent/mcp/ledgerlab_agent_mcp/`，测试 `agent/mcp/tests/`。不放进核心包，因为评测的代码指纹覆盖整个 `ledgerlab_agent` 包，往里加一个不影响答案的模块也会让 `eval.sh` 往 test／hard 的 `runs.log` 追加记录。MCP 包的静态检查直接复用核心包 `test_static.py` 的 `FORBIDDEN` 表和导入规则（只许标准库、`ledgerlab_agent` 和自身），一条例外都没有。
