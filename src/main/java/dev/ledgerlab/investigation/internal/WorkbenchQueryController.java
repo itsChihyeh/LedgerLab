@@ -47,6 +47,11 @@ final class WorkbenchQueryController {
         return queries.runs(limit);
     }
 
+    @GetMapping("/api/bank-lines")
+    WorkbenchQueries.BankSearch bankLinesByReference(@RequestParam String reference) {
+        return queries.bankLinesByReference(reference);
+    }
+
     @GetMapping("/api/bank-lines/{bankTxnId}")
     WorkbenchQueries.BankDetail bankLine(@PathVariable String bankTxnId) {
         return queries.bankDetail(bankTxnId);
