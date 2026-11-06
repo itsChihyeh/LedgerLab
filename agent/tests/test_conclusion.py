@@ -40,6 +40,10 @@ class ConclusionValidationTest(unittest.TestCase):
             raw["abstain"] = cause == "INSUFFICIENT_EVIDENCE"
             self.assertEqual(validate(raw, ISSUE), [], cause)
 
+    def test_ac_10_5_root_causes_found_by_the_t03_probe_are_in_the_enum(self) -> None:
+        self.assertIn("PROCESSOR_PAYOUT_AMOUNT_DIFFERS", ROOT_CAUSES)
+        self.assertEqual(len(ROOT_CAUSES), len(set(ROOT_CAUSES)))
+
     def test_ac_10_4_root_cause_must_be_in_enum(self) -> None:
         self.bad(root_cause="SOMETHING_ELSE")
 
