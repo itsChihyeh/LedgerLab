@@ -33,12 +33,12 @@ Exit code: `0` conclusion accepted, `3` the run ended as `invalid_output` or `bu
 ## Evaluate
 
 ```sh
-sh scripts/agent/eval.sh            # baseline and stand-in on dev and test (replay, no Docker), writes docs/eval/agent-<date>.md/.json
+sh scripts/agent/eval.sh            # baseline and stand-in on dev, test and hard (replay, no Docker), writes docs/eval/agent-<date>.md/.json
 sh scripts/agent/eval.sh --check    # writes nothing; exit 1 when a hard line fails (CI runs this)
-python agent/ledgerlab-agent.py eval --split dev|test --model baseline|stub [--out run.json]
+python agent/ledgerlab-agent.py eval --split dev|test|hard --model baseline|stub [--out run.json]
 ```
 
-Evaluating the test split appends a line to `agent/eval/data/test/runs.log` unless this model configuration has already been run with the same code (source + SOP fingerprint). Tune rules and prompts on dev only.
+Evaluating the test or the hard split appends a line to `agent/eval/data/test/runs.log` or `agent/eval/data/hard/runs.log` unless this model configuration has already been run with the same code (source + SOP fingerprint). Tune rules and prompts on dev only; hard is a held-out set that is only reported, never tuned against.
 
 ## Layout
 
@@ -54,13 +54,13 @@ Evaluating the test split appends a line to `agent/eval/data/test/runs.log` unle
 | `replay.py` | `ReplayTransport`: serves a recorded snapshot (404 `not_in_snapshot` for unknown requests, 503 for withheld ones) |
 | `eval/` | Evaluation tooling (not part of the agent runtime): stack, scenario, probe, catalog, crawl, generate, verify |
 | `verify.py`, `evaluate.py`, `eval/run_eval.py` | Citation verifier, metrics and report rendering (read-only), and the command line that writes reports and the test-set run log |
-| `eval/data/{dev,test}/` | Frozen evaluation sets: `snapshot.json`, `labels.json`, `manifest.json` |
+| `eval/data/{dev,test,hard}/` | Frozen evaluation sets: `snapshot.json`, `labels.json`, `manifest.json` (hard: by-product questions, new combinations and injections; report-only) |
 
 ## Evaluation sets
 
 ```sh
-sh scripts/agent/generate-eval.sh --split dev|test|all [--force]   # needs Docker and both jars; replacing frozen data needs --force
-sh scripts/agent/verify-eval.sh --split dev                        # regenerate from the manifest seed, compare ignoring ids
+sh scripts/agent/generate-eval.sh --split dev|test|hard|all [--force]   # all = dev and test; needs Docker and both jars; replacing frozen data needs --force
+sh scripts/agent/verify-eval.sh --split dev|test|hard                   # regenerate from the manifest seed, compare ignoring ids
 ```
 
 The snapshot only holds what the crawl reached (depth 3 from each issue, plus bank-line searches); anything else answers 404 in replay.

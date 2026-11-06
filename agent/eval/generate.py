@@ -1,7 +1,7 @@
 """P8-T04 evaluation set generator: one disposable stack per split, a seeded set of faulted payouts, a crawled
 snapshot and labels that record what was injected.
 
-    python agent/eval/generate.py --split dev|test|all [--out-dir agent/eval/data] [--force]
+    python agent/eval/generate.py --split dev|test|hard|all [--out-dir agent/eval/data] [--force]
 
 Writes <out-dir>/<split>/{snapshot.json,labels.json,manifest.json}. Existing frozen data is only replaced with --force.
 """
@@ -169,7 +169,7 @@ def finish_split(split_name: str, captured: Capture, out_dir: Path, command: str
     config = plan.split
     views, crawled = captured.views, captured.crawled
     labels = dataset.build_labels(plan, captured.facts, views, crawled)
-    problems = dataset.validate_composition(labels)
+    problems = (dataset.validate_hard_composition if config.hard else dataset.validate_composition)(labels)
     if problems:
         raise dataset.DatasetError("composition problems:\n  " + "\n  ".join(problems))
 
@@ -189,6 +189,7 @@ def finish_split(split_name: str, captured: Capture, out_dir: Path, command: str
         "split": split_name,
         "command": command,
         "seed": config.seed,
+        **({"note": config.note} if config.note else {}),
         "amount_range_cents": [config.amount_min, config.amount_max],
         "generated_at": generated_at,
         "commit": commit,
@@ -237,13 +238,13 @@ def generate_split(
 
 def main(argv: list[str] | None = None, stack_factory: Callable[[], Stack] = Stack) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--split", choices=("dev", "test", "all"), default="all")
+    parser.add_argument("--split", choices=("dev", "test", "hard", "all"), default="all")
     parser.add_argument("--out-dir", type=Path, default=DATA_DIR)
     parser.add_argument("--force", action="store_true", help="replace already frozen data")
     parser.add_argument("--raw-dir", type=Path, default=REPO_ROOT / "target" / "agent-eval")
     parser.add_argument("--from-capture", type=Path, help="rebuild labels and files from a saved capture (one split)")
     args = parser.parse_args(argv)
-    splits = ["dev", "test"] if args.split == "all" else [args.split]
+    splits = list(catalog.STANDARD_SPLITS) if args.split == "all" else [args.split]  # "all" never touches hard
     existing = [name for name in splits if any((args.out_dir / name / f).exists() for f in FILES)]
     if existing and not args.force:
         log(f"Frozen data already exists for: {', '.join(existing)}. Use --force to overwrite it.")

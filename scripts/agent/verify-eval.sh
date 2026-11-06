@@ -1,6 +1,6 @@
 #!/bin/sh
 # P8-T04 (AC-10.5): regenerate a split from its manifest seed and compare it with the committed data, ignoring ids.
-# Usage: sh scripts/agent/verify-eval.sh --split dev|test
+# Usage: sh scripts/agent/verify-eval.sh --split dev|test|hard
 set -eu
 cd "$(dirname "$0")/../.."
 command -v docker >/dev/null || { echo 'docker is required' >&2; exit 1; }

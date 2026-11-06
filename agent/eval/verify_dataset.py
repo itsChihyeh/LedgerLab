@@ -1,6 +1,6 @@
 """AC-10.5 check: regenerate a split from the manifest's seed and compare it with the committed data, ignoring ids.
 
-    python agent/eval/verify_dataset.py --split dev [--data-dir agent/eval/data]
+    python agent/eval/verify_dataset.py --split dev|test|hard [--data-dir agent/eval/data]
 
 Exit code 0 when labels and the issue set are the same up to generated identifiers.
 """
@@ -47,7 +47,7 @@ def compare_directories(committed: Path, regenerated: Path) -> list[str]:
 
 def main(argv: list[str] | None = None, stack_factory: Callable[[], Stack] = Stack) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--split", choices=("dev", "test"), required=True)
+    parser.add_argument("--split", choices=tuple(catalog.SPLITS), required=True)
     parser.add_argument("--data-dir", type=Path, default=generate.DATA_DIR)
     args = parser.parse_args(argv)
     committed = args.data_dir / args.split

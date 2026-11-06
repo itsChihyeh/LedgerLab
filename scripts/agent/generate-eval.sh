@@ -2,7 +2,7 @@
 # P8-T04: generate the frozen evaluation sets (agent/eval/data/dev and test) against a disposable Compose stack.
 # Replacing frozen data needs --force. Needs Docker, Python >= 3.12 and the app and simulator jars:
 #   ./mvnw -B -DskipTests package && ./mvnw -B -f simulator/pom.xml -DskipTests package
-# Usage: sh scripts/agent/generate-eval.sh [--split dev|test|all] [--force]
+# Usage: sh scripts/agent/generate-eval.sh [--split dev|test|hard|all] [--force]   (all = dev and test, never hard)
 set -eu
 cd "$(dirname "$0")/../.."
 command -v docker >/dev/null || { echo 'docker is required' >&2; exit 1; }
