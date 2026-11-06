@@ -86,6 +86,16 @@ python agent/ledgerlab-agent-service.py --base-url http://127.0.0.1:8080 --model
 - 允许出现的“写”只有两处，用白名单写死：`http.server` 的入站 `do_POST`（一个方法），以及存储模块里以追加模式（`"a"`）打开那一个 JSONL 文件。其余与 P8 `FORBIDDEN` 同样的模式一律报错。
 - P8 核心包的 `test_static.py` 不改；新的 MCP 模块放在核心包里，必须通过它。
 
+### 2.5 实现备注（P9-T01）
+
+- **文件布局**：`ledgerlab_agent_service/{app,runner,store,cli}.py`；`app.py` 是 HTTP 处理，`runner.py` 组装并跑一次调查、生成记录，`store.py` 是 JSONL 存储，`cli.py` 解析参数；启动器 `agent/ledgerlab-agent-service.py`。没有改 `ledgerlab_agent` 核心包：评测的代码指纹覆盖整个核心包，改它会让 `eval.sh --check` 往 `runs.log` 追加行。所以传输／基线／Agent 的组装（`build_transport`、`run_investigation`）在 `runner.py` 里重写成十行，规则本身仍全部复用 `build_model`、`BaselineInvestigator`、`investigate`、`verify`。
+- **错误短码**：HTTP 错误体 `invalid_request`(400)、`forbidden_host`(403)、`not_found`(404)、`method_not_allowed`(405，带 `Allow: GET, POST`)、`busy`(409)、`payload_too_large`(413)、`unsupported_media_type`(415)、`internal_error`(500，仅存储写入失败等)。记录里的 `error`：`backend_unreachable`（任一工具调用的传输层错误以 `transport_error` 开头）、`internal_error`（其他异常，stderr 只写异常类型名）。出错记录保留已发生的 `toolCalls`，结论换成拒答，`supported` 为 `null`。
+- **模型名**：记录与 `/agent/health` 的 `model` 只写 `stub`／`baseline`／`scripted`（不含脚本路径）；三者 `modelIsStandIn` 都是 `true`。
+- **追加的防护**：校验 `Host` 头必须是回环名（防 DNS 重绑定），否则 403；任何未实现的方法（PUT、DELETE、OPTIONS、HEAD…）一律 405；被拒请求会先读掉请求体再回应，避免连接复位吞掉响应。
+- **存储**：启动时若最后一行没有换行（上次写到一半），下一条记录前补一个换行，不改已有字节；重复 `runId` 的行跳过。
+- **IPv6**：`--host ::1` 借用 `http.server` 自己的 `_get_best_family`（`python -m http.server` 用的那个）取地址族，因为静态检查不允许出现 `socket` 字样；这个函数没有时 `::1` 启动失败。
+- **静态检查（实际规则）**：`agent/service/tests/test_static.py` 对服务包用 P8 的 `FORBIDDEN` 模式加上 `urllib／http.client／requests…`；写模式 `open(` 只允许 `store.py` 里 1 处（`"a"`）；`do_` 方法恰好 `do_GET`、`do_POST`；`os.makedirs` 只在 `store.py`；只能 `from ledgerlab_agent.transport import HttpTransport, Transport`；导入只限标准库、`ledgerlab_agent`、自身。HTTP 查询串不用 `urllib.parse`，按 `issueId=<值>` 原样读（issue id 没有需要百分号解码的字符）。
+
 ## 3. 工作台面板（差异详情页）
 
 `IssuePage` 在“关联证据”之后加一节 **“调查助手”**（`<section aria-label="调查助手">`）。

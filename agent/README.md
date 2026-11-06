@@ -56,6 +56,26 @@ Evaluating the test or the hard split appends a line to `agent/eval/data/test/ru
 | `verify.py`, `evaluate.py`, `eval/run_eval.py` | Citation verifier, metrics and report rendering (read-only), and the command line that writes reports and the test-set run log |
 | `eval/data/{dev,test,hard}/` | Frozen evaluation sets: `snapshot.json`, `labels.json`, `manifest.json` (hard: by-product questions, new combinations and injections; report-only) |
 
+## Investigation service (P9)
+
+A local HTTP service that runs the agent on request and keeps the results. Design: [`docs/design/agent-workbench-and-mcp.md`](../docs/design/agent-workbench-and-mcp.md) section 2, acceptance AC-11.1 and AC-11.2. Standard library only; it never writes to the main application.
+
+```sh
+python agent/ledgerlab-agent-service.py (--base-url http://127.0.0.1:8080 | --snapshot agent/eval/data/dev/snapshot.json) --model stub|baseline|scripted:<path.json> [--port 8097] [--store agent/.runs/investigations.jsonl]
+python -m unittest discover -s agent/service/tests -t agent/service
+```
+
+`--host` accepts loopback addresses only; `--port 0` picks a free port and the service prints `listening on http://127.0.0.1:<port>` on stderr. The model is fixed at start-up and is always a local stand-in; no external model API is called.
+
+| Request | Answer |
+|---|---|
+| `GET /agent/health` | `200` model, `modelIsStandIn`, source |
+| `POST /agent/investigations` with `{"issueId":"iss_…"}` (JSON only) | `201` investigation record; `400`, `409 busy`, `413`, `415` |
+| `GET /agent/investigations?issueId=iss_…` | `200` the last 20 records, newest first |
+| `GET /agent/investigations/{runId}` | `200` record, or `404` |
+
+Records are appended to a JSONL file (`agent/.runs/` is git-ignored); the code is in `agent/service/ledgerlab_agent_service/` (`app.py` HTTP, `runner.py` one investigation, `store.py` the file). The service reaches the backend only through the agent's read-only tool layer.
+
 ## Evaluation sets
 
 ```sh
