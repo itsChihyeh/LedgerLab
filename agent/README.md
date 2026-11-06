@@ -76,6 +76,24 @@ python -m unittest discover -s agent/service/tests -t agent/service
 
 Records are appended to a JSONL file (`agent/.runs/` is git-ignored); the code is in `agent/service/ledgerlab_agent_service/` (`app.py` HTTP, `runner.py` one investigation, `store.py` the file). The service reaches the backend only through the agent's read-only tool layer.
 
+## MCP service (P9)
+
+A stdio [MCP](https://modelcontextprotocol.io) server that exposes the agent's read-only tools to any MCP client, so the client's own model can do the reasoning. Design: [`docs/design/agent-workbench-and-mcp.md`](../docs/design/agent-workbench-and-mcp.md) section 4, acceptance AC-11.7 and AC-11.8. Standard library only; it lives in its own package (`agent/mcp/ledgerlab_agent_mcp/`) so the evaluation fingerprint of the core package does not change.
+
+```sh
+python agent/ledgerlab-agent-mcp.py (--base-url http://127.0.0.1:8080 | --snapshot agent/eval/data/dev/snapshot.json) [--max-calls 500]
+python -m unittest discover -s agent/mcp/tests -t agent/mcp
+```
+
+Protocol versions 2025-11-25, 2025-06-18 and 2025-03-26; tools only (no resources, prompts or sampling). The tools are the Agent's tools (`routes.json` plus `search_sop`), with the same argument schemas and the same validation, 16 KB truncation and GET-only transport; `submit_conclusion` is not offered. Each result is one `text` block plus `structuredContent`; a failed lookup sets `isError`. After `--max-calls` calls the server answers `call_limit_reached`. stdout carries protocol messages only, logs go to stderr.
+
+Example Claude Code configuration (kept out of the repository's `.mcp.json` on purpose):
+
+```json
+{"mcpServers": {"ledgerlab-tools": {"type": "stdio", "command": "python",
+  "args": ["agent/ledgerlab-agent-mcp.py", "--base-url", "http://127.0.0.1:8080"]}}}
+```
+
 ## Evaluation sets
 
 ```sh

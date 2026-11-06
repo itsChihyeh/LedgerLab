@@ -145,6 +145,13 @@ python agent/ledgerlab-agent-mcp.py (--base-url http://127.0.0.1:8080 | --snapsh
 - **不提供** `investigate`、resources、prompts、sampling：MCP 客户端自己的模型做推理，这里只给证据。
 - **调用上限**：每个进程最多 500 次 `tools/call`，超出后返回 `isError` 结果 `call_limit_reached`（防止失控的客户端循环打满后端）。
 
+**实现备注（P9-T02）**：
+- 结构：`server.py` 里纯函数 `handle(message, state)`＋逐行循环 `serve`，`cli.py` 组装（与 P8 命令行同样的数据源校验，参数错误退出 2），启动器 `agent/ledgerlab-agent-mcp.py`。`tools/list` 的 `inputSchema` 取自 `model.tool_definition(spec)["input_schema"]`；`submit_conclusion` 不列出（它是 Agent 循环内部的提交动作，不是证据工具）。
+- `structuredContent` 在设计列出的字段之外，工具层给出了错误短码时多一个 `error`（如 `invalid_arguments`、`http_404`）；参数不合格时具体原因在 `data.detail`。调用上限的结果是 `{"ok": false, "error": "call_limit_reached"}`。计数包含所有通过名字和 `arguments` 类型检查的 `tools/call`（含参数不合格的），未知工具和 `arguments` 不是对象的请求不计。
+- 通知一律不回复（包括出错的通知）；客户端发来的响应（有 `result`/`error` 无 `method`）忽略；`id` 不是字符串或整数 → `-32600`，回包 `id: null`。`initialize` 缺 `protocolVersion` → `-32602`。stdout 的消息用 ASCII 转义的紧凑 JSON，一行一条。
+- 异常只把异常类型名写到 stderr，客户端得到 `-32603`（通知则什么都不回），循环继续。
+- 静态检查 `agent/mcp/tests/test_static.py` 按路径加载核心包 `agent/tests/test_static.py` 的 `FORBIDDEN`，另加“只许导入标准库、`ledgerlab_agent`、自身”和“从 `transport` 只导入 `HttpTransport`、`Transport`”两条；没有任何例外。
+
 ### 4.1 怎么接到 Claude Code
 
 文档给出示例（**不**写进仓库的 `.mcp.json`，免得每次开会话都去连一个没启动的后端）：
