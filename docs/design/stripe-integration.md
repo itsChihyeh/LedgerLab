@@ -345,7 +345,7 @@ T04 实现备注（2026-11-02）：按任务补充，`up.sh` 新 run 的窗口�
 
 `up` 每次解析 CLI `events retrieve evt_3UXQCaF5hIinUF490brSX7aS` 的 JSON 核对登录账号，resource_missing 或无法证明 test mode 时退出 78 并提示用户重新登录，不把 CLI 退出码 0 当成功。签名密钥只写 `.sandbox/secrets.env`（POSIX 0600，Windows 尽量移除继承 ACL 并仅授予当前用户）；日志在落盘前脱敏。后台 Python supervisor 管理 listen，Windows 下 supervisor 与 CLI 子进程均显式无窗口启动，保存 PID、ready 和心跳，通过随机 token 请求退出，不凭一个可能复用的 PID 杀进程。重复 up 沿用 run，已就绪的 listen 不重复启动；`--new-run` 归档旧编号。down 保留卷，`--purge` 必须交互输入当前 run_id，删除后撤销当前 run，避免同编号重建触发旧幂等键。
 
-`traffic` 使用 T03 幂等身份，当前 run 最多 50 个逻辑支付；`accept --only ac-8.4` 从 simulator 的当前 run 支付尝试恢复最新逻辑结果，不生成支付，至少 20 笔成功且全部唯一。最多轮询五分钟，逐笔验证 CAPTURED、对应真实 charge.succeeded 已进 inbox 并 PROCESSED、版本为固定协议。录制原文由脚本以 simulator 角色只读 `sim_chaos.inbound_recording`（沿用 smoke/p3 的观察者 SQL 模式），校验 SHA-256，原文只留进程内存；主应用仍不读模拟器数据库，脚本不读 sim_truth。
+`traffic` 使用 T03 幂等身份，当前 run 最多 50 个逻辑支付；`accept --only ac-8.4` 从 simulator 的当前 run 支付尝试恢复最新逻辑结果，不生成支付，至少 20 笔成功且全部唯一。（T08 补记：支付被真实 payout 结算后状态是 `SETTLED`，判据因此改为 `CAPTURED`，或带 `PAYMENT_CAPTURED` 分录的 `SETTLED`；结算不能代替请款分录。）最多轮询五分钟，逐笔验证 CAPTURED、对应真实 charge.succeeded 已进 inbox 并 PROCESSED、版本为固定协议。录制原文由脚本以 simulator 角色只读 `sim_chaos.inbound_recording`（沿用 smoke/p3 的观察者 SQL 模式），校验 SHA-256，原文只留进程内存；主应用仍不读模拟器数据库，脚本不读 sim_truth。
 
 **T05 AC-8.5 实现备注**：先保存当前 run 的各支付状态及零违反基线，从 seed=2 六笔之外选 3 个已 CAPTURED 的真实 charge.succeeded，每个 resend 两次，并等待新增两条投递。`traffic` 的 card 参数默认 pm_card_bypassPending，显式传卡的旧用法不变。
 

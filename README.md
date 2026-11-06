@@ -4,7 +4,7 @@ A reproducible sandbox for recording simulated merchant payments, tracking settl
 
 > **Synthetic data only.** All merchants, payments, events, and settlement statements in this project are synthetic or come from Stripe test mode. LedgerLab is a sandbox: it does not handle real money, real customers, or real payment credentials.
 
-**Status:** P1–P4 done (ledger core and signed webhook intake, settlement and bank reconciliation, refunds, restricted corrections); paused before P5 (payouts). Acceptance checklists: [docs/handoff/](docs/handoff/). Where work stopped and how to resume: [docs/handoff/pause-p4.md](docs/handoff/pause-p4.md).
+**Status:** P1–P5 done (ledger core and signed webhook intake, settlement and bank reconciliation, refunds, restricted corrections, payouts); P6 (real Stripe test mode) finished and awaiting review. Acceptance checklists: [docs/handoff/](docs/handoff/), P6 in [docs/handoff/p6.md](docs/handoff/p6.md).
 
 Run it (JDK 25 and a running Docker are the only prerequisites):
 
@@ -21,6 +21,24 @@ sh scripts/sandbox/accept.sh --only ac-8.4   # repeat without generating more pa
 sh scripts/sandbox/status.sh
 sh scripts/sandbox/down.sh                 # optional stop; preserves volumes
 ```
+
+## 真实 Stripe 测试模式
+
+除了 fake Stripe，同一套适配器也接真实的 Stripe 测试模式（只用测试密钥，`livemode=true` 一律拒绝）。它是一套本机长期运行的栈，不进 CI；CI 只跑录制并脱敏的真实夹具（`src/test/resources/contracts/stripe-sandbox/`），不联网、不需要密钥。
+
+前提：Stripe CLI 已 `stripe login`，测试用受限密钥放在本地 `.env`（不入库，由 `scripts/sandbox/env.sh` 加载）。
+
+```sh
+sh scripts/sandbox/up.sh                      # 起栈并监听真实 webhook（经 chaos relay 进应用）
+sh scripts/sandbox/traffic.sh --count 20 --card pm_card_bypassPending --seed 1
+sh scripts/sandbox/catchup.sh                 # 漏收补投、银行同步与导入
+sh scripts/sandbox/accept.sh --only ac-8.4    # 也可 ac-8.5 / ac-8.6 / ac-8.8 / ac-8.9
+sh scripts/sandbox/check-payout.sh            # 自动 payout 走完才退出 0，没走完 75
+sh scripts/sandbox/record-fixtures.sh --scenario all   # 重录并脱敏夹具
+sh scripts/sandbox/report.sh                  # 生成 docs/runs/ 下的运行报告
+```
+
+最新运行报告：[docs/runs/sandbox-sbx_20261102T224453022706Z.md](docs/runs/sandbox-sbx_20261102T224453022706Z.md)（同名 `.json` 是机器可读版）。对外提到的支付、退款、payout、重复／乱序／丢弃次数和不变量结果，一律只引用这份报告，不另算。验收清单与已知限制见 [docs/handoff/p6.md](docs/handoff/p6.md)。
 
 ## 三进程本地演示
 
