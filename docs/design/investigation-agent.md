@@ -96,23 +96,36 @@ ModelResponse = {content:[text | tool_use{id,name,input}], stop_reason, usage{in
 }
 ```
 
-原因表（首版，T03 探测后按实际产生的差异定稿，删掉产生不了差异的项）：
+原因表（P8-T03 探测后定稿；“主类别”是该原因独有的、能把它与其他原因区分开的差异类别，完整差异集合见 `docs/eval/probe-2026-11-06.md`）：
 
-| root_cause | 注入方式 | 预期差异类别 |
+| root_cause | 注入方式（定稿） | 主类别（实际出现） |
 |---|---|---|
 | `BANK_SHORT_DEPOSIT` | 银行 SHORT | DEPOSIT_AMOUNT_MISMATCH |
-| `BANK_SPLIT_DEPOSIT` | 银行 SPLIT | DEPOSIT_AMOUNT_MISMATCH |
-| `BANK_DUPLICATE_CREDIT` | 银行 DUPLICATE | UNMATCHED_BANK_LINE |
-| `BANK_FOREIGN_CURRENCY_LABEL` | 银行 FOREIGN_CURRENCY | UNMATCHED_BANK_LINE |
-| `BANK_UNKNOWN_CREDIT` | 银行 UNKNOWN_CREDIT | UNMATCHED_BANK_LINE |
-| `BANK_DEPOSIT_DELAYED` | 银行 DELAY_DAYS | TIMING_DIFFERENCE／DEPOSIT 未到老化 |
-| `BANK_PENDING_FIRST` | 银行 PENDING_FIRST | TIMING_DIFFERENCE |
-| `PROCESSOR_DUPLICATE_LINE` | payout faults `duplicate_transaction` | DUPLICATE_STATEMENT_LINE |
-| `PROCESSOR_UNKNOWN_CHARGE_LINE` | payout faults `extra_line` charge | 待探测（BATCH_TOTAL_MISMATCH 或老化） |
-| `PROCESSOR_UNSUPPORTED_ADJUSTMENT` | payout faults `extra_line` adjustment | UNSUPPORTED_BATCH_LINE |
-| `PROCESSOR_FEE_DIFFERS` | charge `fee` 覆盖 | FEE_MISMATCH |
-| `WEBHOOK_LOST` | relay DROP 一条 `charge.succeeded` | 待探测（批次含未知支付） |
+| `BANK_SPLIT_DEPOSIT` | 银行 SPLIT | DEPOSIT_AMOUNT_MISMATCH（两条，各对应拆出的一笔流水） |
+| `BANK_DUPLICATE_CREDIT` | 银行 DUPLICATE | UNMATCHED_BANK_LINE（第二条同额流水，`_2`） |
+| `BANK_FOREIGN_CURRENCY_LABEL` | 银行 FOREIGN_CURRENCY | UNMATCHED_BANK_LINE（币种 USD）；老化后另有 DEPOSIT_NOT_RECEIVED |
+| `BANK_UNKNOWN_CREDIT` | 银行 UNKNOWN_CREDIT | UNMATCHED_BANK_LINE（reference 为 `unknown_<payout>`，正常入账已匹配） |
+| `BANK_DEPOSIT_DELAYED` | 银行 DELAY_DAYS | TIMING_DIFFERENCE（cutoff 早于到期）→ DEPOSIT_NOT_RECEIVED（cutoff 越过到期）→ 晚到流水导入后 EXPLAINED |
+| `BANK_PENDING_FIRST` | 银行 PENDING_FIRST | 同上（类别序列与 DELAY 相同，靠流水版本区分：第一版 PENDING） |
+| `PROCESSOR_DUPLICATE_LINE` | payout faults `duplicate_transaction`，**批次确认之后**注入，再拉处理方快照 | DUPLICATE_STATEMENT_LINE |
+| `PROCESSOR_UNKNOWN_CHARGE_LINE` | payout faults `extra_line` charge，批次确认之后注入，再拉快照 | MISSING_IN_LEDGER（subject 为未知 ch_）＋BATCH_TOTAL_MISMATCH |
+| `PROCESSOR_UNSUPPORTED_ADJUSTMENT` | payout faults `extra_line` adjustment，**必须在 reconcile 之前**注入 | UNSUPPORTED_BATCH_LINE（批次 HELD） |
+| `PROCESSOR_FEE_DIFFERS` | charge `fee` 覆盖，再拉快照 | FEE_MISMATCH |
+| `PROCESSOR_PAYOUT_AMOUNT_DIFFERS`（**新增**） | `POST /sim/payouts` 的 `amount` 覆盖 | BATCH_TOTAL_MISMATCH（批次 HELD，`reason=TOTAL_MISMATCH`，无 MISSING_IN_LEDGER） |
+| `WEBHOOK_LOST` | relay DROP 一条 `charge.succeeded` | MISSING_IN_LEDGER（批次 HELD，无 BATCH_TOTAL_MISMATCH） |
 | `INSUFFICIENT_EVIDENCE` | 见第 8 节“证据被截留”用例 | 任意 |
+
+**实现备注（P8-T03，探测结果）**：
+- 探测方法与全部原始差异在 `docs/eval/probe-2026-11-06.md/.json`；工具在 `agent/eval/`，入口 `scripts/agent/probe.sh`（约 10 分钟，需 Docker 与两个 jar）。每个注入一个独立 payout，三次对账运行：cutoff 早于到期（B）、越过到期且晚到银行文件未导入（A）、导入晚到文件后（L）。
+- **老化不需要等待**：存款到期按 `cutoff` 判断（BankRule／ProcessorRule），不看运行时刻。所以评测生成器用历史日期＋不同 cutoff 即可得到“未到期／已到期”两种状态；不要为此拨动应用时钟。
+- 新增原因 `PROCESSOR_PAYOUT_AMOUNT_DIFFERS`：payout `amount` 覆盖制造出的差异组合（HELD 批次＋BATCH_TOTAL_MISMATCH，没有未知支付）既不属于 UNKNOWN_CHARGE_LINE 也不属于 WEBHOOK_LOST，封闭集合里必须有它；枚举与测试已同步。
+- **注入时点决定能不能产生差异**：
+  - `duplicate_transaction`、`extra_line` charge、`fee` 覆盖：批次确认**之后**注入、再拉处理方快照，才是干净的单一原因（DUPLICATE_STATEMENT_LINE／MISSING_IN_LEDGER＋BATCH_TOTAL_MISMATCH／FEE_MISMATCH）。在 reconcile 之前注入时批次摄入会 HELD，额外带出 UNSUPPORTED_BATCH_LINE（duplicate）或 PAYMENT_NOT_SETTLED、银行入账变成 UNMATCHED_BANK_LINE 等连带差异，这类是“组合”素材，不作单一原因。
+  - `extra_line` adjustment：处理方快照遇到 adjustment 行会**整份拒收**（`REJECTED／FILE_INCOMPLETE`，没有差异记录，同一 businessDate 里别的 payout 也一起进不了快照）。所以 adjustment 只能在 reconcile 之前注入，由批次摄入产出 UNSUPPORTED_BATCH_LINE；且这类 payout 必须放在单独的 businessDate，否则会拖垮同日的快照。
+- **没有产生差异、已从原因表去掉的注入**：payout `fail_page`（快照拒收，无差异；重试不加该故障即可）；银行文件 `?corrupt=trailer_count|trailer_sum|balance`（导入被拒：`FILE_INCOMPLETE`／`FILE_INCOMPLETE`／`BALANCE_MISMATCH`，不进入账本也不产生差异）；adjustment 在确认之后注入（快照被拒，只留下 TIMING_DIFFERENCE，无 UNSUPPORTED_BATCH_LINE）。
+- 每个银行／批次类原因都会**连带**产生其他差异，Agent 与评测标签必须按“主类别＋证据”判断，不能按“差异类别唯一”：例如所有 SHORT／SPLIT／DUPLICATE／UNKNOWN_CREDIT 都伴随 UNAPPLIED_CASH_OPEN；HELD 批次的入账伴随 UNMATCHED_BANK_LINE（批次 net 为 0）和老化后的 PAYMENT_NOT_SETTLED；每个 payout 的 SHORT／SPLIT／FOREIGN_CURRENCY 还会出现 TIMING_DIFFERENCE（B）→ DEPOSIT_NOT_RECEIVED（A）。同一日的银行日报还会有一条与具体注入无关的 BANK_BALANCE_MISMATCH（subject 为 `账户:日期:日期`，牵涉当日所有注入）。
+- **类别序列相同、靠证据区分**的两对：DELAY 与 PENDING_FIRST（看流水版本和状态）；DUPLICATE 与 UNKNOWN_CREDIT（同额同 reference 的第二条流水 vs. `unknown_` 前缀的小额来款）。`WEBHOOK_LOST` 与 `PROCESSOR_UNKNOWN_CHARGE_LINE` 都有 MISSING_IN_LEDGER，区别是后者另有 BATCH_TOTAL_MISMATCH（额外行的金额不在 payout 金额里），前者没有。
+- **银行 memo 的可见位置**（提示注入面）：只出现在 `GET /api/bank-lines/{id}`（`bankLine.memo`、`versions[].memo`）、`GET /api/bank-lines?reference=`（`lines[].memo`）、差异列表与差异详情里 `actual` 内嵌的银行流水（`issues[].actual.memo`、`issue.actual.memo`，仅 DEPOSIT_AMOUNT_MISMATCH 与 UNMATCHED_BANK_LINE 这类 actual 带整条流水的差异）。批次详情、支付时间线、overview 不含 memo。处理方一侧的 memo 没有模拟器控制入口，不在评测范围内。因此提示注入用例必须用会引出 `bank_line` 或这两类差异的原因（建议 `BANK_SHORT_DEPOSIT`／`BANK_SPLIT_DEPOSIT`）。
 
 `recommended_action` 枚举（与 SOP 条款对应）：`WAIT_FOR_NEXT_STATEMENT`、`REQUEST_BANK_TRACE`、`CONTACT_PROCESSOR`、`PROPOSE_CORRECTION_FOR_REVIEW`、`MATCH_MANUALLY_AFTER_REVIEW`、`ESCALATE`。所有动作都是给人看的建议；Agent 没有执行它们的工具，`resolve`、纠错等写接口不在路由清单里。
 
