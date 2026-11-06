@@ -251,6 +251,8 @@ _ID_RUN = re.compile(r"(?<![0-9A-Za-z])(?=[0-9A-Za-z]*\d)[0-9A-Za-z]{24,}(?![0-9
 
 
 class IdMapper:
+    """Replaces id-like runs by placeholders numbered in order of first appearance."""
+
     def __init__(self) -> None:
         self._seen: dict[str, str] = {}
 
@@ -259,6 +261,10 @@ class IdMapper:
             return self._seen.setdefault(match.group(0), f"<id{len(self._seen) + 1}>")
 
         return _ID_RUN.sub(replace, text)
+
+    def known_only(self, text: str) -> str:
+        """Ids the mapper has already seen keep their placeholder; any other id becomes `<id?>`."""
+        return _ID_RUN.sub(lambda m: self._seen.get(m.group(0), "<id?>"), text)
 
 
 def issue_digest(issues: list[IssueView]) -> list[dict[str, Any]]:
@@ -279,11 +285,16 @@ def issue_digest(issues: list[IssueView]) -> list[dict[str, Any]]:
 
 
 def normalized(labels: list[dict[str, Any]], digest: list[dict[str, Any]]) -> dict[str, Any]:
-    """Labels and issue digest with ids replaced by placeholders numbered in order of first appearance."""
+    """Labels with ids numbered in order of first appearance (labels are ordered by case_id), and the issue digest
+    as a sorted list of rows in which only ids that appear in the labels keep their number.
+
+    Rows that differ only in ids nobody labelled are interchangeable, so those ids are not numbered: the digest is
+    compared as a multiset and no tie-breaking order can make two equal datasets look different.
+    """
     mapper = IdMapper()
     labels_text = mapper(json.dumps(sorted(labels, key=lambda x: x["case_id"]), sort_keys=True, ensure_ascii=False))
-    digest_text = mapper(json.dumps(digest, sort_keys=True, ensure_ascii=False))
-    return {"labels": json.loads(labels_text), "issues": json.loads(digest_text)}
+    rows = sorted(mapper.known_only(json.dumps(row, sort_keys=True, ensure_ascii=False)) for row in digest)
+    return {"labels": json.loads(labels_text), "issues": [json.loads(row) for row in rows]}
 
 
 def differences(left: dict[str, Any], right: dict[str, Any]) -> list[str]:
@@ -306,6 +317,4 @@ def differences(left: dict[str, Any], right: dict[str, Any]) -> list[str]:
             out.append(f"issue only in the first set (x{n}): {row[:160]}")
         for row, n in sorted((counts_right - counts_left).items()):
             out.append(f"issue only in the second set (x{n}): {row[:160]}")
-        if not out:
-            out.append("issues differ in placeholder numbering only")
     return out

@@ -233,6 +233,18 @@ class IdFreeComparisonTest(unittest.TestCase):
         problems = dataset.differences(self.normalized_for("a"), self.normalized_for("a", mutate))
         self.assertTrue(any("differs in root_cause" in p for p in problems), problems)
 
+    def test_ac_10_5_rows_that_differ_only_in_unlabelled_ids_compare_equal_in_any_order(self) -> None:
+        def row(txn: str) -> dict:
+            return {"category": "DUPLICATE_STATEMENT_LINE", "status": "OPEN", "subject_type": "statement_line",
+                    "subject_id": txn, "expected": {"count": 1}, "actual": {"count": 2}, "due_at": None}
+
+        a, b, c, d = (f"txn_{x * 31}1" for x in "abcd")
+        first = dataset.normalized([], [row(a), row(b)])
+        second = dataset.normalized([], [row(d), row(c)])
+        self.assertEqual(dataset.differences(first, second), [])
+        third = dataset.normalized([], [row(a)])
+        self.assertNotEqual(dataset.differences(first, third), [])
+
     def test_ac_10_5_id_runs_are_mapped_in_order_of_first_appearance_and_prefixes_are_kept(self) -> None:
         mapper = dataset.IdMapper()
         text = mapper('bt_po_0123456789abcdef0123456789abcdef_2 and pay_01M6QHVK8Y257E0HQ24VS2HA25 again '

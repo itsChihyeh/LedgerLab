@@ -35,3 +35,15 @@ Exit code: `0` conclusion accepted, `3` the run ended as `invalid_output` or `bu
 | `conclusion.py`, `enums.py` | Conclusion format, validation, closed vocabularies |
 | `agent.py` | The loop: budgets (12 tool calls, 8 model turns), one correction chance, `<tool_data>` wrapping |
 | `prompts/system.md` | System prompt |
+| `replay.py` | `ReplayTransport`: serves a recorded snapshot (404 `not_in_snapshot` for unknown requests, 503 for withheld ones) |
+| `eval/` | Evaluation tooling (not part of the agent runtime): stack, scenario, probe, catalog, crawl, generate, verify |
+| `eval/data/{dev,test}/` | Frozen evaluation sets: `snapshot.json`, `labels.json`, `manifest.json` |
+
+## Evaluation sets
+
+```sh
+sh scripts/agent/generate-eval.sh --split dev|test|all [--force]   # needs Docker and both jars; replacing frozen data needs --force
+sh scripts/agent/verify-eval.sh --split dev                        # regenerate from the manifest seed, compare ignoring ids
+```
+
+The snapshot only holds what the crawl reached (depth 3 from each issue, plus bank-line searches); anything else answers 404 in replay.
