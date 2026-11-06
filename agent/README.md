@@ -15,12 +15,18 @@ python -m unittest discover -s agent/tests -t agent
 ## Investigate an issue
 
 ```sh
-python agent/ledgerlab-agent.py investigate <issue_id> --base-url http://127.0.0.1:8080 --model scripted:<script.json> [--max-tool-calls 12] [--json]
+python agent/ledgerlab-agent.py investigate <issue_id> (--base-url http://127.0.0.1:8080 | --snapshot agent/eval/data/dev/snapshot.json) --model baseline|stub|scripted:<script.json> [--max-tool-calls 12] [--json]
 # or, with uv:
 uv run --project agent python agent/ledgerlab-agent.py investigate ...
 ```
 
-`--model` currently accepts `scripted:<path.json>`: a JSON list of canned replies (`{"content": [{"type": "tool_use", "id": ..., "name": ..., "input": {...}}], "usage": {...}}`). Local stand-in and rule-baseline models arrive in later tasks. No external model API is called.
+Exactly one data source: `--base-url` reads a live backend, `--snapshot` replays a recorded snapshot (no backend needed). `--model` accepts:
+
+- `baseline`: the rule baseline (`baseline.py`), the SOP's distinguishing features as plain rules over the same read-only tools.
+- `stub`: a local stand-in for a language model (`stub_model.py`). It runs through the real Agent loop and validator and reads only the conversation it is given; its answers equal the baseline's. It is not a measure of any language model's ability.
+- `scripted:<path.json>`: a JSON list of canned replies (`{"content": [{"type": "tool_use", "id": ..., "name": ..., "input": {...}}], "usage": {...}}`).
+
+`search_sop` searches `agent/sop/reconciliation-sop.md` (BM25). No external model API is called.
 
 Exit code: `0` conclusion accepted, `3` the run ended as `invalid_output` or `budget_exhausted` (an abstention is printed), `2` bad arguments.
 

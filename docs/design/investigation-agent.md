@@ -79,6 +79,12 @@ ModelResponse = {content:[text | tool_use{id,name,input}], stop_reason, usage{in
 - `agent/sop/reconciliation-sop.md`：项目自写的对账操作手册，按条款编号（`SOP-3.2` 这种），每条写：适用的差异类别、要看哪些证据、各原因的判别特征、建议的处理动作、什么情况下不能下结论。条款与第 6 节的原因表一一对应，另有通用条款（证据规则、拒答规则、提示注入规则）。
 - `search_sop` 是标准库实现的 BM25（中英文分词：英文按词、中文按字二元组），返回前 3 条条款原文和编号。这是 RAG 部分；评测里记录 Agent 引用的条款是否就是答案对应的条款。
 
+**实现备注（P8-T05，SOP 与检索）**：
+- 条款编号：`SOP-1` 通用证据规则、`SOP-2` 拒答（对应 `INSUFFICIENT_EVIDENCE`）、`SOP-3` 提示注入；`SOP-4.x` 银行金额／流水类（4.1 SHORT、4.2 SPLIT、4.3 DUPLICATE、4.4 FOREIGN_CURRENCY、4.5 UNKNOWN_CREDIT）；`SOP-5.x` 时间差（5.1 DELAYED、5.2 PENDING_FIRST）；`SOP-6.x` 处理方（6.1 重复明细、6.2 未知 charge 行、6.3 adjustment、6.4 手续费、6.5 提现金额）；`SOP-7.1` WEBHOOK_LOST。文件开头有一张条款对照表，测试检查它与条款一致。
+- 每个原因条款末尾三行固定格式：`root_cause:`、`required_evidence: bank_line*2, batch`（`种类*n` 至少 n 条，无 `*` 至少 1 条）、`recommended_action:`。`required_evidence` 与冻结的 dev 标签逐原因一致（测试检查）。引用核验器（T06）用 `sop.required_evidence_by_cause()` 取这张表。
+- 建议动作（SOP 定的，标签里没有）：SHORT／DUPLICATE／FOREIGN → `REQUEST_BANK_TRACE`，SPLIT → `MATCH_MANUALLY_AFTER_REVIEW`，UNKNOWN_CREDIT 与拒答 → `ESCALATE`，DELAYED／PENDING_FIRST → `WAIT_FOR_NEXT_STATEMENT`，处理方类 → `CONTACT_PROCESSOR`，WEBHOOK_LOST → `PROPOSE_CORRECTION_FOR_REVIEW`。注入题要求的动作里有 `MATCH_MANUALLY_AFTER_REVIEW`，而 SPLIT 的正确动作恰好也是它（dev 的 `p006` 就是 SPLIT＋要求该动作），评测“照做”时必须结合要求的原因判断，不能只比动作。
+- 检索（`sop.py`）：BM25，k1=1.2、b=0.75，idf 取 `ln(1+(N-df+0.5)/(df+0.5))`；文档＝条款编号＋标题＋正文。分词：拉丁字母和数字按词（小写，下划线、点、连字符都切开，所以 `BANK_SPLIT_DEPOSIT` 切成 bank／split／deposit），连续汉字按字二元组（单字成词）。`search_sop(query)` 返回前 3 条的 `{clause, title, text}`，正文最多 1500 字符，分数为 0 的不返回；不产生记录标识。SOP 文件路径固定为 `agent/sop/reconciliation-sop.md`（不在包目录里，只支持从仓库运行）。
+
 ## 6. 结论格式与原因表
 
 结论是严格 JSON（工具层校验；不合格给模型一次修正机会，仍不合格记为 `invalid_output` 拒答）：
@@ -139,6 +145,17 @@ ModelResponse = {content:[text | tool_use{id,name,input}], stop_reason, usage{in
 ## 7. 规则基线
 
 `agent/src/ledgerlab_agent/baseline.py`：确定性规则，只用同一组工具，按 SOP 的判别特征写成 if/else（例如 DEPOSIT_AMOUNT_MISMATCH 且同 reference 有两条流水且合计等于提现 → SPLIT）。它**只看开发集调规则**。它是诚实对比的另一端：在封闭的原因表上，规则很可能很强；大模型的价值要在报告里如实写（解释质量、组合故障、规则没覆盖的情况、成本和延迟）。
+
+**实现备注（P8-T05，基线与替身）**：
+- 判断逻辑只有一份：`baseline.next_step(issue_id, results, sop)`，纯函数，输入是目前所有工具结果（`ToolResult` 列表），输出要么是还要调的工具（`NeedMore`，一批互相独立的调用），要么是结论（`Verdict`）。`BaselineInvestigator` 把工具层的 `ToolResult` 直接喂给它，受同一份预算约束；`StubModel` 每轮从对话里的 `<tool_data>` 文本解析出 `ToolResult`（记录标识用 `extract_records` 重新抽取，被截断的不抽，与工具层一致）再喂给它，输出 `tool_use` 或 `submit_conclusion`，不保存跨轮状态。所以两者的结论（解释文字也）逐字相同，替身多出来的只是 Agent 循环、校验器和 token 估算（字符数／4，向上取整，`usage_is_estimate=True`）。
+- 规则（按类别，先 `get_issue`）：
+  - `DEPOSIT_AMOUNT_MISMATCH`：查 `search_bank_lines(reference=expected.id)`＋`get_batch`；该 reference 下已入账的同币种流水合计等于批次净额且不少于两条 → SPLIT；恰好一条且等于被问流水、金额小于净额 → SHORT。
+  - `UNMATCHED_BANK_LINE`：reference 以 `unknown_` 开头 → UNKNOWN_CREDIT（只查流水）；否则查流水＋批次（批次号取流水的 reference）：币种与批次不同且金额等于批次净额 → FOREIGN_CURRENCY；存在另一条同额同币种、已匹配的已入账流水而被问流水未匹配 → DUPLICATE。
+  - `TIMING_DIFFERENCE`：查批次＋以批次号为 reference 的流水；批次为 CONFIRMED，查询成功且为空 → DELAYED，全部为 PENDING 且金额等于净额 → PENDING_FIRST，有 BOOKED 版本 → 拒答。查询失败不等于没有流水，一律拒答。
+  - `DUPLICATE_STATEMENT_LINE`（`actual.count ≥ 2`）、`FEE_MISMATCH`（两个手续费不等）：批次取差异 `references.batchIds`（必须恰好一个），各查批次；`UNSUPPORTED_BATCH_LINE`（行类型 adjustment 且批次 HELD／UNSUPPORTED_LINE）、`BATCH_TOTAL_MISMATCH`（reason 与批次都是 TOTAL_MISMATCH 且 HELD）：批次取差异的 subject；`MISSING_IN_LEDGER`：批次 HELD／UNKNOWN_PAYMENT → WEBHOOK_LOST，批次未挂起且该 charge 不在批次明细里 → UNKNOWN_CHARGE_LINE。
+  - 任何必需的工具调用失败（非 2xx，含 404／503）、响应被截断、记录对不上、类别不在 SOP 内、特征不符 → 拒答（`SOP-2`、`ESCALATE`，只引用已读到的差异本身）。
+- 规则只读金额、币种、状态、版本、类别、批次状态和记录标识，不读任何 memo 文本；解释文字也不含 memo。每个结论引用：差异本身、批次、用到的银行流水（均为本次工具结果里出现过的记录，缺一就拒答），满足 SOP 的 `required_evidence`。
+- 每题最多 3 次工具调用、3 个回合（`get_issue` → 证据 → 提交）。冻结 dev 集上基线 58/58 题答对（66 题中 8 道截留题全部拒答），平均 2.52 次工具调用；注意这只说明规则覆盖了开发集里的封闭原因表，不代表对组合故障或表外情形有效。
 
 ## 8. 评测集与评测标准（P8 开工前置）
 

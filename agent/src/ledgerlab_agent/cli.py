@@ -8,10 +8,18 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import TextIO
 
+from pathlib import Path
+
 from ledgerlab_agent.agent import Budget, Investigation, investigate
+from ledgerlab_agent.baseline import BaselineInvestigator
 from ledgerlab_agent.model import ModelClient, ScriptedModel
+from ledgerlab_agent.replay import ReplayTransport, load_snapshot
+from ledgerlab_agent.sop import SopSearch, load_sop
+from ledgerlab_agent.stub_model import StubModel
 from ledgerlab_agent.tools import ToolRegistry
-from ledgerlab_agent.transport import HttpTransport
+from ledgerlab_agent.transport import HttpTransport, Transport
+
+BASELINE = "baseline"
 
 
 def _scripted(arg: str) -> ModelClient:
@@ -20,8 +28,12 @@ def _scripted(arg: str) -> ModelClient:
     return ScriptedModel.from_json_file(arg)
 
 
-# name -> factory(argument after the colon). Later tasks register baseline and stub here.
-MODEL_REGISTRY: dict[str, Callable[[str], ModelClient]] = {"scripted": _scripted}
+def _stub(arg: str) -> ModelClient:
+    return StubModel()
+
+
+# name -> factory(argument after the colon). The rule baseline is not a model; main() runs it directly.
+MODEL_REGISTRY: dict[str, Callable[[str], ModelClient]] = {"scripted": _scripted, "stub": _stub}
 
 
 def build_model(spec: str) -> ModelClient:
@@ -37,8 +49,10 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     inv = sub.add_parser("investigate", help="investigate one reconciliation issue")
     inv.add_argument("issue_id")
-    inv.add_argument("--base-url", required=True)
-    inv.add_argument("--model", required=True, help="scripted:<path.json>")
+    source = inv.add_mutually_exclusive_group(required=True)
+    source.add_argument("--base-url", help="live backend, e.g. http://127.0.0.1:8080")
+    source.add_argument("--snapshot", type=Path, help="recorded snapshot (replay), no backend needed")
+    inv.add_argument("--model", required=True, help="baseline | stub | scripted:<path.json>")
     inv.add_argument("--max-tool-calls", type=int, default=Budget.max_tool_calls)
     inv.add_argument("--json", action="store_true", help="print the conclusion as JSON")
     return parser
@@ -62,10 +76,16 @@ def main(argv: Sequence[str] | None = None, stdout: TextIO | None = None, stderr
     err = stderr or sys.stderr
     args = _parser().parse_args(argv)
     try:
-        model = build_model(args.model)
-        transport = HttpTransport(args.base_url)
+        transport: Transport = (
+            ReplayTransport(load_snapshot(args.snapshot)) if args.snapshot else HttpTransport(args.base_url)
+        )
         budget = Budget(max_tool_calls=args.max_tool_calls)
-        result = investigate(args.issue_id, model, ToolRegistry(transport), budget)
+        sop = load_sop()
+        tools = ToolRegistry(transport, local_tools=[SopSearch(sop)])
+        if args.model == BASELINE:
+            result = BaselineInvestigator(tools, sop, budget).investigate(args.issue_id)
+        else:
+            result = investigate(args.issue_id, build_model(args.model), tools, budget)
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=err)
         return 2
