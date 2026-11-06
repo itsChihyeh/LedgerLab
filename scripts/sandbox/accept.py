@@ -167,12 +167,15 @@ def main():
     generate.add_argument('--card', choices=['pm_card_bypassPending', 'pm_card_ca'], default='pm_card_bypassPending')
     generate.add_argument('--seed', type=int, required=True)
     check = commands.add_parser('accept')
-    check.add_argument('--only', choices=['ac-8.4', 'ac-8.5'], default='ac-8.4')
+    check.add_argument('--only', choices=['ac-8.4', 'ac-8.5', 'ac-8.6', 'ac-8.8', 'ac-8.9'], default='ac-8.4')
     args = parser.parse_args()
     try:
         if args.command == 'traffic':
             traffic(args)
             return 0
+        if args.only in ('ac-8.6', 'ac-8.8', 'ac-8.9'):
+            from payout_refund_recon import run_ac
+            return run_ac(args.only)
         if args.only == 'ac-8.5':
             from duplicates import accept_duplicates
             return accept_duplicates()
