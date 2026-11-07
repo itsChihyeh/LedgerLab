@@ -62,3 +62,6 @@ Thumbs.db
 
 # Local demo stack (secrets, archive)
 .demo/
+
+# Investigation service run log (P9)
+agent/.runs/

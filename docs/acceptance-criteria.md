@@ -74,6 +74,7 @@
 | **P6** 接真实 Stripe 测试模式 | 用户的测试账号、密钥管理、契约测试、真实 webhook 经 chaos relay、对账接真实 balance transactions、运行报告 | AC-8.3–8.6、AC-8.8–8.10 |
 | **P7** 部署＋公开演示页 | AWS 部署、“来搞坏它”演示页、性能基线、演示视频、技术文章 | AC-9（部署与性能的验收另写） |
 | **P8** 对账调查 Agent | 只读窄工具、可替换模型接口、回放评测集、规则基线、评测报告 | AC-10 |
+| **P9** Agent 进工作台＋MCP | 调查服务、工作台调查面板与人工采纳、同一组只读工具的 MCP 服务 | AC-11 |
 
 ---
 
@@ -367,6 +368,23 @@ P6 的前提：用户已注册加拿大 Stripe 账号，密钥由用户本人放
 | AC-10.8 | 证据不足拒答 | **Given** 回放时截留判别所需工具结果的题 **Then** 结论 `abstain=true`；报告给出拒答召回和误拒率 | PY＋脚本 | P8 |
 | AC-10.9 | 评测报告 | **When** `ledgerlab-agent eval` 在开发集和测试集上运行规则基线与替身 **Then** `docs/eval/` 下有报告，含设计第 8.3 节全部指标；替身与规则基线逐题一致；编造引用 = 0、注入照做 = 0 | 脚本 | P8 |
 | AC-10.10 | 外部模型可接、不会意外花钱 | **Given** 外部模型适配器 **Then** 合同测试用响应夹具不联网通过；没有 `--confirm-spend` 时不发请求；累计费用超过上限立即停止并写已完成部分的报告；密钥只从环境变量读、不出现在任何输出里 | PY | P8 |
+
+---
+
+## AC-11 调查 Agent 进工作台与 MCP 只读服务（P9）
+
+设计正本 [agent-workbench-and-mcp.md](design/agent-workbench-and-mcp.md)，决策 [ADR-0020](adr/0020-agent-in-workbench-and-mcp.md)。PY = `agent/` 下的 Python `unittest`；VT = 前端 Vitest；PW = Playwright 端到端。
+
+| ID | 场景 | Given / When / Then | 层 | 阶段 |
+|---|---|---|---|---|
+| AC-11.1 | 调查服务的接口与边界 | **When** 对调查服务发合格的 `POST /agent/investigations` **Then** 用启动时固定的模型跑一次 P8 调查，返回含结论、工具调用、`asOf`、引用核验结果的记录，并追加到 JSONL；非 JSON、多余字段、坏 `issueId`、超大请求体、并发第二个调查分别得到 415／400／400／413／409；非回环地址拒绝启动；不回 CORS 头 | PY | P9 |
+| AC-11.2 | 调查服务零写权限 | **Given** 服务包源码 **Then** 只导入标准库、`ledgerlab_agent` 和自身，不含任何出站 HTTP、socket、shell、数据库入口；唯一的写是对自己 JSONL 的追加；访问主应用只能经 P8 工具层 | PY | P9 |
+| AC-11.3 | 面板显示结论与引用 | **Given** 一条差异的调查记录 **Then** 面板显示原因、置信度、解释（纯文本）、建议动作、SOP 条款、工具调用数与 `asOf`；每条引用按种类链到已有页面，核验不通过的引用标“未在本次调查中读到”且不可点；替身或基线固定标“本地替身（规则基线），不代表大模型能力” | VT＋PW | P9 |
+| AC-11.4 | 采纳是封闭映射且必须人工提交 | **Given** `BANK_SPLIT_DEPOSIT` 或 `PROCESSOR_FEE_DIFFERS` 的合格结论 **When** 点“采纳” **Then** 不发任何请求，只展开预填表单；填操作人并点提交后才对已有接口（`POST /api/corrections` 的 `APPLY_UNAPPLIED_CASH`／`POST …/accept`）发一次请求，备注以 `采纳调查 inv_…` 开头；其他原因、拒答、非 `ok` 状态、有核验不通过的引用、差异非 `OPEN`、引用不足以预填时不出现采纳 | VT＋PW | P9 |
+| AC-11.5 | 调查服务不在时工作台不受影响 | **Given** 调查服务未启动或返回错误 **Then** 面板只显示“调查助手未启动”（或错误提示），差异详情页的其余内容和已有“接受”表单照常可用 | VT＋PW | P9 |
+| AC-11.6 | 端到端：调查→引用跳转→采纳→处置 | **Given** 测试后端里有一笔拆分到账和一条手续费差异，调查服务用替身 **When** 在页面上调查、点引用、采纳并提交 **Then** 拆分到账的差异经 `APPLY_UNAPPLIED_CASH` 转 `RESOLVED` 并链到纠错记录（纠错备注含调查号），手续费差异转 `ACCEPTED`；采纳前后主应用只收到这两次写请求 | PW | P9 |
+| AC-11.7 | MCP 协议 | **When** MCP 客户端经 stdio 依次 `initialize`、`notifications/initialized`、`tools/list`、`tools/call` **Then** 握手按支持的版本协商；工具列表与 P8 工具层同源（含 `readOnlyHint`）；调用结果带 `text` 与 `structuredContent`，失败为 `isError`；未知方法 `-32601`、未知工具 `-32602`、批量请求 `-32600`、初始化前调用 `-32002`；stdout 只有协议消息 | PY | P9 |
+| AC-11.8 | MCP 只读且沿用工具层校验 | **Given** MCP 服务 **Then** 每次 `tools/call` 都经 P8 `ToolRegistry`（坏参数不发 HTTP、只 GET、不跟随重定向、16 KB 截断）；超过每进程调用上限返回 `call_limit_reached`；MCP 包通过与 P8 核心包完全相同的静态检查；在回放快照上能对真实冻结数据返回与 CLI 相同的工具结果 | PY | P9 |
 
 ---
 

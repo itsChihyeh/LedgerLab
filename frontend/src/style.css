@@ -173,6 +173,35 @@ button:disabled {
 .accept button {
   margin-top: 12px;
 }
+.agent-panel {
+  margin-block: 24px;
+}
+.agent-run {
+  background: #fff;
+  border: 1px solid #ccd6db;
+  padding: 12px 20px;
+  margin-block: 12px;
+}
+.agent-standin {
+  display: block;
+  color: #8a4b00;
+}
+.agent-explanation {
+  white-space: pre-wrap;
+}
+.agent-citations mark {
+  background: #fbe3c4;
+  padding: 0 6px;
+}
+.agent-adopt label {
+  display: block;
+  margin-top: 12px;
+}
+.agent-adopt textarea {
+  display: block;
+  width: 100%;
+  min-height: 6em;
+}
 .issue-counts,
 .evidence-links {
   padding-left: 24px;

@@ -63,6 +63,7 @@ Details, the money model and the design trade-offs are in the [architecture over
 | P6 | Real Stripe test mode | Done, awaiting review: real webhooks, missed-event recovery, real automatic payout as a batch, refunds through Stripe and reconciliation on live data all pass ([checklist](docs/handoff/p6.md), [run report](docs/runs/sandbox-sbx_20261102T224453022706Z.md)) | `main` |
 | P7 | Public break-it demo page, runtime invariants, performance baseline, AWS plan | Local part done, awaiting review; deployment waits for the owner's go-ahead ([checklist](docs/handoff/p7.md)) | `main` |
 | P8 | Read-only investigation agent with a rule baseline and a frozen evaluation | Done, awaiting review: on the held-out hard set DeepSeek answers 43 of 46, the rule baseline 14 ([checklist](docs/handoff/p8.md), [report](docs/eval/agent-2026-11-07.md)) | `p8` |
+| P9 | Agent in the reconciliation workbench (human adopts) and a read-only MCP server | Local part done, awaiting review ([checklist](docs/handoff/p9.md)) | `p9` |
 
 The `investigation` module on `main` is read-only query APIs; the AI agent that calls them lives in `agent/` on the `p8` branch.
 
@@ -143,6 +144,10 @@ sh scripts/agent/eval.sh --check   # replay the frozen dev/test/hard sets; exit 
 ```
 
 See [agent/README.md](agent/README.md), the [P8 handoff](docs/handoff/p8.md), the [evaluation report](docs/eval/agent-2026-11-07.md) and the [notes on the DeepSeek run](docs/eval/deepseek-2026-11-07-notes.md).
+
+### In the workbench and over MCP (P9)
+
+The issue page of the reconciliation workbench has an investigation panel: a small local service runs the agent on request, and the panel shows its conclusion with clickable citations. A person can adopt only two kinds of conclusion (a split bank deposit, a processor fee difference); adopting just opens a pre-filled form, and nothing is written until the person submits it through the existing correction or accept endpoint. The agent itself still has no write access. The same read-only tools are also offered as a stdio MCP server for other agent clients. The panel runs the local stand-in, not an external model, and says so. See the [P9 handoff](docs/handoff/p9.md) and the [design](docs/design/agent-workbench-and-mcp.md).
 
 ## Read more
 

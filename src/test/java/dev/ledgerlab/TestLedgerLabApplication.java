@@ -35,7 +35,7 @@ public class TestLedgerLabApplication {
                 || scenario.equals("refund-retry")
                 || scenario.equals("correction-e")
                 || scenario.equals("payout-recovery")) scenario = "sample-a-1-3";
-        if (!scenario.equals("sample-a-1-3") && !scenario.equals("ac-5-3"))
+        if (!scenario.equals("sample-a-1-3") && !scenario.equals("ac-5-3") && !scenario.equals("agent-workbench"))
             throw new IllegalArgumentException("Unsupported E2E scenario");
         return Path.of("src/test/resources/scenarios", scenario);
     }
@@ -70,7 +70,8 @@ public class TestLedgerLabApplication {
                             clock,
                             worker,
                             app.getBean(JdbcClient.class))
-                    .runUntil("first");
+                    // agent-workbench replays the whole manifest: the split B2 deposit comes after "first" (P9-T04).
+                    .runUntil("agent-workbench".equals(System.getenv("LEDGERLAB_E2E_SCENARIO")) ? "" : "first");
         }
         if ("correction-e".equals(System.getenv("LEDGERLAB_E2E_SCENARIO")))
             dev.ledgerlab.testsupport.CorrectionPageFixture.seed(app);
