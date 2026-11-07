@@ -2,6 +2,8 @@ package dev.ledgerlab.reconciliation.internal;
 
 import dev.ledgerlab.shared.IdGenerator;
 import dev.ledgerlab.shared.LogContext;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalTime;
@@ -10,6 +12,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -40,6 +43,8 @@ public final class ReconRuns {
     private final ReconJson json;
     private final ObjectMapper mapper;
     private final IssueStore issues;
+    private final Map<RunRequest.Kind, Counter> finishedRuns = new EnumMap<>(RunRequest.Kind.class);
+    private final Map<RunRequest.Kind, Counter> failedRuns = new EnumMap<>(RunRequest.Kind.class);
 
     public ReconRuns(
             JdbcClient jdbc,
@@ -50,7 +55,8 @@ public final class ReconRuns {
             List<ReconRule> rules,
             ReconJson json,
             ObjectMapper mapper,
-            IssueStore issues) {
+            IssueStore issues,
+            MeterRegistry registry) {
         this.jdbc = jdbc;
         this.manager = manager;
         this.clock = clock;
@@ -60,13 +66,62 @@ public final class ReconRuns {
         this.json = json;
         this.mapper = mapper;
         this.issues = issues;
+        // All six series exist from startup, at 0, so increase() sees a starting point at the first failure.
+        for (RunRequest.Kind kind : RunRequest.Kind.values()) {
+            finishedRuns.put(kind, counter(registry, kind, "finished"));
+            failedRuns.put(kind, counter(registry, kind, "failed"));
+        }
+    }
+
+    private static Counter counter(MeterRegistry registry, RunRequest.Kind kind, String outcome) {
+        return Counter.builder("ledgerlab.recon.runs")
+                .description("Reconciliation runs that were not dry runs, by kind and outcome")
+                .tag("kind", kind.name())
+                .tag("outcome", outcome)
+                .register(registry);
     }
 
     public RunReport run(RunRequest request) {
         Instant started = clock.instant();
         validate(request, started);
         var tx = transaction(request.dryRun());
-        return Objects.requireNonNull(tx.execute(status -> execute(request, started)));
+        return counted(
+                List.of(request.kind()),
+                request.dryRun(),
+                () -> Objects.requireNonNull(tx.execute(status -> execute(request, started))));
+    }
+
+    /**
+     * Counts a run that got past validation: one {@code finished} per kind after the commit, or one {@code failed}
+     * per kind when anything goes wrong from the transaction on. Dry runs are not counted. Counting and logging are
+     * side channels: the original exception is always the one that propagates.
+     */
+    private <T> T counted(List<RunRequest.Kind> kinds, boolean dryRun, java.util.function.Supplier<T> body) {
+        T result;
+        try {
+            result = body.get();
+        } catch (RuntimeException | Error e) {
+            if (!dryRun) recordFailure(kinds, e);
+            throw e;
+        }
+        if (!dryRun)
+            kinds.forEach(kind -> Objects.requireNonNull(finishedRuns.get(kind)).increment());
+        return result;
+    }
+
+    private void recordFailure(List<RunRequest.Kind> kinds, Throwable error) {
+        try {
+            for (RunRequest.Kind kind : kinds) {
+                Objects.requireNonNull(failedRuns.get(kind)).increment();
+                LOG.atWarn()
+                        .addKeyValue("event.action", "recon.run.failed")
+                        .addKeyValue("kind", kind.name())
+                        .addKeyValue("errorClass", error.getClass().getName())
+                        .log("Reconciliation run failed and was rolled back");
+            }
+        } catch (RuntimeException ignored) {
+            // Never replace the run's own exception with a metrics or logging problem.
+        }
     }
 
     private void validate(RunRequest request, Instant started) {
@@ -102,10 +157,13 @@ public final class ReconRuns {
                 .toList();
         requests.forEach(request -> validate(request, started));
         // One repeatable-read snapshot and one commit for all three ordered runs.
-        return Objects.requireNonNull(transaction(dryRun)
-                .execute(status -> requests.stream()
+        var tx = transaction(dryRun);
+        return counted(
+                requests.stream().map(RunRequest::kind).toList(),
+                dryRun,
+                () -> Objects.requireNonNull(tx.execute(status -> requests.stream()
                         .map(request -> execute(request, started))
-                        .toList()));
+                        .toList())));
     }
 
     private RunReport execute(RunRequest request, Instant started) {

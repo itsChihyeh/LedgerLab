@@ -93,7 +93,8 @@ class ReconStatefulProperties {
                     List.of(rule),
                     new ReconJson(mapper),
                     mapper,
-                    issues);
+                    issues,
+                    new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
             new LedgerFixture(db).s1();
             audit = new JdbcLedgerAudit(source, manager);
             moneyBefore = money();

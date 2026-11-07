@@ -68,7 +68,8 @@ class ReconRunsTest {
                 rules,
                 new ReconJson(mapper),
                 mapper,
-                issues);
+                issues,
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
     }
 
     private RunRequest request(boolean dry) {
@@ -467,7 +468,8 @@ class ReconRunsTest {
                 List.of(rule),
                 new ReconJson(mapper),
                 mapper,
-                issues);
+                issues,
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
         var next = later.run(request(false));
         assertThat(jdbc.sql("SELECT (to_jsonb(i) - 'last_run_id' - 'evidence_refs')::text FROM recon.issue i")
                         .query(String.class)

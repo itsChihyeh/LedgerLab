@@ -40,7 +40,8 @@ class RefundReconTest {
                         new AgingRule(f.jdbc, calendar, policy, bank, json, f.mapper)),
                 json,
                 f.mapper,
-                new IssueStore(f.jdbc, ids, f.clock, f.manager));
+                new IssueStore(f.jdbc, ids, f.clock, f.manager),
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
         f.payment("ch_refunds", 10000, START);
         payment = f.paymentId("ch_refunds");
         f.batch("po_original", START, List.of(f.localLine("txn_payment", "ch_refunds", 10000, 320)));

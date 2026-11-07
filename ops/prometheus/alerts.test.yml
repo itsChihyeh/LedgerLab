@@ -56,3 +56,135 @@ tests:
       - eval_time: 8m
         alertname: LedgerLabInboxStuck
         exp_alerts: []
+
+  # --- LedgerLabOutboundExhausted (for: 1m) ---
+  - name: exhausted commands fire after one minute
+    interval: 1m
+    input_series:
+      - series: 'ledgerlab_outbound_exhausted{kind="SUBMIT_REFUND"}'
+        values: '1x5'
+      - series: 'ledgerlab_outbound_exhausted{kind="SUBMIT_PAYOUT"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: LedgerLabOutboundExhausted
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: LedgerLabOutboundExhausted
+        exp_alerts:
+          - exp_labels:
+              kind: SUBMIT_REFUND
+              severity: ticket
+            exp_annotations:
+              summary: "Outbound SUBMIT_REFUND commands hit the attempt limit and are not finished"
+              runbook: "docs/ops/runbook.md#outbound-exhausted"
+
+  - name: nothing exhausted does not fire
+    interval: 1m
+    input_series:
+      - series: 'ledgerlab_outbound_exhausted{kind="SUBMIT_REFUND"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: LedgerLabOutboundExhausted
+        exp_alerts: []
+
+  # One sample above 0, then the series ends: gone before `for: 1m` is over (a scrape glitch, not a stuck command).
+  - name: a single scrape above zero does not fire
+    interval: 1m
+    input_series:
+      - series: 'ledgerlab_outbound_exhausted{kind="SUBMIT_REFUND"}'
+        values: '1 stale'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: LedgerLabOutboundExhausted
+        exp_alerts: []
+
+  # --- LedgerLabReconRunFailed (no `for`; the 30m window makes it last) ---
+  # The failed counter of BANK goes 0 -> 1 at minute 4.
+  - name: a failed run fires and disappears after thirty minutes
+    interval: 1m
+    input_series:
+      - series: 'ledgerlab_recon_runs_total{kind="BANK",outcome="failed"}'
+        values: '0x3 1x60'
+      - series: 'ledgerlab_recon_runs_total{kind="PROCESSOR",outcome="failed"}'
+        values: '0x64'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: LedgerLabReconRunFailed
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: LedgerLabReconRunFailed
+        exp_alerts:
+          - exp_labels:
+              kind: BANK
+              outcome: failed
+              severity: ticket
+            exp_annotations:
+              summary: "A BANK reconciliation run failed in the last 30 minutes"
+              runbook: "docs/ops/runbook.md#recon-run-failed"
+      - eval_time: 25m
+        alertname: LedgerLabReconRunFailed
+        exp_alerts:
+          - exp_labels:
+              kind: BANK
+              outcome: failed
+              severity: ticket
+            exp_annotations:
+              summary: "A BANK reconciliation run failed in the last 30 minutes"
+              runbook: "docs/ops/runbook.md#recon-run-failed"
+      - eval_time: 45m
+        alertname: LedgerLabReconRunFailed
+        exp_alerts: []
+
+  # Only the `finished` counter grows: no alert.
+  - name: finished runs alone do not fire
+    interval: 1m
+    input_series:
+      - series: 'ledgerlab_recon_runs_total{kind="BANK",outcome="finished"}'
+        values: '0+1x20'
+      - series: 'ledgerlab_recon_runs_total{kind="BANK",outcome="failed"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LedgerLabReconRunFailed
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: LedgerLabReconRunFailed
+        exp_alerts: []
+
+  # --- LedgerLabMetricsDown (for: 5m) ---
+  - name: app target down for six minutes fires
+    interval: 1m
+    input_series:
+      - series: 'up{job="ledgerlab-app",instance="127.0.0.1:8081"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: LedgerLabMetricsDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: LedgerLabMetricsDown
+        exp_alerts:
+          - exp_labels:
+              job: ledgerlab-app
+              instance: "127.0.0.1:8081"
+              severity: page
+            exp_annotations:
+              summary: "Prometheus cannot scrape the LedgerLab app"
+              runbook: "docs/ops/runbook.md#metrics-down"
+
+  - name: app target that comes back in time does not fire
+    interval: 1m
+    input_series:
+      - series: 'up{job="ledgerlab-app",instance="127.0.0.1:8081"}'
+        values: '0x3 1x10'
+      - series: 'up{job="prometheus",instance="localhost:9090"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: LedgerLabMetricsDown
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: LedgerLabMetricsDown
+        exp_alerts: []

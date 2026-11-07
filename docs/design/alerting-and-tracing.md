@@ -91,3 +91,13 @@ Prometheus ──alerts──▶ Alertmanager ──webhook──▶ 接收程�
 
 ## 6. 新增 AC
 见 [acceptance-criteria.md](../acceptance-criteria.md) AC-13.1～AC-13.8。
+
+---
+
+## 实现备注（P11-T01）
+- **计数位置**：`ReconRuns` 构造器多一个 `MeterRegistry` 参数（既有测试的夹具已补 `SimpleMeterRegistry`）。`run` 与 `runAll` 都经过同一个私有方法 `counted`：事务提交之后每个 kind 计一次 `finished`；事务执行中（含提交时）抛出任何 `RuntimeException`／`Error` 计 `failed`，原异常原样重抛。`validate` 在 `counted` 之前，所以 400 不计数；干跑不计数（成功或失败都不计）。
+- **`runAll` 失败**：三个 kind 在同一个事务里，失败时整体回滚，因此三个 kind 各计一次 `failed`、各写一行 `recon.run.failed`（`errorClass` 是同一个）。
+- **日志**：WARN `recon.run.failed`，键 `kind`、`errorClass`（完整类名）；在事务之外写，所以 MDC 里没有 `runId`；计数或日志本身抛出的 `RuntimeException` 被吞掉，不替换原异常。
+- **制造失败的办法（测试）**：`ReconRunMetricsTest` 用超级用户临时 `REVOKE SELECT ON recon.v_input_evidence FROM app`（运行进入事务后读的第一张表），调用后在 `finally` 里 `GRANT` 回去；异常是数据库自己的 `DataAccessException`，不改生产代码语义。
+- **规则测试的时间点**：`increase(...[30m])` 的区间左开，计数器在 4 分钟升到 1 时，约 33 分钟后窗口里只剩 1，告警消失；用例取 10m／25m 触发、45m 消失，避开边界。
+- 运行手册 `outbound-exhausted`、`recon-run-failed`、`metrics-down` 三节已加；“怎么在本机看到告警送达”属于 T02 之后的送达部分，本任务未写。

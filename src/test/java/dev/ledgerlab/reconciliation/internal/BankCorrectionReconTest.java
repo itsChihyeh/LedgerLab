@@ -53,7 +53,8 @@ class BankCorrectionReconTest {
                         new AgingRule(f.jdbc, calendar, policy, evidence, json, f.mapper)),
                 json,
                 f.mapper,
-                new IssueStore(f.jdbc, f.ids, f.clock, f.manager));
+                new IssueStore(f.jdbc, f.ids, f.clock, f.manager),
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
         banks = new BankStatements(
                 f.jdbc,
                 f.ledger,
