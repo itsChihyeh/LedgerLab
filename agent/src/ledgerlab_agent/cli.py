@@ -21,11 +21,15 @@ from ledgerlab_agent.replay import ReplayTransport, load_snapshot
 from ledgerlab_agent.sop import SopSearch, load_sop
 from ledgerlab_agent.stub_model import StubModel
 from ledgerlab_agent.tools import ToolRegistry
+from ledgerlab_agent.trace import investigation_trace
 from ledgerlab_agent.transport import HttpTransport, Transport
+from ledgerlab_agent.verify import verify
 
 from ledgerlab_agent.deepseek_model import REASONING_EFFORTS
 
 BASELINE = "baseline"
+# (directory, file name, document) -> None; the launcher supplies the one that writes files (this package writes none).
+TraceWriter = Callable[[Path, str, dict], object]
 
 
 def _scripted(arg: str) -> ModelClient:
@@ -74,6 +78,7 @@ def _parser() -> argparse.ArgumentParser:
     add_external_arguments(inv)
     inv.add_argument("--max-tool-calls", type=int, default=Budget.max_tool_calls)
     inv.add_argument("--json", action="store_true", help="print the conclusion as JSON")
+    inv.add_argument("--trace-dir", type=Path, help="also write this investigation's trace (JSON) into this directory")
     return parser
 
 
@@ -104,13 +109,17 @@ def main(
     environ: Mapping[str, str] | None = None,
     pricing_path: Path = PRICING_PATH,
     sleep: Callable[[float], None] = time.sleep,
+    trace_writer: TraceWriter | None = None,
 ) -> int:
-    """`model_transport`, `environ`, `pricing_path` and `sleep` exist for tests of the external model path."""
+    """`model_transport`, `environ`, `pricing_path` and `sleep` exist for tests of the external model path;
+    `trace_writer` is what `--trace-dir` writes with."""
     out = stdout or sys.stdout
     err = stderr or sys.stderr
     args = _parser().parse_args(argv)
     spent: str | None = None
     try:
+        if args.trace_dir is not None and trace_writer is None:
+            raise ValueError("--trace-dir needs the launcher (python agent/ledgerlab-agent.py), which writes the files")
         guarded = None
         if external.is_external(args.model):  # every guard runs before anything else is set up
             config = external.parse_spec(args.model, args.reasoning_effort, args.max_tokens)
@@ -130,6 +139,9 @@ def main(
             result = BaselineInvestigator(tools, sop, budget).investigate(args.issue_id)
         else:
             result = investigate(args.issue_id, build_model(args.model), tools, budget)
+        if args.trace_dir is not None and trace_writer is not None:
+            document = investigation_trace(args.issue_id, result, verify(result, sop.required_evidence()))
+            trace_writer(args.trace_dir, args.issue_id, document)
     except (ValueError, OSError, ModelError, SpendLimitReached) as exc:
         print(f"error: {exc}", file=err)
         return 2

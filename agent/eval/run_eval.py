@@ -37,6 +37,8 @@ from ledgerlab_agent.deepseek_model import Transport as ModelTransport  # noqa: 
 from ledgerlab_agent.model import ModelError  # noqa: E402
 from ledgerlab_agent.pricing import PRICING_PATH, Prices, estimate_run_usd  # noqa: E402
 from ledgerlab_agent.sop import SopIndex, load_sop  # noqa: E402
+from ledgerlab_agent.trace import investigation_trace  # noqa: E402
+from eval.trace_files import write_trace  # noqa: E402
 
 RUNS_LOG = AGENT_DIR / "eval" / "data" / "test" / "runs.log"
 HARD_RUNS_LOG = AGENT_DIR / "eval" / "data" / "hard" / "runs.log"
@@ -141,6 +143,25 @@ def log_split_use(split_name: str, model: str, now: Callable[[], dt.datetime], l
         )
 
 
+def trace_writer(directory: Path | None) -> Callable[[evaluate.Question], None] | None:
+    """The `on_question` callback that writes one trace file per question (None when no --trace-dir was given)."""
+    if directory is None:
+        return None
+
+    def write(question: evaluate.Question) -> None:
+        label = question.label
+        extra = {
+            "case_id": label["case_id"],
+            "kind": label["kind"],
+            "expected_root_cause": label["root_cause"],
+            "expected_abstain": label["expected_abstain"],
+        }
+        document = investigation_trace(label["issue_id"], question.investigation, question.verification, extra)
+        write_trace(directory, label["case_id"], document)
+
+    return write
+
+
 def run_one(
     split_name: str,
     model: str,
@@ -148,9 +169,12 @@ def run_one(
     now: Callable[[], dt.datetime],
     log_path: Path | None = None,
     data_dir: Path = evaluate.DATA_DIR,
+    trace_dir: Path | None = None,
 ) -> evaluate.RunResult:
     log_split_use(split_name, model, now, log_path)
-    return evaluate.run_split(evaluate.load_split(split_name, data_dir), model, sop)
+    return evaluate.run_split(
+        evaluate.load_split(split_name, data_dir), model, sop, on_question=trace_writer(trace_dir)
+    )
 
 
 def run_external(
@@ -184,7 +208,9 @@ def run_external(
 
     guarded, prices = external.prepare(config, args.confirm_spend, estimate, err, model_transport, environ, sleep, pricing_path)
     log_split_use(args.split, config.label, now, log_path)
-    run = evaluate.run_split(split, config.label, sop, client=guarded, limit=args.limit)
+    run = evaluate.run_split(
+        split, config.label, sop, client=guarded, limit=args.limit, on_question=trace_writer(args.trace_dir)
+    )
     commit, dirty = git_commit()
     details = {
         "label": config.label,
@@ -227,7 +253,8 @@ def _summary(run: evaluate.RunResult) -> str:
         [
             f"{run.model} on {run.split}: {m['questions']} questions",
             f"  accuracy {m['correct']}/{m['answerable']}, abstain recall {m['abstain_hits']}/{m['abstain_expected']}, "
-            f"false refusals {m['answerable_refused']}",
+            f"false refusals {m['answerable_refused']}, budget exhausted {m['budget_exhausted']}, "
+            f"submitted on the final turn {m['final_turn_submit']}",
             f"  fabricated citations {m['fabricated_total']}, citation validity {m['citations_valid']}/{m['citations_total']}, "
             f"malformed {m['citations_malformed']}, supported {m['supported']}/{m['support_checked']}",
             f"  injections obeyed {inj['followed_any']}/{inj['n']}, invalid outputs {m['invalid_output']}, "
@@ -246,6 +273,9 @@ def _parser() -> argparse.ArgumentParser:
     one.add_argument("--model", required=True, help="baseline | stub | deepseek:<model> (billed; needs --confirm-spend)")
     one.add_argument("--out", type=Path, help="write this run's metrics and per-question rows as JSON (required for deepseek)")
     add_external_arguments(one)
+    one.add_argument(
+        "--trace-dir", type=Path, help="write one JSON trace per question here (e.g. target/agent-live/dev-run1)"
+    )
     one.add_argument("--limit", type=int, metavar="N", help="external models only: run just the first N questions (smoke test)")
     one.add_argument("--est-input-multiplier", type=float, default=external.DEFAULT_INPUT_MULTIPLIER)
     one.add_argument("--est-output-tokens", type=int, default=external.DEFAULT_OUTPUT_TOKENS_PER_QUESTION)
@@ -280,7 +310,7 @@ def main(
         if args.command == "eval":
             if args.model not in evaluate.MODELS:
                 raise ValueError(f"unknown model {args.model!r}; available: {', '.join((*evaluate.MODELS, 'deepseek:<model>'))}")
-            run = run_one(args.split, args.model, sop, now)
+            run = run_one(args.split, args.model, sop, now, trace_dir=args.trace_dir)
             print(_summary(run), file=out)
             if args.out:
                 document = {"metrics": run.metrics, "questions": evaluate.question_rows(run)}

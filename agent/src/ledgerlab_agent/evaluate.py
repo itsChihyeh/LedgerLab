@@ -209,10 +209,12 @@ def run_split(
     clock: Callable[[], float] = time.perf_counter,
     client: GuardedModel | None = None,
     limit: int | None = None,
+    on_question: Callable[[Question], None] | None = None,
 ) -> RunResult:
     """Run one model configuration over a split. `client` is an external model behind its spend guard (then `model` is
     only its label); `limit` keeps the first N questions. An external run that hits the spend cap or a fatal provider
-    error stops there and returns what it has, marked incomplete."""
+    error stops there and returns what it has, marked incomplete. `on_question` sees each finished question (the
+    command line writes its trace there)."""
     sop = sop or load_sop()
     if client is not None:
         investigator: Callable[[str, ToolRegistry], Investigation] = lambda issue_id, tools: investigate(
@@ -240,7 +242,10 @@ def run_split(
             incomplete = f"接口错误：{exc}"
             break
         latency_ms = (clock() - started) * 1000
-        questions.append(Question(label, investigation, verify(investigation, required), latency_ms))
+        question = Question(label, investigation, verify(investigation, required), latency_ms)
+        questions.append(question)
+        if on_question is not None:
+            on_question(question)
     cost = client.guard.spent_usd if client is not None else None
     metrics = compute_metrics(model, split.name, questions, sop, cost)
     return RunResult(model, split.name, tuple(questions), metrics, incomplete is None, incomplete)
@@ -366,6 +371,7 @@ def compute_metrics(
         "invalid_output": statuses.get("invalid_output", 0),
         "invalid_output_rate": _ratio(statuses.get("invalid_output", 0), len(questions)),
         "budget_exhausted": statuses.get("budget_exhausted", 0),
+        "final_turn_submit": sum(1 for q in questions if q.investigation.final_turn_submit),
     }
 
 
@@ -733,6 +739,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         row("SOP 条款一致率", lambda x: _frac(x["sop"]["consistent"], x["sop"]["checked"])),
         row("**输出不合格率**（硬线 ≤ 5%）", lambda x: f"**{_pct(x['invalid_output_rate'])}**（{x['invalid_output']} 题）"),
         row("预算耗尽题数", lambda x: str(x["budget_exhausted"])),
+        row("最后一轮才提交题数（预算用完后多给的一轮）", lambda x: str(x.get("final_turn_submit", 0))),
         row("工具调用 均值／p95", lambda x: f"{_num(x['tool_calls']['mean'])}／{_num(x['tool_calls']['p95'], 0)}"),
         row("模型轮数 均值／p95（基线为规则步数）", lambda x: f"{_num(x['turns']['mean'])}／{_num(x['turns']['p95'], 0)}"),
         row("延迟 ms 均值／p95（回放，无网络）", lambda x: f"{_num(x['latency_ms']['mean'], 3)}／{_num(x['latency_ms']['p95'], 3)}"),
