@@ -1,0 +1,727 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "txn_1UYbJVF5hIinUF498MEUYSkg",
+      "object": "balance_transaction",
+      "amount": -306651,
+      "available_on": 1794009600,
+      "balance_type": "payments",
+      "created": 1793926049,
+      "currency": "cad",
+      "description": "STRIPE PAYOUT",
+      "exchange_rate": null,
+      "fee": 0,
+      "fee_details": [],
+      "net": -306651,
+      "reporting_category": "payout",
+      "source": "po_1UYbJVF5hIinUF49s91fRqrI",
+      "status": "pending",
+      "type": "payout"
+    },
+    {
+      "id": "txn_3UXWG7F5hIinUF490p74Bi0d",
+      "object": "balance_transaction",
+      "amount": 18732,
+      "available_on": 1793668292,
+      "balance_type": "payments",
+      "created": 1793668292,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 723,
+      "fee_details": [
+        {
+          "amount": 723,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 18009,
+      "reporting_category": "charge",
+      "source": "ch_3UXWG7F5hIinUF490TOqZRVy",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXWG6F5hIinUF491Tp4O0BH",
+      "object": "balance_transaction",
+      "amount": 19179,
+      "available_on": 1793668291,
+      "balance_type": "payments",
+      "created": 1793668291,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 740,
+      "fee_details": [
+        {
+          "amount": 740,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 18439,
+      "reporting_category": "charge",
+      "source": "ch_3UXWG6F5hIinUF491XMYHYl4",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXWG5F5hIinUF491sy3XNfD",
+      "object": "balance_transaction",
+      "amount": 13610,
+      "available_on": 1793668290,
+      "balance_type": "payments",
+      "created": 1793668290,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 534,
+      "fee_details": [
+        {
+          "amount": 534,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 13076,
+      "reporting_category": "charge",
+      "source": "ch_3UXWG5F5hIinUF491JaEZdV1",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXWG4F5hIinUF490AaZkQ0J",
+      "object": "balance_transaction",
+      "amount": 19272,
+      "available_on": 1793668288,
+      "balance_type": "payments",
+      "created": 1793668288,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 743,
+      "fee_details": [
+        {
+          "amount": 743,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 18529,
+      "reporting_category": "charge",
+      "source": "ch_3UXWG4F5hIinUF490a0eFovT",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXWG3F5hIinUF490fijrg8G",
+      "object": "balance_transaction",
+      "amount": 3065,
+      "available_on": 1793668288,
+      "balance_type": "payments",
+      "created": 1793668288,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 143,
+      "fee_details": [
+        {
+          "amount": 143,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 2922,
+      "reporting_category": "charge",
+      "source": "ch_3UXWG3F5hIinUF490AL1MoKL",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXWG1F5hIinUF490gWIWKTM",
+      "object": "balance_transaction",
+      "amount": 3593,
+      "available_on": 1793668286,
+      "balance_type": "payments",
+      "created": 1793668286,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 163,
+      "fee_details": [
+        {
+          "amount": 163,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 3430,
+      "reporting_category": "charge",
+      "source": "ch_3UXWG1F5hIinUF490VIvEm1u",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJMF5hIinUF490BLJrR3C",
+      "object": "balance_transaction",
+      "amount": 18051,
+      "available_on": 1793664648,
+      "balance_type": "payments",
+      "created": 1793664648,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 698,
+      "fee_details": [
+        {
+          "amount": 698,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 17353,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJMF5hIinUF490VqzYb1p",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJLF5hIinUF490RbFypNy",
+      "object": "balance_transaction",
+      "amount": 2403,
+      "available_on": 1793664647,
+      "balance_type": "payments",
+      "created": 1793664647,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 119,
+      "fee_details": [
+        {
+          "amount": 119,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 2284,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJLF5hIinUF4907UrBi5u",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJKF5hIinUF4919XbQVWs",
+      "object": "balance_transaction",
+      "amount": 8947,
+      "available_on": 1793664646,
+      "balance_type": "payments",
+      "created": 1793664646,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 361,
+      "fee_details": [
+        {
+          "amount": 361,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 8586,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJKF5hIinUF491oYhCYlj",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJJF5hIinUF490bCaARVf",
+      "object": "balance_transaction",
+      "amount": 14786,
+      "available_on": 1793664645,
+      "balance_type": "payments",
+      "created": 1793664645,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 577,
+      "fee_details": [
+        {
+          "amount": 577,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 14209,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJJF5hIinUF49018yzUkZ",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJIF5hIinUF491Su0RDjp",
+      "object": "balance_transaction",
+      "amount": 8219,
+      "available_on": 1793664644,
+      "balance_type": "payments",
+      "created": 1793664644,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 334,
+      "fee_details": [
+        {
+          "amount": 334,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 7885,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJIF5hIinUF491lFMMx7n",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJHF5hIinUF491BKHvhCY",
+      "object": "balance_transaction",
+      "amount": 12063,
+      "available_on": 1793664643,
+      "balance_type": "payments",
+      "created": 1793664643,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 476,
+      "fee_details": [
+        {
+          "amount": 476,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 11587,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJHF5hIinUF49169PYJWP",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJGF5hIinUF491waGhhTO",
+      "object": "balance_transaction",
+      "amount": 690,
+      "available_on": 1793664642,
+      "balance_type": "payments",
+      "created": 1793664642,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 56,
+      "fee_details": [
+        {
+          "amount": 56,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 634,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJGF5hIinUF491G8h6vW1",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJFF5hIinUF490AK3bjO8",
+      "object": "balance_transaction",
+      "amount": 16693,
+      "available_on": 1793664641,
+      "balance_type": "payments",
+      "created": 1793664641,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 648,
+      "fee_details": [
+        {
+          "amount": 648,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 16045,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJFF5hIinUF4902OLG7ZH",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJEF5hIinUF4909UYyovZ",
+      "object": "balance_transaction",
+      "amount": 11654,
+      "available_on": 1793664640,
+      "balance_type": "payments",
+      "created": 1793664640,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 461,
+      "fee_details": [
+        {
+          "amount": 461,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 11193,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJEF5hIinUF490xwOosYR",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJDF5hIinUF491JlpylzB",
+      "object": "balance_transaction",
+      "amount": 12896,
+      "available_on": 1793664639,
+      "balance_type": "payments",
+      "created": 1793664639,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 507,
+      "fee_details": [
+        {
+          "amount": 507,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 12389,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJDF5hIinUF491SdmOPZb",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJCF5hIinUF490IXLB8I0",
+      "object": "balance_transaction",
+      "amount": 17481,
+      "available_on": 1793664638,
+      "balance_type": "payments",
+      "created": 1793664638,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 677,
+      "fee_details": [
+        {
+          "amount": 677,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 16804,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJCF5hIinUF490R3KtJdn",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJBF5hIinUF490gBVwjom",
+      "object": "balance_transaction",
+      "amount": 18908,
+      "available_on": 1793664637,
+      "balance_type": "payments",
+      "created": 1793664637,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 730,
+      "fee_details": [
+        {
+          "amount": 730,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 18178,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJBF5hIinUF4902mb7UYE",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJ9F5hIinUF4908VPR0G0",
+      "object": "balance_transaction",
+      "amount": 12051,
+      "available_on": 1793664636,
+      "balance_type": "payments",
+      "created": 1793664636,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 476,
+      "fee_details": [
+        {
+          "amount": 476,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 11575,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJ9F5hIinUF490lpXVPLE",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJ8F5hIinUF490pYPe96A",
+      "object": "balance_transaction",
+      "amount": 7795,
+      "available_on": 1793664635,
+      "balance_type": "payments",
+      "created": 1793664635,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 318,
+      "fee_details": [
+        {
+          "amount": 318,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 7477,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJ8F5hIinUF490DURxNaE",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJ7F5hIinUF491Y52zMNv",
+      "object": "balance_transaction",
+      "amount": 6414,
+      "available_on": 1793664634,
+      "balance_type": "payments",
+      "created": 1793664634,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 267,
+      "fee_details": [
+        {
+          "amount": 267,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 6147,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJ7F5hIinUF491Jd2Haef",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJ6F5hIinUF490CbCVkhk",
+      "object": "balance_transaction",
+      "amount": 18381,
+      "available_on": 1793664633,
+      "balance_type": "payments",
+      "created": 1793664633,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 710,
+      "fee_details": [
+        {
+          "amount": 710,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 17671,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJ6F5hIinUF490JWzgFyF",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJ5F5hIinUF491SuOwUj6",
+      "object": "balance_transaction",
+      "amount": 19446,
+      "available_on": 1793664631,
+      "balance_type": "payments",
+      "created": 1793664631,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 750,
+      "fee_details": [
+        {
+          "amount": 750,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 18696,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJ5F5hIinUF491Ackc8cR",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJ4F5hIinUF490h8IYa21",
+      "object": "balance_transaction",
+      "amount": 16189,
+      "available_on": 1793664630,
+      "balance_type": "payments",
+      "created": 1793664630,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 629,
+      "fee_details": [
+        {
+          "amount": 629,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 15560,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJ4F5hIinUF490TT1MW2v",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJ3F5hIinUF490SI3I02Z",
+      "object": "balance_transaction",
+      "amount": 6024,
+      "available_on": 1793664629,
+      "balance_type": "payments",
+      "created": 1793664629,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 253,
+      "fee_details": [
+        {
+          "amount": 253,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 5771,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJ3F5hIinUF490mPLewb6",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXVJ2F5hIinUF491LXP3f5A",
+      "object": "balance_transaction",
+      "amount": 11500,
+      "available_on": 1793664628,
+      "balance_type": "payments",
+      "created": 1793664628,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 456,
+      "fee_details": [
+        {
+          "amount": 456,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 11044,
+      "reporting_category": "charge",
+      "source": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+      "status": "available",
+      "type": "charge"
+    },
+    {
+      "id": "txn_3UXQCaF5hIinUF490TfBEoq0",
+      "object": "balance_transaction",
+      "amount": 1234,
+      "available_on": 1793645009,
+      "balance_type": "payments",
+      "created": 1793645009,
+      "currency": "cad",
+      "description": null,
+      "exchange_rate": null,
+      "fee": 76,
+      "fee_details": [
+        {
+          "amount": 76,
+          "application": null,
+          "currency": "cad",
+          "description": "Stripe processing fees",
+          "type": "stripe_fee"
+        }
+      ],
+      "net": 1158,
+      "reporting_category": "charge",
+      "source": "ch_3UXQCaF5hIinUF490AcFsuFL",
+      "status": "available",
+      "type": "charge"
+    }
+  ],
+  "has_more": false,
+  "url": "/v1/balance_transactions"
+}

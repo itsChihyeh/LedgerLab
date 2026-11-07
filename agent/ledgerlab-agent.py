@@ -15,4 +15,7 @@ if __name__ == "__main__":
         raise SystemExit(eval_main())
     from ledgerlab_agent.cli import main
 
-    raise SystemExit(main())
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from eval.trace_files import write_trace
+
+    raise SystemExit(main(trace_writer=write_trace))

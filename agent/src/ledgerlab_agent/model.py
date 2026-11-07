@@ -19,6 +19,12 @@ from ledgerlab_agent.enums import (
 from ledgerlab_agent.tools import ParamSpec, ToolSpec
 
 SUBMIT_TOOL = "submit_conclusion"
+CITATION_ID_HELP = (
+    "The identifier exactly as a tool result shows it. Formats by kind: issue iss_..., payment pay_..., event evt_..., "
+    "entry je_..., batch po_..., batch_line <batchId>/<lineNo>, bank_line bt_..., statement_line <fileId>/<seq> "
+    "(fileId and lineSeq of the statement line, e.g. file_.../3; never the txn_ reference), refund rfd_..., "
+    "payout mpo_..., correction cor_..., run run_...."
+)
 
 
 @dataclass(frozen=True)
@@ -28,21 +34,55 @@ class TextBlock:
 
 @dataclass(frozen=True)
 class ToolUseBlock:
+    """A tool call. `invalid_reason` is set when the provider's arguments were not a usable JSON object; `input` is
+    then empty and the Agent loop answers the call with an error instead of running it."""
+
     id: str
     name: str
     input: dict[str, Any]
+    invalid_reason: str | None = None
 
 
-ContentBlock = TextBlock | ToolUseBlock
+@dataclass(frozen=True)
+class ReasoningBlock:
+    """Thinking content of an assistant reply. Kept in the conversation so an adapter can hand it back to the provider
+    (DeepSeek requires it); it is never shown to a tool, a report or the evaluation metrics."""
+
+    text: str
+    provider: str
+
+
+ContentBlock = TextBlock | ToolUseBlock | ReasoningBlock
 
 
 @dataclass(frozen=True)
 class Usage:
+    """Token counts. `input_tokens` is everything sent; the cache and reasoning fields are the provider's breakdown
+    (cache hit + miss = input, reasoning is part of `output_tokens`) and stay 0 where a provider does not report them."""
+
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
+    reasoning_tokens: int = 0
 
     def __add__(self, other: Usage) -> Usage:
-        return Usage(self.input_tokens + other.input_tokens, self.output_tokens + other.output_tokens)
+        return Usage(
+            self.input_tokens + other.input_tokens,
+            self.output_tokens + other.output_tokens,
+            self.cache_hit_tokens + other.cache_hit_tokens,
+            self.cache_miss_tokens + other.cache_miss_tokens,
+            self.reasoning_tokens + other.reasoning_tokens,
+        )
+
+
+class ModelError(RuntimeError):
+    """The provider could not give a usable reply. `fatal` means every further request would fail the same way
+    (bad key, no balance), so a whole evaluation should stop instead of failing question by question."""
+
+    def __init__(self, message: str, fatal: bool = False) -> None:
+        super().__init__(message)
+        self.fatal = fatal
 
 
 @dataclass(frozen=True)
@@ -136,7 +176,8 @@ def submit_conclusion_definition() -> dict[str, Any]:
         "name": SUBMIT_TOOL,
         "description": (
             "Finish the investigation with a structured conclusion. Call it exactly once. "
-            "Every fact in the explanation needs a citation to a record you actually read."
+            "Every fact in the explanation needs a citation to a record you actually read. "
+            "Cite only identifiers that appeared in tool results, copied exactly as they appear there."
         ),
         "input_schema": {
             "type": "object",
@@ -153,7 +194,7 @@ def submit_conclusion_definition() -> dict[str, Any]:
                         "type": "object",
                         "properties": {
                             "kind": {"type": "string", "enum": list(RECORD_KINDS)},
-                            "id": {"type": "string", "maxLength": 128},
+                            "id": {"type": "string", "maxLength": 128, "description": CITATION_ID_HELP},
                         },
                         "required": ["kind", "id"],
                         "additionalProperties": False,
