@@ -11,3 +11,4 @@ T06-evaluator-report.md
 T06b-hard-set.md
 T08-handoff-p8.md
 T07-deepseek-adapter.md
+T07b-citation-seen-and-prompt.md
