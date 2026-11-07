@@ -121,13 +121,13 @@ Maven `verify` suites still run separately.
 
 ## Investigation agent (P8)
 
-A read-only agent that investigates one reconciliation issue: it calls a fixed set of GET-only tools against the investigation API, then returns a validated conclusion (root cause, cited records, recommended action) or abstains when the evidence is insufficient. It cannot write anything; the read-only guarantee is checked in the tool layer, in server-side route tests and by the `readonly` database role. **No external model is connected yet**: the evaluation report only covers a rule baseline and a local stand-in (the baseline run through the model interface), so its numbers say nothing about any language model. Standard-library Python, no network needed to try it:
+A read-only agent that investigates one reconciliation issue: it calls a fixed set of GET-only tools against the investigation API, then returns a validated conclusion (root cause, cited records, recommended action) or abstains when the evidence is insufficient. It cannot write anything; the read-only guarantee is checked in the tool layer, in server-side route tests and by the `readonly` database role. On a held-out "hard" set of by-product discrepancies, the rule baseline answers 14 of 46 and abstains on the rest, while DeepSeek (`deepseek-flash`) answers 43 of 46 with no wrong root cause; on the dev and test sets the two are roughly even. One full pass over all three sets cost about US$0.83; the report also lists one genuinely fabricated id and the other caveats. Standard-library Python, no network needed to try it:
 
 ```sh
 sh scripts/agent/eval.sh --check   # replay the frozen dev/test/hard sets; exit 1 if a hard line fails
 ```
 
-See [agent/README.md](agent/README.md), the [P8 handoff](docs/handoff/p8.md) and the [evaluation report](docs/eval/agent-2026-11-06.md).
+See [agent/README.md](agent/README.md), the [P8 handoff](docs/handoff/p8.md) and the [evaluation report](docs/eval/agent-2026-11-07.md) and [notes on the DeepSeek run](docs/eval/deepseek-2026-11-07-notes.md).
 
 Where to start:
 
