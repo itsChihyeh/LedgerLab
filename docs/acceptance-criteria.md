@@ -75,6 +75,7 @@
 | **P7** 部署＋公开演示页 | AWS 部署、“来搞坏它”演示页、性能基线、演示视频、技术文章 | AC-9（部署与性能的验收另写） |
 | **P8** 对账调查 Agent | 只读窄工具、可替换模型接口、回放评测集、规则基线、评测报告 | AC-10 |
 | **P9** Agent 进工作台＋MCP | 调查服务、工作台调查面板与人工采纳、同一组只读工具的 MCP 服务 | AC-11 |
+| **P10** 可观测性＋部署准备 | 结构化日志、Actuator 指标、一条有测试的告警、部署方案与报价（不执行） | AC-12 |
 
 ---
 
@@ -385,6 +386,24 @@ P6 的前提：用户已注册加拿大 Stripe 账号，密钥由用户本人放
 | AC-11.6 | 端到端：调查→引用跳转→采纳→处置 | **Given** 测试后端里有一笔拆分到账和一条手续费差异，调查服务用替身 **When** 在页面上调查、点引用、采纳并提交 **Then** 拆分到账的差异经 `APPLY_UNAPPLIED_CASH` 转 `RESOLVED` 并链到纠错记录（纠错备注含调查号），手续费差异转 `ACCEPTED`；采纳前后主应用只收到这两次写请求 | PW | P9 |
 | AC-11.7 | MCP 协议 | **When** MCP 客户端经 stdio 依次 `initialize`、`notifications/initialized`、`tools/list`、`tools/call` **Then** 握手按支持的版本协商；工具列表与 P8 工具层同源（含 `readOnlyHint`）；调用结果带 `text` 与 `structuredContent`，失败为 `isError`；未知方法 `-32601`、未知工具 `-32602`、批量请求 `-32600`、初始化前调用 `-32002`；stdout 只有协议消息 | PY | P9 |
 | AC-11.8 | MCP 只读且沿用工具层校验 | **Given** MCP 服务 **Then** 每次 `tools/call` 都经 P8 `ToolRegistry`（坏参数不发 HTTP、只 GET、不跟随重定向、16 KB 截断）；超过每进程调用上限返回 `call_limit_reached`；MCP 包通过与 P8 核心包完全相同的静态检查；在回放快照上能对真实冻结数据返回与 CLI 相同的工具结果 | PY | P9 |
+
+---
+
+## AC-12 可观测性与部署准备（P10）
+
+设计正本 [observability.md](design/observability.md)，决策 [ADR-0021](adr/0021-observability.md)。IT = Java 集成测试（Testcontainers 真库）；PY = `agent/` 下 Python `unittest`；DOC = 文档评审。
+
+| ID | 场景 | Given / When / Then | 层 | 阶段 |
+|---|---|---|---|---|
+| AC-12.1 | JSON 日志可开可关 | **Given** `LEDGERLAB_LOG_FORMAT=logstash` **Then** 控制台每行是一个可解析的 JSON 对象，含时间、级别、logger、`message`；**Given** 不设 **Then** 日志格式与 P9 相同 | IT | P10 |
+| AC-12.2 | 按编号串起一笔业务 | **Given** JSON 日志 **When** 一次 HTTP 请求、一条 webhook 经 inbox 处理、一条出站命令执行、一次对账开出差异 **Then** 对应 `event.action` 的行分别带 `requestId`（且与响应头 `X-Request-Id` 相同）、`eventId`、`commandId`、`runId`／`issueId`／`batchId`；处理完后同一线程的下一行不残留上一条的编号；坏的 `X-Request-Id` 被替换为 `req_` 开头的新值；带种子的重建结果不因请求号改变（AC-4.13 继续通过） | IT | P10 |
+| AC-12.3 | 日志不泄露 | **Given** 上述场景的全部日志 **Then** 不含 webhook 原文、`Stripe-Signature`、`whsec_`／`sk_`／`rk_`／`pk_` 开头的值、数据库密码、银行 memo 原文和操作人备注全文 | IT | P10 |
+| AC-12.4 | 管理端口与暴露面 | **Then** `/actuator/**` 不在主端口上（404）；管理端口只暴露 `health`、`prometheus`，`health` 不带细节；演示 profile 的公开白名单不变；`deploy/Caddyfile` 对 `/actuator/*` 返回 404 | IT＋DOC | P10 |
+| AC-12.5 | 四类业务指标 | **Given** 真实库里造出已知数量的 inbox 事件（含到期和停放）、重试过的和达上限的出站命令、若干 `OPEN` 差异 **When** 抓 `/actuator/prometheus` **Then** `ledgerlab_inbox_backlog`、`ledgerlab_inbox_oldest_due_age_seconds`、`ledgerlab_outbound_attempts_total`（`retry` 标签区分首发与重试）、`ledgerlab_outbound_unfinished`、`ledgerlab_outbound_exhausted`、`ledgerlab_recon_issues_open`、`ledgerlab_recon_issues_oldest_open_age_seconds` 的值与造的数据一致；年龄按注入时钟计算；标签里没有任何业务编号；数据库不可用时 gauge 为 `NaN`、抓取本身不失败 | IT | P10 |
+| AC-12.6 | 调查服务耗时 | **When** 对调查服务做几次调查（替身模型、固定时钟）**Then** `GET /agent/metrics` 返回 Prometheus 文本，`ledgerlab_agent_investigations_total` 按状态（`ok`／`budget_exhausted`／`error`）计数、`ledgerlab_agent_investigation_duration_seconds` 的桶、`_sum`、`_count` 与固定时钟一致；AC-11.1、AC-11.2 的测试继续通过；`eval.sh --check` 不产生改动 | PY | P10 |
+| AC-12.7 | 告警规则本身正确 | **Given** `ops/prometheus/alerts.yml` **When** 在固定版本的 `prom/prometheus` 容器里跑 `promtool test rules ops/prometheus/alerts.test.yml` **Then** 超阈值持续 6 分钟告警 firing、只持续 3 分钟不告警、回落后告警消失，退出码 0；`promtool check rules` 通过 | IT | P10 |
+| AC-12.8 | 告警能从真实应用触发 | **Given** 真实应用、worker 停调度 **When** 经 webhook 入口收进一条事件并把时钟拨前 10 分钟 **Then** 抓到的 `ledgerlab_inbox_oldest_due_age_seconds` ≥ 600，用抓到的值作输入时同一规则 firing；worker 处理后值回 0、同样验证不告警 | IT | P10 |
+| AC-12.9 | 部署方案与报价更新（不执行） | **Then** `docs/deploy/aws-plan.md` 写明日志、指标、告警在单机上的落法、内存估算、每一项的价格与查询日期（查不到的写“待核价”）、需要用户决定的事；没有执行任何云操作 | DOC | P10 |
 
 ---
 

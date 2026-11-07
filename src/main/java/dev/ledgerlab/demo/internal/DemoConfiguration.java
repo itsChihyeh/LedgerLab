@@ -27,6 +27,8 @@ class DemoConfiguration {
 
         @Override
         public void onApplicationEvent(WebServerInitializedEvent event) {
+            // The separate Actuator server (AC-12.4) fires the same event with its own port; ignore it.
+            if ("management".equals(event.getApplicationContext().getServerNamespace())) return;
             port = event.getWebServer().getPort();
         }
 

@@ -10,6 +10,7 @@ import java.time.ZoneOffset;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -36,9 +37,10 @@ final class InboxIntake {
         this.clock = clock;
     }
 
-    void receive(IncomingEvent event, byte[] body, Instant signedAt) {
+    /** Returns what the delivery turned out to be: {@code NEW}, {@code DUPLICATE} or {@code CONFLICT}. */
+    String receive(IncomingEvent event, byte[] body, Instant signedAt) {
         String hash = sha256(body);
-        transactions.executeWithoutResult(status -> {
+        return Objects.requireNonNull(transactions.execute(status -> {
             OffsetDateTime now = clock.instant().atOffset(ZoneOffset.UTC);
             int inserted = jdbc.sql("""
                     INSERT INTO io.inbox_event
@@ -60,7 +62,7 @@ final class InboxIntake {
             if (inserted == 1) {
                 InboxStatusHistory.append(jdbc, event.id(), null, now);
                 recordDelivery(event.id(), "NEW", hash, signedAt, now);
-                return;
+                return "NEW";
             }
             String originalHash = jdbc.sql("SELECT payload_sha256 FROM io.inbox_event WHERE event_id = :id")
                     .param("id", event.id())
@@ -68,7 +70,7 @@ final class InboxIntake {
                     .single();
             if (originalHash.equals(hash)) {
                 recordDelivery(event.id(), "DUPLICATE", hash, signedAt, now);
-                return;
+                return "DUPLICATE";
             }
             long conflictId = jdbc.sql("""
                     INSERT INTO io.inbox_conflict
@@ -93,7 +95,8 @@ final class InboxIntake {
                             Map.of("table", "io.inbox_event", "id", event.id()),
                             Map.of("table", "io.inbox_conflict", "id", conflictId))));
             recordDelivery(event.id(), "CONFLICT", hash, signedAt, now);
-        });
+            return "CONFLICT";
+        }));
     }
 
     private void recordDelivery(String eventId, String outcome, String hash, Instant signedAt, OffsetDateTime now) {

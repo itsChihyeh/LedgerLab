@@ -4,6 +4,7 @@ import dev.ledgerlab.payments.CaptureResult;
 import dev.ledgerlab.payments.PaymentCapture;
 import dev.ledgerlab.reconciliation.IngestionIssues;
 import dev.ledgerlab.settlement.PayoutEvidence;
+import dev.ledgerlab.shared.LogContext;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -12,6 +13,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -22,6 +25,7 @@ import tools.jackson.databind.ObjectMapper;
 /** Durable leases fence all writes, including failures, independently of worker identity. */
 @Component
 public final class InboxWorker {
+    private static final Logger LOG = LoggerFactory.getLogger(InboxWorker.class);
     private final JdbcClient jdbc;
     private final TransactionTemplate transactions;
     private final PaymentCapture capture;
@@ -63,16 +67,36 @@ public final class InboxWorker {
     public int processAvailable() {
         List<Claim> claims = Objects.requireNonNull(transactions.execute(status -> claim()));
         for (Claim claim : claims) {
-            hooks.afterClaim(claim.id());
-            try {
-                PayoutEvidence prepared = payouts.prepare(claim.id(), claim.type(), claim.live(), claim.payload());
-                hooks.afterFetch(claim.id());
-                transactions.executeWithoutResult(status -> process(claim, prepared));
-            } catch (RuntimeException failure) {
-                transactions.executeWithoutResult(status -> recordFailure(claim, failure));
+            try (LogContext ignored = LogContext.with(LogContext.EVENT_ID, claim.id())) {
+                handle(claim);
             }
         }
         return claims.size();
+    }
+
+    private void handle(Claim claim) {
+        hooks.afterClaim(claim.id());
+        try {
+            PayoutEvidence prepared = payouts.prepare(claim.id(), claim.type(), claim.live(), claim.payload());
+            try (LogContext ignored =
+                    LogContext.with(LogContext.BATCH_ID, prepared == null ? null : prepared.batchId())) {
+                hooks.afterFetch(claim.id());
+                String status = Objects.requireNonNull(transactions.execute(tx -> process(claim, prepared)));
+                LOG.atInfo()
+                        .addKeyValue("event.action", "inbox.processed")
+                        .addKeyValue("eventType", claim.type())
+                        .addKeyValue("status", status)
+                        .addKeyValue("attempts", claim.attempts())
+                        .log("Inbox event processed");
+            }
+        } catch (RuntimeException failure) {
+            transactions.executeWithoutResult(status -> recordFailure(claim, failure));
+            LOG.atWarn()
+                    .addKeyValue("event.action", "inbox.failed")
+                    .addKeyValue("attempts", claim.attempts() + 1)
+                    .addKeyValue("errorClass", failure.getClass().getName())
+                    .log("Inbox event failed");
+        }
     }
 
     private List<Claim> claim() {
@@ -108,7 +132,7 @@ public final class InboxWorker {
         return claims;
     }
 
-    private void process(Claim claim, @Nullable PayoutEvidence prepared) {
+    private String process(Claim claim, @Nullable PayoutEvidence prepared) {
         String outcome =
                 prepared == null ? route(claim) : payouts.apply(prepared).name();
         boolean parked = "PARKED".equals(outcome);
@@ -138,6 +162,7 @@ public final class InboxWorker {
             throw new IllegalStateException("Inbox lease was superseded");
         }
         InboxStatusHistory.append(jdbc, claim.id(), "RECEIVED", now);
+        return status;
     }
 
     private @Nullable String route(Claim claim) {
@@ -150,6 +175,10 @@ public final class InboxWorker {
             return result.name();
         }
         if (claim.live()) {
+            LOG.atWarn()
+                    .addKeyValue("event.action", "webhook.rejected")
+                    .addKeyValue("reason", "livemode")
+                    .log("Live-mode event rejected");
             openIssue(claim, "LIVEMODE_EVENT", "LIVEMODE");
             return "LIVEMODE";
         }

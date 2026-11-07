@@ -6,6 +6,8 @@ import dev.ledgerlab.outbound.CommandResult;
 import dev.ledgerlab.outbound.CommandSnapshot;
 import dev.ledgerlab.outbound.OutboundHooks;
 import dev.ledgerlab.outbound.OutboundProperties;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -17,8 +19,11 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.random.RandomGenerator;
 import java.util.stream.Collectors;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -38,7 +43,9 @@ public final class OutboundWorker {
     private final RandomGenerator random;
     private final OutboundHooks hooks;
     private final ObjectMapper mapper;
+    private final MeterRegistry meters;
 
+    /** Without a shared registry: attempt counts go to a private one nobody reads (tests that build a worker by hand). */
     public OutboundWorker(
             JdbcClient jdbc,
             PlatformTransactionManager manager,
@@ -48,6 +55,21 @@ public final class OutboundWorker {
             RandomGenerator random,
             OutboundHooks hooks,
             ObjectMapper mapper) {
+        this(jdbc, manager, handlers, clock, properties, random, hooks, mapper, new SimpleMeterRegistry());
+    }
+
+    @Autowired
+    public OutboundWorker(
+            JdbcClient jdbc,
+            PlatformTransactionManager manager,
+            List<CommandHandler> handlers,
+            Clock clock,
+            OutboundProperties properties,
+            RandomGenerator random,
+            OutboundHooks hooks,
+            ObjectMapper mapper,
+            MeterRegistry meters) {
+        this.meters = meters;
         this.jdbc = jdbc;
         this.tx = new TransactionTemplate(manager);
         tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -67,28 +89,34 @@ public final class OutboundWorker {
             if (handlers.isEmpty()) return 0;
             List<CommandSnapshot> claims = Objects.requireNonNull(tx.execute(status -> claim()));
             for (var command : claims) {
-                hooks.afterClaim(command);
-                var handler = Objects.requireNonNull(handlers.get(command.kind()));
-                CommandResult result;
-                try {
-                    result = handler.execute(command, new Execution(command));
-                } catch (LostLease ignoredLease) {
-                    continue;
-                } catch (AttemptLimit limit) {
-                    result = new CommandResult.Unknown("ATTEMPT_LIMIT", clock.instant());
-                } catch (TransportFailure failure) {
-                    result = new CommandResult.Unknown("TRANSPORT_ERROR", clock.instant());
-                }
-                hooks.beforeWriteback(command);
-                CommandResult completed = result;
-                try {
-                    tx.executeWithoutResult(status -> writeback(command, handler, completed));
-                } catch (LostLease ignoredLease) {
-                    // Entire business transaction rolled back; the independently stored attempt remains.
+                try (CommandScope scope = new CommandScope(command)) {
+                    handle(command);
                 }
             }
             return claims.size();
         }));
+    }
+
+    private void handle(CommandSnapshot command) {
+        hooks.afterClaim(command);
+        var handler = Objects.requireNonNull(handlers.get(command.kind()));
+        CommandResult result;
+        try {
+            result = handler.execute(command, new Execution(command));
+        } catch (LostLease ignoredLease) {
+            return;
+        } catch (AttemptLimit limit) {
+            result = new CommandResult.Unknown("ATTEMPT_LIMIT", clock.instant());
+        } catch (TransportFailure failure) {
+            result = new CommandResult.Unknown("TRANSPORT_ERROR", clock.instant());
+        }
+        hooks.beforeWriteback(command);
+        CommandResult completed = result;
+        try {
+            tx.executeWithoutResult(status -> writeback(command, handler, completed));
+        } catch (LostLease ignoredLease) {
+            // Entire business transaction rolled back; the independently stored attempt remains.
+        }
     }
 
     private List<CommandSnapshot> claim() {
@@ -157,7 +185,11 @@ public final class OutboundWorker {
                                 .plus(done ? java.time.Duration.ZERO : properties.backoff(attempts, random))))
                 .update();
         if (updated == 0) throw new LostLease();
-        if (exhausted) LOG.warn("Outbound command {} reached attempt limit; result remains UNKNOWN", command.id());
+        if (exhausted)
+            LOG.atWarn()
+                    .addKeyValue("event.action", "outbound.exhausted")
+                    .addKeyValue("attempts", attempts)
+                    .log("Outbound command reached its attempt limit; result remains UNKNOWN");
     }
 
     private final class Execution implements CommandExecution {
@@ -202,10 +234,43 @@ public final class OutboundWorker {
                 response = request.get();
             } catch (RuntimeException failure) {
                 archive(attempt, sent, summary, new Response<>("TRANSPORT_ERROR", null, null, "TRANSPORT_ERROR"));
+                count(attempt, "TRANSPORT_ERROR");
+                LOG.atInfo()
+                        .addKeyValue("event.action", "outbound.attempt")
+                        .addKeyValue("attempt", attempt)
+                        .addKeyValue("outcome", "TRANSPORT_ERROR")
+                        .log("Outbound call finished");
                 throw new TransportFailure();
             }
             archive(attempt, sent, summary, response);
+            count(attempt, outcome(response));
+            LOG.atInfo()
+                    .addKeyValue("event.action", "outbound.attempt")
+                    .addKeyValue("attempt", attempt)
+                    .addKeyValue("outcome", outcome(response))
+                    .log("Outbound call finished");
             return response.value();
+        }
+
+        // Kind, outcome (see below) and whether this is the second or a later attempt: all closed sets, no ids.
+        private void count(int attempt, String outcome) {
+            meters.counter(
+                            "ledgerlab.outbound.attempts",
+                            "kind",
+                            command.kind(),
+                            "outcome",
+                            outcome,
+                            "retry",
+                            Boolean.toString(attempt > 1))
+                    .increment();
+        }
+
+        // Status code, or the short error code the gateway gave (TIMEOUT...); never a body or free text.
+        private static String outcome(Response<?> response) {
+            if (response.status() != null) return "HTTP_" + response.status();
+            String error = response.error();
+            if (error == null) return "NO_RESPONSE";
+            return error.matches("[A-Z_]{1,40}") ? error : "ERROR";
         }
 
         private void archive(int attempt, Instant sent, Map<String, Object> summary, Response<?> response) {
@@ -231,6 +296,33 @@ public final class OutboundWorker {
 
     private static OffsetDateTime utc(Instant instant) {
         return instant.atOffset(ZoneOffset.UTC);
+    }
+
+    /**
+     * Puts {@code commandId} and {@code commandKind} into the MDC for one command and restores the previous values.
+     * This is {@code shared.LogContext} written out by hand: the {@code outbound} module may not depend on any other
+     * module (Modulith), so it cannot call it; the command table stays dependency-free on purpose, and these few
+     * duplicated lines are the accepted price. The key spellings are the ones in docs/design/observability.md 1.2.
+     */
+    private static final class CommandScope implements AutoCloseable {
+        private final @Nullable String previousId = MDC.get("commandId");
+        private final @Nullable String previousKind = MDC.get("commandKind");
+
+        CommandScope(CommandSnapshot command) {
+            MDC.put("commandId", command.id());
+            MDC.put("commandKind", command.kind());
+        }
+
+        @Override
+        public void close() {
+            restore("commandId", previousId);
+            restore("commandKind", previousKind);
+        }
+
+        private static void restore(String key, @Nullable String previous) {
+            if (previous == null) MDC.remove(key);
+            else MDC.put(key, previous);
+        }
     }
 
     private static final class LostLease extends RuntimeException {}

@@ -14,10 +14,23 @@ packages:
   - python3
 
 write_files:
+  # Log rotation for every container (docs/deploy/aws-plan.md, P10 observability). json-file is Docker's default
+  # driver; the point is the size cap, so a busy day cannot fill the 30 GiB volume. Written before Docker starts.
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": { "max-size": "20m", "max-file": "5" }
+      }
+
   - path: /etc/ledgerlab/demo.env
     permissions: "0644"
     content: |
       DEMO_DOMAIN=<DEMO_DOMAIN>
+      # One JSON object per log line (docs/design/observability.md section 1). compose.demo.yaml already fixes
+      # this for the app container; it is listed here so the choice is visible in the instance's one env file.
+      LEDGERLAB_LOG_FORMAT=logstash
       REPO_URL=<REPO_URL>
       REPO_REF=<GIT_TAG_OR_COMMIT>
       # Pin and verify: the Docker Compose plugin release and its published checksum.
@@ -61,6 +74,14 @@ write_files:
         -v /opt/ledgerlab/deploy/Caddyfile:/etc/caddy/Caddyfile:ro \
         -v ledgerlab-caddy-data:/data \
         caddy:<CADDY_VERSION>
+
+      # OPTIONAL, NOT RUN BY DEFAULT: Prometheus next to the demo stack (aws-plan.md, "P10 可观测性"). Enabling it
+      # takes three things, all written up there:
+      #   1. The history volume that survives `down -v` (up.sh refuses to start without it):
+      #        docker volume create ledgerlab-prometheus-data
+      #   2. LEDGERLAB_DEMO_OBSERVABILITY=1 in BOTH the up.sh line above and the reset cron line below. scripts/demo
+      #      then passes `--profile observability` on every compose call, `down` included.
+      #   3. The 2 GiB t4g.small is probably too small with Prometheus; the plan recommends t4g.medium.
 
   - path: /etc/cron.d/ledgerlab-demo-reset
     permissions: "0644"

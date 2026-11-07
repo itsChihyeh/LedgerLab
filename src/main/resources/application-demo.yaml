@@ -1,5 +1,10 @@
 # The public break-it demo (ADR-0017, docs/design/demo-and-delivery.md). Active only with Spring profile `demo`;
 # the default profile, the smoke stacks and CI never read this file.
+logging:
+  structured:
+    format:
+      console: ${LEDGERLAB_LOG_FORMAT:logstash}
+
 ledgerlab:
   demo:
     simulator-base-url: ${LEDGERLAB_DEMO_SIMULATOR_URL:http://localhost:8081}

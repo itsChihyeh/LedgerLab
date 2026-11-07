@@ -54,6 +54,16 @@ class DemoHelpers(unittest.TestCase):
         text = (demo.ROOT / 'compose.demo.yaml').read_text(encoding='utf-8')
         self.assertIn('LEDGERLAB_DEMO_TRUSTED_PROXIES: ${LEDGERLAB_DEMO_TRUSTED_PROXIES:-}', text)
 
+    def test_observability_profile_is_added_to_every_compose_call_only_when_asked_for(self):
+        plain = ['docker', 'compose', '-f', 'compose.demo.yaml', '-p', 'ledgerlab-demo']
+        for args in (['up', '-d'], ['down', '-v', '--remove-orphans'], ['ps'], ['logs', '--tail', '5']):
+            self.assertEqual(demo.compose_command(args, {}), plain + args)
+            self.assertEqual(demo.compose_command(args, {'LEDGERLAB_DEMO_OBSERVABILITY': '0'}), plain + args)
+            self.assertEqual(demo.compose_command(args, {'LEDGERLAB_DEMO_OBSERVABILITY': '1'}),
+                             plain + ['--profile', 'observability'] + args)
+        self.assertTrue(demo.observability_enabled({'LEDGERLAB_DEMO_OBSERVABILITY': 'true'}))
+        self.assertFalse(demo.observability_enabled({}))
+
     def test_the_stack_never_names_another_project(self):
         self.assertEqual(demo.PROJECT, 'ledgerlab-demo')
         text = (demo.ROOT / 'compose.demo.yaml').read_text(encoding='utf-8')

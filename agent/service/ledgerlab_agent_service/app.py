@@ -9,11 +9,14 @@ import http.server
 import json
 import re
 import threading
+import time
 from collections.abc import Callable
 from typing import Any, TextIO
 
 from ledgerlab_agent.tools import load_specs
 
+from ledgerlab_agent_service.metrics import CONTENT_TYPE as METRICS_CONTENT_TYPE
+from ledgerlab_agent_service.metrics import ServiceMetrics
 from ledgerlab_agent_service.runner import Runner
 from ledgerlab_agent_service.store import RUN_ID_PATTERN, JsonlStore
 
@@ -21,6 +24,7 @@ MAX_BODY_BYTES = 4096
 MAX_DRAIN_BYTES = 1024 * 1024
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 PATH_HEALTH = "/agent/health"
+PATH_METRICS = "/agent/metrics"
 PATH_INVESTIGATIONS = "/agent/investigations"
 RUN_PREFIX = PATH_INVESTIGATIONS + "/"
 _HOST_HEADER = re.compile(r"^(?:\[([0-9A-Fa-f:.]+)\]|([^:\[\]]+))(?::\d{1,5})?$")
@@ -35,10 +39,18 @@ def issue_id_pattern() -> re.Pattern[str]:
 class InvestigationService:
     """What the HTTP handler needs: the runner, the store, a one-at-a-time guard and the facts for /agent/health."""
 
-    def __init__(self, runner: Runner, store: JsonlStore, source: str) -> None:
+    def __init__(
+        self,
+        runner: Runner,
+        store: JsonlStore,
+        source: str,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.runner = runner
         self.store = store
         self.source = source
+        self.monotonic = monotonic
+        self.metrics = ServiceMetrics()
         self.issue_id_re = issue_id_pattern()
         self.busy = threading.Lock()
 
@@ -67,6 +79,16 @@ def make_handler(service: InvestigationService, stderr: TextIO) -> type[http.ser
             self.end_headers()
             self.wfile.write(raw)
 
+        def _send_metrics(self) -> None:
+            raw = service.metrics.render().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", METRICS_CONTENT_TYPE)
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(raw)
+
         def _error(self, status: int, code: str, extra: dict[str, str] | None = None) -> None:
             self._send(status, {"error": code}, extra)
 
@@ -92,6 +114,8 @@ def make_handler(service: InvestigationService, stderr: TextIO) -> type[http.ser
             path, _, query = self.path.partition("?")
             if path == PATH_HEALTH and not query:
                 return self._send(200, service.health())
+            if path == PATH_METRICS:
+                return self._error(400, "invalid_request") if query else self._send_metrics()
             if path == PATH_INVESTIGATIONS:
                 return self._list(query)
             if path.startswith(RUN_PREFIX):
@@ -137,11 +161,16 @@ def make_handler(service: InvestigationService, stderr: TextIO) -> type[http.ser
                 return reject(400, "invalid_request")
             if not service.busy.acquire(blocking=False):
                 return reject(409, "busy")
+            started = service.monotonic()
             try:
                 record = service.runner.run(issue_id)
                 service.store.append(record)
+                service.metrics.observe_investigation(
+                    record["status"], service.monotonic() - started, len(record["toolCalls"])
+                )
             except Exception as exc:  # noqa: BLE001 - the original text stays out of the response and the store
                 print(f"service: {type(exc).__name__} while handling an investigation", file=stderr)
+                service.metrics.observe_investigation("error", service.monotonic() - started, 0)
                 return reject(500, "internal_error")
             finally:
                 service.busy.release()

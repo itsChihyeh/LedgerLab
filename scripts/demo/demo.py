@@ -38,6 +38,8 @@ ARCHIVE_KEEP_DAYS = 7
 FAKE_ENV_FILE = ROOT / 'compose.smoke.env'
 FAKE_ENV_NAMES = {'SMOKE_STRIPE_API_KEY': 'DEMO_FAKE_STRIPE_API_KEY',
                   'SMOKE_STRIPE_WEBHOOK_SECRET': 'DEMO_FAKE_STRIPE_WEBHOOK_SECRET'}
+PROMETHEUS_VOLUME = 'ledgerlab-prometheus-data'
+PROMETHEUS_RULES = ROOT / 'ops' / 'prometheus' / 'alerts.yml'
 ACTIONS_FOR_CHECK = ('pay', 'replay-webhook', 'double-refund')
 
 
@@ -145,6 +147,17 @@ def trusted_proxies(environ):
     return GATEWAY_CIDR if environ.get('LEDGERLAB_DEMO_BEHIND_PROXY', '').strip() in ('1', 'true') else ''
 
 
+def observability_enabled(environ):
+    """P10: the optional Prometheus service lives behind a Compose profile that has to be on for every call."""
+    return environ.get('LEDGERLAB_DEMO_OBSERVABILITY', '').strip() in ('1', 'true')
+
+
+def compose_command(args, environ):
+    """A plain `down` without the profile would leave the profile's container and network behind (aws-plan.md)."""
+    profile = ['--profile', 'observability'] if observability_enabled(environ) else []
+    return ['docker', 'compose', '-f', COMPOSE_FILE, '-p', PROJECT, *profile, *args]
+
+
 def compose_env(passwords, now=None):
     fake = parse_env(FAKE_ENV_FILE.read_text(encoding='utf-8'))
     env = python_env()
@@ -160,7 +173,7 @@ def compose_env(passwords, now=None):
 
 def compose(*args, passwords=None, capture=False, check=True):
     passwords = passwords or load_or_create_secrets()
-    command = ['docker', 'compose', '-f', COMPOSE_FILE, '-p', PROJECT, *args]
+    command = compose_command(args, os.environ)
     result = subprocess.run(command, cwd=ROOT, env=compose_env(passwords), text=True,
                             capture_output=capture, check=False)
     if check and result.returncode != 0:
@@ -264,10 +277,21 @@ def write_last_reset(now):
     (ARCHIVE / LAST_RESET_FILE).write_text(instant(now) + '\n', encoding='utf-8')
 
 
+def check_observability_prerequisites():
+    if not observability_enabled(os.environ):
+        return
+    if not PROMETHEUS_RULES.is_file():
+        raise Failure('LEDGERLAB_DEMO_OBSERVABILITY=1 needs %s (created by P10-T04)' % PROMETHEUS_RULES.relative_to(ROOT).as_posix())
+    if subprocess.run(['docker', 'volume', 'inspect', PROMETHEUS_VOLUME], capture_output=True, check=False).returncode != 0:
+        raise Failure('LEDGERLAB_DEMO_OBSERVABILITY=1 needs the external volume %s; create it once with: '
+                      'docker volume create %s' % (PROMETHEUS_VOLUME, PROMETHEUS_VOLUME))
+
+
 def cmd_up(build=True):
     if shutil.which('docker') is None:
         raise Failure('docker is not installed or not on PATH')
     run(['docker', 'info'], capture_output=True)
+    check_observability_prerequisites()
     passwords = load_or_create_secrets()
     if build:
         build_artifacts()

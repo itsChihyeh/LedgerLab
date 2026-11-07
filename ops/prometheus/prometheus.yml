@@ -1,0 +1,21 @@
+# Scrape configuration for a Prometheus container next to an app started on the host (local use).
+# The Compose demo uses deploy/prometheus.demo.yml instead (its targets are Compose service names); both load alerts.yml.
+# The app's management port is bound to 127.0.0.1 by default, which a container cannot reach through
+# host.docker.internal: for this local setup start the app with a reachable management.server.address.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: ledgerlab-app
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:8079"]
+
+  - job_name: ledgerlab-agent
+    metrics_path: /agent/metrics
+    static_configs:
+      - targets: ["host.docker.internal:8097"]

@@ -54,6 +54,7 @@ class RunningService:
         base_url: str | None = None,
         use_snapshot: bool = True,
         model_factory: Callable[[], ModelClient] | None = None,
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self.stderr = io.StringIO()
         counter = iter(range(1, 1000))
@@ -67,8 +68,13 @@ class RunningService:
             stderr=self.stderr,
         )
         self.store = JsonlStore(store_path, self.stderr)
-        service = InvestigationService(runner, self.store, "snapshot" if use_snapshot else "base-url")
-        self.server = make_server("127.0.0.1", 0, service, self.stderr)
+        source = "snapshot" if use_snapshot else "base-url"
+        self.service = (
+            InvestigationService(runner, self.store, source)
+            if monotonic is None
+            else InvestigationService(runner, self.store, source, monotonic)
+        )
+        self.server = make_server("127.0.0.1", 0, self.service, self.stderr)
         self.port = self.server.server_address[1]
         self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
@@ -90,6 +96,18 @@ class RunningService:
             response = connection.getresponse()
             raw = response.read()
             return response.status, {k.lower(): v for k, v in response.getheaders()}, json.loads(raw) if raw else None
+        finally:
+            connection.close()
+
+    def request_text(
+        self, path: str, headers: dict[str, str] | None = None
+    ) -> tuple[int, dict[str, str], str]:
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        try:
+            connection.request("GET", path, headers=headers or {})
+            response = connection.getresponse()
+            raw = response.read()
+            return response.status, {k.lower(): v for k, v in response.getheaders()}, raw.decode("utf-8")
         finally:
             connection.close()
 

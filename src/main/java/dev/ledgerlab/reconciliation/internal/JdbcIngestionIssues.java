@@ -33,7 +33,8 @@ public final class JdbcIngestionIssues implements IngestionIssues {
             throw new IllegalStateException("Ingestion issues require the caller's transaction");
         }
         OffsetDateTime now = clock.instant().atOffset(ZoneOffset.UTC);
-        jdbc.sql("""
+        String issueId = ids.next("iss");
+        int inserted = jdbc.sql("""
                 INSERT INTO recon.issue
                     (id, category, subject_type, subject_id, detected_by, status,
                      expected, actual, evidence_refs, recorded_at, updated_at)
@@ -41,7 +42,7 @@ public final class JdbcIngestionIssues implements IngestionIssues {
                         CAST(:expected AS jsonb), CAST(:actual AS jsonb), CAST(:evidence AS jsonb), :now, :now)
                 ON CONFLICT ON CONSTRAINT issue_identity DO NOTHING
                 """)
-                .param("id", ids.next("iss"))
+                .param("id", issueId)
                 .param("category", category)
                 .param("subjectType", subjectType)
                 .param("subjectId", subjectId)
@@ -50,6 +51,8 @@ public final class JdbcIngestionIssues implements IngestionIssues {
                 .param("evidence", evidenceRefs)
                 .param("now", now)
                 .update();
+        if (inserted == 1)
+            IssueStore.log("recon.issue.opened", issueId, category, subjectType, subjectId, null, "OPEN");
     }
 
     @Override
@@ -75,6 +78,7 @@ public final class JdbcIngestionIssues implements IngestionIssues {
                     """)
                     .params(ids.next("itr"), id, explanation, evidenceRefs, now)
                     .update();
+            IssueStore.log("recon.issue.transition", id, "PAYOUT_UNRESOLVED", "payout", payoutId, "OPEN", "RESOLVED");
         }
     }
 
@@ -84,13 +88,17 @@ public final class JdbcIngestionIssues implements IngestionIssues {
             throw new IllegalStateException("Bank return disposition requires the caller's transaction");
         }
         var open = jdbc.sql("""
-                SELECT id FROM recon.issue WHERE subject_type='bank_txn' AND subject_id=:credit
+                SELECT id, category FROM recon.issue WHERE subject_type='bank_txn' AND subject_id=:credit
                   AND status='OPEN' ORDER BY id FOR UPDATE
-                """).param("credit", creditId).query(String.class).list();
+                """)
+                .param("credit", creditId)
+                .query((rs, n) -> new String[] {rs.getString(1), rs.getString(2)})
+                .list();
         OffsetDateTime now = clock.instant().atOffset(ZoneOffset.UTC);
         String explanation = "Unapplied cash returned by bank transaction " + debitId;
-        for (String value : open) {
-            String id = java.util.Objects.requireNonNull(value);
+        for (String[] row : open) {
+            String id = java.util.Objects.requireNonNull(row[0]);
+            String category = java.util.Objects.requireNonNull(row[1]);
             jdbc.sql("UPDATE recon.issue SET status='RESOLVED', explanation=?, updated_at=? WHERE id=?")
                     .params(explanation, now, id)
                     .update();
@@ -101,6 +109,7 @@ public final class JdbcIngestionIssues implements IngestionIssues {
                     """)
                     .params(ids.next("itr"), id, explanation, evidenceRefs, now)
                     .update();
+            IssueStore.log("recon.issue.transition", id, category, "bank_txn", creditId, "OPEN", "RESOLVED");
         }
     }
 }

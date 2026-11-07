@@ -1,0 +1,4 @@
+# Tests never bind the fixed management port 8079: a random one per application context.
+management:
+  server:
+    port: 0
