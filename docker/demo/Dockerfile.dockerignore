@@ -1,0 +1,13 @@
+*
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/index.html
+!frontend/tsconfig.json
+!frontend/vite.config.ts
+!frontend/sandbox-report.ts
+!frontend/biome.json
+!frontend/src
+!target/ledgerlab-0.0.1-SNAPSHOT.jar
+# docs/ must exist in the context even before any sandbox report does; this one file is the anchor.
+!docs/design/demo-and-delivery.md
+!docs/runs

@@ -56,3 +56,6 @@ Thumbs.db
 
 # jqwik failure database (local re-run state)
 .jqwik-database
+
+# Local demo stack (secrets, archive)
+.demo/

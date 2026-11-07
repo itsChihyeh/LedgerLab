@@ -3,7 +3,9 @@ package dev.ledgerlab.ledger.internal;
 import dev.ledgerlab.ledger.LedgerAudit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import javax.sql.DataSource;
+import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.support.JdbcTransactionManager;
@@ -17,7 +19,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class JdbcLedgerAudit implements LedgerAudit {
 
     private final JdbcClient jdbc;
-    private final TransactionTemplate snapshot;
+    private final @Nullable TransactionTemplate snapshot;
     private final boolean readonlyViews;
 
     @Autowired
@@ -39,6 +41,17 @@ public class JdbcLedgerAudit implements LedgerAudit {
         return new JdbcLedgerAudit(dataSource, new JdbcTransactionManager(dataSource), true);
     }
 
+    /** Runs the same checks through the readonly views inside the caller's transaction (no own snapshot). */
+    static List<InvariantViolation> checkInCallerSnapshot(JdbcClient jdbc) {
+        return new JdbcLedgerAudit(jdbc).checkAll();
+    }
+
+    private JdbcLedgerAudit(JdbcClient jdbc) {
+        this.readonlyViews = true;
+        this.jdbc = jdbc;
+        this.snapshot = null;
+    }
+
     private JdbcClient.StatementSpec sql(String statement) {
         // Only these fixed, internal SQL statements reach this method. No caller supplied SQL.
         return jdbc.sql(readonlyViews ? statement.replace("ledger.", "ledger.v_") : statement);
@@ -46,16 +59,18 @@ public class JdbcLedgerAudit implements LedgerAudit {
 
     @Override
     public List<InvariantViolation> check() {
-        List<InvariantViolation> violations = snapshot.execute(status -> {
-            List<InvariantViolation> found = new ArrayList<>();
-            found.addAll(entriesMatchHeaders());
-            found.addAll(balancesMatchPostings());
-            found.addAll(assetsEqualLiabilities());
-            found.addAll(nonNegativeAccounts());
-            found.addAll(uniqueSourceKeys());
-            return found;
-        });
+        List<InvariantViolation> violations = Objects.requireNonNull(snapshot).execute(status -> checkAll());
         return violations == null ? List.of() : violations;
+    }
+
+    private List<InvariantViolation> checkAll() {
+        List<InvariantViolation> found = new ArrayList<>();
+        found.addAll(entriesMatchHeaders());
+        found.addAll(balancesMatchPostings());
+        found.addAll(assetsEqualLiabilities());
+        found.addAll(nonNegativeAccounts());
+        found.addAll(uniqueSourceKeys());
+        return found;
     }
 
     /** INV-1 and INV-4: at least two positive postings, debits = credits = header total, count = header count. */

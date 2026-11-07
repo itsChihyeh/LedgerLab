@@ -1,0 +1,32 @@
+# The public break-it demo (ADR-0017, docs/design/demo-and-delivery.md). Active only with Spring profile `demo`;
+# the default profile, the smoke stacks and CI never read this file.
+ledgerlab:
+  demo:
+    simulator-base-url: ${LEDGERLAB_DEMO_SIMULATOR_URL:http://localhost:8081}
+    # Public gate (docs/design/demo-and-delivery.md sections 3 and 4). Behind a reverse proxy set trusted-proxies
+    # to its CIDR(s); empty means only the connection address is used. webhook-allowed-sources is where the
+    # processor webhook may come from (the stack's relay); the default is loopback only.
+    trusted-proxies: ${LEDGERLAB_DEMO_TRUSTED_PROXIES:}
+    webhook-allowed-sources: ${LEDGERLAB_DEMO_WEBHOOK_SOURCES:127.0.0.0/8,::1/128}
+    # The seed run (scripts/demo only): a direct local connection without X-Forwarded-For, Forwarded or X-Real-IP.
+    admin-allowed-sources: ${LEDGERLAB_DEMO_ADMIN_SOURCES:127.0.0.1/32,::1/128}
+    actions-per-ip-per-minute: 20
+    actions-per-minute: 300
+    streams-per-ip: 3
+  # The scenarios wait for real workers, so everything that retries runs on a demo-sized clock: a lost
+  # processor answer is noticed after 3 seconds, a crashed worker's lease lapses after 8.
+  stripe:
+    api-base-url: ${STRIPE_API_BASE_URL:${ledgerlab.demo.simulator-base-url}}
+    read-timeout: 3s
+  bank:
+    payments:
+      enabled: true
+      base-url: ${LEDGERLAB_BANK_PAYMENTS_BASE_URL:${ledgerlab.demo.simulator-base-url}}
+      read-timeout: 3s
+  outbound:
+    lease-duration: 8s
+    base: 1s
+    cap: 5s
+    poll-interval: 500ms
+  inbox:
+    poll-interval: 500ms

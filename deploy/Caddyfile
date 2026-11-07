@@ -1,0 +1,44 @@
+# Reverse proxy for the public demo (docs/deploy/aws-plan.md). Caddy runs on the host network next to the demo
+# stack, whose app listens on 127.0.0.1:28080 only. DEMO_DOMAIN is the public host name (set in /etc/ledgerlab/demo.env).
+#
+# Second line of defence (docs/design/demo-and-delivery.md section 9): the app already answers 404 to the seed
+# call and to the processor webhook unless they come straight from the local script or the stack's relay. Here
+# they never even reach the app from outside. Everything the app does not whitelist stays 404 in the app.
+
+{$DEMO_DOMAIN} {
+	encode zstd gzip
+
+	# Never reachable from the internet: ops seed call, processor webhook (the relay talks to the app inside the
+	# Compose network), anything simulator-shaped.
+	@internal_only path /api/demo/seed /api/demo/seed/* /webhooks /webhooks/* /sim /sim/* /relay /relay/*
+	handle @internal_only {
+		respond 404
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:28080 {
+			# Overwrite, do not append: a client-supplied X-Forwarded-For must never reach the app's rate limiter.
+			header_up X-Forwarded-For {remote_host}
+			header_up -X-Real-IP
+			header_up -Forwarded
+			# The demo timeline is a Server-Sent Events stream: do not buffer it.
+			flush_interval -1
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 70s
+			}
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

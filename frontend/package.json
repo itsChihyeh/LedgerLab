@@ -10,7 +10,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "check": "biome check . && tsc --noEmit && vitest run",
-    "test:e2e": "node e2e/run.mjs"
+    "test:e2e": "node e2e/run.mjs",
+    "video:demo": "node e2e/run.mjs --scenario=demo-video"
   },
   "dependencies": {
     "react": "19.3.1",

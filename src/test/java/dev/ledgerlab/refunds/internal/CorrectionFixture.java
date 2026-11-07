@@ -122,6 +122,13 @@ public final class CorrectionFixture implements AutoCloseable {
                 .isEqualTo("ACCEPTED");
     }
 
+    /** Imports a bank statement CSV through the real importer and returns its status. */
+    public String importBank(String name, String csv) {
+        return f.banks
+                .importBankStatement(name, csv.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                .status();
+    }
+
     public PayoutEvidence batchEvidence(String id) {
         return f.batchEvidence(id, "ch_p1", 10000, 320);
     }

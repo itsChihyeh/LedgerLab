@@ -28,7 +28,9 @@ class InvariantQueryTest {
     void setup() {
         db = TestDatabase.freshMigrated();
         mvc = MockMvcBuilders.standaloneSetup(new InvariantQueryController(
-                        db.readonly(), Clock.fixed(Instant.parse("2026-11-02T00:00:00Z"), ZoneOffset.UTC)))
+                        db.readonly(),
+                        Clock.fixed(Instant.parse("2026-11-02T00:00:00Z"), ZoneOffset.UTC),
+                        dev.ledgerlab.testsupport.InvariantChecks.all()))
                 .build();
     }
 
@@ -65,9 +67,11 @@ class InvariantQueryTest {
     @Test
     void ac_8_4_validPostedBooksAlsoPassThroughReadonlyViews() throws Exception {
         new LedgerFixture(db).s1();
+        // This fixture posts a capture without a payment row, so only the payment-vs-2101 check (INV-9) can differ.
         mvc.perform(get("/api/audit/invariants"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.violations").isEmpty());
+                .andExpect(jsonPath("$.violations.length()").value(1))
+                .andExpect(jsonPath("$.violations[0].invariant").value("INV-9"));
     }
 
     @Test

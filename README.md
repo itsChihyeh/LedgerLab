@@ -61,7 +61,7 @@ Details, the money model and the design trade-offs are in the [architecture over
 | P1–P4 | Ledger, webhook intake, settlement, bank reconciliation, refunds, corrections | Done | `main` |
 | P5 | Merchant payouts with unknown-outcome recovery | Done | `main` |
 | P6 | Real Stripe test mode | Done, awaiting review: real webhooks, missed-event recovery, real automatic payout as a batch, refunds through Stripe and reconciliation on live data all pass ([checklist](docs/handoff/p6.md), [run report](docs/runs/sandbox-sbx_20261102T224453022706Z.md)) | `main` |
-| P7 | Deployment, public demo page, performance baseline | Not started | |
+| P7 | Public break-it demo page, runtime invariants, performance baseline, AWS plan | Local part done, awaiting review; deployment waits for the owner's go-ahead ([checklist](docs/handoff/p7.md)) | `main` |
 | P8 | Read-only investigation agent | Not started | |
 
 The `investigation` module on `main` is read-only query APIs, not an AI agent.
@@ -119,6 +119,20 @@ sh scripts/sandbox/down.sh                    # stop; keeps volumes
 ```
 
 Any figures about the real run (payments, refunds, the payout, duplicates and invariants) come from the [run report](docs/runs/sandbox-sbx_20261102T224453022706Z.md) only.
+
+## Break-it demo, performance baseline (local)
+
+```sh
+sh scripts/demo/up.sh            # fake Stripe + simulated bank on 127.0.0.1:28080: build, start, seed, check all invariants
+sh scripts/demo/status.sh
+sh scripts/demo/reset.sh         # the daily reset: archive today's summary, then rebuild and reseed
+sh scripts/demo/down.sh          # remove the stack and its volumes
+sh scripts/demo/check-reset.sh   # up, actions, reset, assertions, down; evidence in target/demo/
+cd frontend && npm run video:demo   # scripted demo video into docs/media/
+sh perf/run.sh                   # k6 baseline on its own stack, about an hour; see docs/perf/baseline-2026-11-05.md
+```
+
+The AWS deployment plan (not executed, no cloud resources) is in [docs/deploy/aws-plan.md](docs/deploy/aws-plan.md).
 
 ## Read more
 
