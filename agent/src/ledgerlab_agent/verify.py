@@ -7,7 +7,8 @@ Given a finished `Investigation` it answers, without trusting the model, and sor
     format wrong. Reported, never counted as fabricated;
   * fabricated: anything else (the identifier was never shown). Failed results (including 503 withholding) show nothing,
     and a truncated result shows only the text that was actually sent to the model.
-  * which record-looking identifiers in the explanation were never seen, by the same test (also fabricated);
+  * which record-looking identifiers in the explanation were never seen (also fabricated); here an identifier also
+    counts as seen when it sits inside a shown string value at identifier boundaries (`po_x` in `unknown_po_x`);
   * whether the conclusion is supported: the valid citations meet the SOP clause's `required_evidence`
     (an abstention is not checked).
 """
@@ -106,6 +107,15 @@ def explanation_ids(explanation: str) -> list[str]:
     return found
 
 
+def _seen_inside_a_value(identifier: str, shown: frozenset[str]) -> bool:
+    """An explanation identifier counts as seen when it is a whole shown value or sits inside one at identifier
+    boundaries (not touching letters or digits), e.g. `po_x` inside `unknown_po_x` or `bt_po_x_2`."""
+    if identifier in shown:
+        return True
+    pattern = re.compile(r"(?<![A-Za-z0-9])" + re.escape(identifier) + r"(?![A-Za-z0-9])")
+    return any(identifier in value and pattern.search(value) for value in shown)
+
+
 def verify(investigation: Investigation, required_evidence: Mapping[str, tuple[Evidence, ...]]) -> Verification:
     seen = seen_records(investigation)
     shown = shown_values(investigation) | {record.id for record in seen}
@@ -115,7 +125,7 @@ def verify(investigation: Investigation, required_evidence: Mapping[str, tuple[E
     valid = {c for c in cited if c in seen}
     malformed = tuple(c for c in cited if c not in seen and _was_shown(c, shown))
     fabricated = tuple(c for c in cited if c not in seen and not _was_shown(c, shown))
-    unseen_ids = tuple(i for i in explanation_ids(conclusion.explanation) if i not in shown)
+    unseen_ids = tuple(i for i in explanation_ids(conclusion.explanation) if not _seen_inside_a_value(i, shown))
 
     supported: bool | None = None
     missing: list[Evidence] = []

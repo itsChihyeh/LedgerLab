@@ -175,6 +175,21 @@ class VerifierTest(unittest.TestCase):
         self.assertEqual(v.fabricated_explanation_ids, ("bt_po_invented_7", "je_0001"))
         self.assertEqual(v.fabricated_total, 2)
 
+    def test_ac_10_6_an_explanation_id_inside_a_shown_value_counts_as_seen(self) -> None:
+        shown = ToolResult("get_batch", {}, True, 200, data={"reference": "unknown_po_x", "line": "bt_po_x_2"})
+        v = verify(investigation(conclusion(explanation="reference unknown_po_x, batch po_x"), shown), REQUIRED)
+        self.assertEqual(v.fabricated_explanation_ids, ())
+
+    def test_ac_10_6_a_longer_shown_id_does_not_make_a_prefix_id_seen(self) -> None:
+        shown = ToolResult("get_batch", {}, True, 200, data={"reference": "unknown_po_xy"})
+        v = verify(investigation(conclusion(explanation="batch po_x"), shown), REQUIRED)
+        self.assertEqual(v.fabricated_explanation_ids, ("po_x",))
+
+    def test_ac_10_6_an_explanation_id_only_inside_a_503_value_is_fabricated(self) -> None:
+        failed = ToolResult("get_batch", {}, False, 503, data={"reference": "unknown_po_x"})
+        v = verify(investigation(conclusion(explanation="batch po_x"), failed), REQUIRED)
+        self.assertEqual(v.fabricated_explanation_ids, ("po_x",))
+
     def test_ac_10_6_explanation_ids_found_by_prefix_without_matching_inside_longer_words(self) -> None:
         self.assertEqual(
             explanation_ids("see iss_01ABC, (pay_9z) and mpo_1; compare repo_x, ch_123 or apo_1"),
