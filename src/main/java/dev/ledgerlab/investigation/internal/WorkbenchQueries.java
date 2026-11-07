@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -227,6 +228,29 @@ final class WorkbenchQueries {
                     entries,
                     postings(entries.stream().map(Entry::id).toList()),
                     asOf);
+        });
+    }
+
+    static final int BANK_SEARCH_LIMIT = 100;
+    private static final Pattern VISIBLE_REFERENCE = Pattern.compile("[\\x21-\\x7E]{1,128}");
+
+    record BankSearch(String reference, List<BankLine> lines, boolean truncated, PaymentQueries.AsOf asOf) {}
+
+    BankSearch bankLinesByReference(String reference) {
+        if (!VISIBLE_REFERENCE.matcher(reference).matches())
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "reference must be 1-128 visible characters");
+        return snapshot.read(asOf -> {
+            var found = jdbc.sql("""
+                    SELECT * FROM recon.v_bank_line l WHERE l.reference=:reference
+                      AND l.version=(SELECT max(v.version) FROM recon.v_bank_line v WHERE v.bank_txn_id=l.bank_txn_id)
+                    ORDER BY l.booking_date, l.bank_txn_id LIMIT :limit
+                    """)
+                    .param("reference", reference)
+                    .param("limit", BANK_SEARCH_LIMIT + 1)
+                    .query(bankLine(json))
+                    .list();
+            boolean truncated = found.size() > BANK_SEARCH_LIMIT;
+            return new BankSearch(reference, truncated ? found.subList(0, BANK_SEARCH_LIMIT) : found, truncated, asOf);
         });
     }
 

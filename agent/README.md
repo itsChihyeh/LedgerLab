@@ -1,0 +1,85 @@
+# LedgerLab investigation agent
+
+Read-only agent that investigates one reconciliation issue: it calls a fixed set of GET-only tools against the main application's investigation API, then submits a structured, validated conclusion (root cause, citations, recommended action) or abstains. Design: [`docs/design/investigation-agent.md`](../docs/design/investigation-agent.md), decision: ADR-0019, acceptance: AC-10.
+
+Standard library only (Python 3.12+); no packages to install and no network access beyond the `--base-url` you give it. All data is synthetic.
+
+## Run the tests
+
+From the repository root:
+
+```sh
+python -m unittest discover -s agent/tests -t agent
+```
+
+## Investigate an issue
+
+```sh
+python agent/ledgerlab-agent.py investigate <issue_id> (--base-url http://127.0.0.1:8080 | --snapshot agent/eval/data/dev/snapshot.json) --model baseline|stub|scripted:<script.json>|deepseek:<model> [--max-tool-calls 12] [--json]
+# or, with uv:
+uv run --project agent python agent/ledgerlab-agent.py investigate ...
+```
+
+Exactly one data source: `--base-url` reads a live backend, `--snapshot` replays a recorded snapshot (no backend needed). `--model` accepts:
+
+- `baseline`: the rule baseline (`baseline.py`), the SOP's distinguishing features as plain rules over the same read-only tools.
+- `stub`: a local stand-in for a language model (`stub_model.py`). It runs through the real Agent loop and validator and reads only the conversation it is given; its answers equal the baseline's. It is not a measure of any language model's ability.
+- `scripted:<path.json>`: a JSON list of canned replies (`{"content": [{"type": "tool_use", "id": ..., "name": ..., "input": {...}}], "usage": {...}}`).
+
+`search_sop` searches `agent/sop/reconciliation-sop.md` (BM25). No external model API is called.
+
+Exit code: `0` conclusion accepted, `3` the run ended as `invalid_output` or `budget_exhausted` (an abstention is printed), `2` bad arguments.
+
+## Evaluate
+
+```sh
+sh scripts/agent/eval.sh            # baseline and stand-in on dev, test and hard (replay, no Docker), writes docs/eval/agent-<date>.md/.json
+sh scripts/agent/eval.sh --check    # writes nothing; exit 1 when a hard line fails (CI runs this)
+python agent/ledgerlab-agent.py eval --split dev|test|hard --model baseline|stub [--out run.json]
+```
+
+Evaluating the test or the hard split appends a line to `agent/eval/data/test/runs.log` or `agent/eval/data/hard/runs.log` unless this model configuration has already been run with the same code (source + SOP fingerprint). Tune rules and prompts on dev only; hard is a held-out set that is only reported, never tuned against.
+
+## External model (DeepSeek, billed)
+
+`--model deepseek:<model>` (`deepseek-flash`, `deepseek-v4-pro`) sends the conversation to DeepSeek's chat completions API over plain `urllib` (no dependency). The data is synthetic but it does leave the machine. Nothing is requested until all of these hold:
+
+1. `agent/pricing.json` has every `deepseek` field filled in (prices per million tokens, `source_url`, `checked_at`). They ship as `null`, so a fresh checkout refuses to run.
+2. `--confirm-spend <USD cap>` is given. The estimated cost is printed first; the run stops as soon as the actual cost passes the cap.
+3. `DEEPSEEK_API_KEY` is set in the environment (the only place the key is read from; it is never printed or written).
+
+```sh
+export DEEPSEEK_API_KEY=...   # your own key
+python agent/ledgerlab-agent.py investigate <issue_id> --snapshot agent/eval/data/dev/snapshot.json --model deepseek:deepseek-flash --reasoning-effort high --confirm-spend 0.50
+python agent/ledgerlab-agent.py eval --split dev --limit 3 --model deepseek:deepseek-flash --confirm-spend 0.50 --out /tmp/deepseek-dev-smoke.json   # smoke test on dev
+python agent/ledgerlab-agent.py eval --split test --model deepseek:deepseek-flash --confirm-spend 5 --out docs/eval/deepseek-test.json
+sh scripts/agent/eval.sh --external docs/eval/deepseek-dev.json docs/eval/deepseek-test.json docs/eval/deepseek-hard.json   # report with the external column
+```
+
+An `eval` that hits the cap writes the finished questions to `--out` marked `completed: false` and exits `3`. Smoke-test on dev: a `--limit` run on test or hard still counts as having looked at that split.
+
+## Layout
+
+| Path | Role |
+|---|---|
+| `src/ledgerlab_agent/routes.json` | The only source of tool routes: every entry is a GET with a fixed path template and regex-checked parameters |
+| `transport.py` | GET-only HTTP, no redirects, `http(s)` base URL without credentials |
+| `tools.py`, `records.py` | Tool registry: validates arguments, truncates bodies at 16 KB, extracts `{kind, id}` record identifiers |
+| `model.py` | `ModelClient` interface, `ScriptedModel`, tool JSON Schemas |
+| `deepseek_model.py`, `pricing.py`, `external.py` | DeepSeek adapter (the only file that POSTs, fixed base URL), price table and spend guard, shared set-up of the guards |
+| `conclusion.py`, `enums.py` | Conclusion format, validation, closed vocabularies |
+| `agent.py` | The loop: budgets (12 tool calls, 8 model turns), one correction chance, `<tool_data>` wrapping |
+| `prompts/system.md` | System prompt |
+| `replay.py` | `ReplayTransport`: serves a recorded snapshot (404 `not_in_snapshot` for unknown requests, 503 for withheld ones) |
+| `eval/` | Evaluation tooling (not part of the agent runtime): stack, scenario, probe, catalog, crawl, generate, verify |
+| `verify.py`, `evaluate.py`, `eval/run_eval.py` | Citation verifier, metrics and report rendering (read-only), and the command line that writes reports and the test-set run log |
+| `eval/data/{dev,test,hard}/` | Frozen evaluation sets: `snapshot.json`, `labels.json`, `manifest.json` (hard: by-product questions, new combinations and injections; report-only) |
+
+## Evaluation sets
+
+```sh
+sh scripts/agent/generate-eval.sh --split dev|test|hard|all [--force]   # all = dev and test; needs Docker and both jars; replacing frozen data needs --force
+sh scripts/agent/verify-eval.sh --split dev|test|hard                   # regenerate from the manifest seed, compare ignoring ids
+```
+
+The snapshot only holds what the crawl reached (depth 3 from each issue, plus bank-line searches); anything else answers 404 in replay.

@@ -182,6 +182,10 @@ P5 T08 实现备注：提现起点按 ADR-0006 第 6 节取首次 SUBMITTED／UN
 - 证据按类型解析：issue → 差异，bank_txn → 银行流水，inbox_event → 既有脱敏事件页；statement_line 按 txn 编号列出所有匹配的结算单文件行和已确认批次行，避免同编号跨文件时任意选一条。processor_fetch 通过批次历史的 lines_fetch_id 链接批次；无现有视图关联时保留证据编号并明确提示暂无只读页面关联，不查询 io 原表或展示抓取原文。
 - 前端新增纠错列表／详情、独立分录页及批次行页，导航、差异、支付、批次历史与 posting 互相链接。纠错页面无提交表单。样例 E 的后端测试夹具用合成外部证据和真实业务服务形成 HELD → 纠错 → CONFIRMED；Playwright 验证差异 → 纠错 → 结算单行／原事件及支付／分录反向追溯。
 
+### P8 T02 实现备注：按 reference 查银行流水
+
+只读接口 `GET /api/bank-lines?reference=<ref>`（investigation，readonly 快照）返回 `{reference, lines, truncated, asOf}`：`lines` 为该 reference 下每个 `bank_txn_id` 的当前版本（最高 version），形状同 `/api/bank-lines/{id}` 的 `bankLine`，按 `booking_date, bank_txn_id` 排序，最多 100 条。`reference` 限 1–128 个可见 ASCII 字符，否则 400；无匹配返回 200 空数组。详见 `investigation-agent.md` 第 3 节。
+
 ### P4 T02 实现备注：纠错 HTTP
 
 - `ledgerlab.corrections.enabled` 默认 true；false 时不注册纠错控制器，三个纠错路由均不可用。`POST /api/corrections` 成功 201；`GET /api/corrections/{id}` 返回同一详情结构；`GET /api/corrections?subjectType=&subjectId=` 返回详情数组，两个过滤条件可分别省略，按 recorded_at、id 升序。GET 使用单独的 readonly 数据源和 REPEATABLE READ 只读事务，只查现有视图；POST 响应在写事务里读取，以包含本次尚未提交的状态。
