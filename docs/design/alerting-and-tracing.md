@@ -101,3 +101,11 @@ Prometheus ──alerts──▶ Alertmanager ──webhook──▶ 接收程�
 - **制造失败的办法（测试）**：`ReconRunMetricsTest` 用超级用户临时 `REVOKE SELECT ON recon.v_input_evidence FROM app`（运行进入事务后读的第一张表），调用后在 `finally` 里 `GRANT` 回去；异常是数据库自己的 `DataAccessException`，不改生产代码语义。
 - **规则测试的时间点**：`increase(...[30m])` 的区间左开，计数器在 4 分钟升到 1 时，约 33 分钟后窗口里只剩 1，告警消失；用例取 10m／25m 触发、45m 消失，避开边界。
 - 运行手册 `outbound-exhausted`、`recon-run-failed`、`metrics-down` 三节已加；“怎么在本机看到告警送达”属于 T02 之后的送达部分，本任务未写。
+
+## 实现备注（P11-T02）
+- **文件结构**：逻辑在 `scripts/ops/alert_sink.py`（可导入模块：`parse_payload`、`record_line`、`append_line`、`make_handler`、`make_server`、`main`），`scripts/ops/alert-sink.py` 只是入口。测试用 `python -m unittest discover -s scripts/ops/tests -t scripts/ops`，直接 `import alert_sink`。
+- **状态码**：路径先于方法判断（非 `/alerts` 一律 404，`/alerts` 上非 POST 回 405 并带 `Allow: POST`）。`Content-Type` 不是 `application/json`、缺 `Content-Length`、非数字长度都回 400（设计只列了 404／405／413／400，没有 415／411）；声明长度 > 65536 回 413，不读正文并关闭连接。错误体统一 `{"error":"<code>"}`，成功 `{"ok":true}`。
+- **校验**：`version == "4"`，`status`、每条告警的 `status` 为 `firing`／`resolved`，`groupKey`、`receiver` 为字符串，`alerts` 非空列表，每条 `labels` 为字符串映射且有字符串 `alertname`，有 `annotations` 时也必须是字符串映射。输出里每条告警只保留存在的 `status`／`labels`／`annotations`／`startsAt`／`endsAt`／`fingerprint`。
+- **不校验 `Host` 头**：Alertmanager 容器发来的 `Host` 是 `host.docker.internal:9095`；安全靠默认只听 127.0.0.1。
+- **时间格式**：`receivedAt` 为 UTC 毫秒精度加 `Z`，例如 `2026-11-07T08:30:15.123Z`。
+- **写文件失败**回 500 `internal_error`，不打印告警行。标准输出的 `severity` 缺失时打 `unknown`。
