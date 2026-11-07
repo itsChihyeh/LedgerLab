@@ -2,10 +2,13 @@ package dev.ledgerlab.reconciliation.internal;
 
 import dev.ledgerlab.reconciliation.IssueDisposition;
 import dev.ledgerlab.shared.IdGenerator;
+import dev.ledgerlab.shared.LogContext;
 import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -13,6 +16,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public final class IssueStore implements IssueDisposition {
+    private static final Logger LOG = LoggerFactory.getLogger(IssueStore.class);
+
     private final JdbcClient jdbc;
     private final IdGenerator ids;
     private final Clock clock;
@@ -25,8 +30,14 @@ public final class IssueStore implements IssueDisposition {
         this.transactions = new TransactionTemplate(manager);
     }
 
+    /** What {@link #found} did, so the run can total its own work. */
+    record Found(String issueId, boolean opened, boolean reopened) {}
+
     private record Issue(
             String id,
+            String category,
+            String subjectType,
+            String subjectId,
             String status,
             String detectedBy,
             @Nullable String runKind,
@@ -35,11 +46,14 @@ public final class IssueStore implements IssueDisposition {
 
     private java.util.List<Issue> lockIssues(String predicate, Object... parameters) {
         return jdbc.sql(
-                        "SELECT id, status, detected_by, (SELECT kind FROM recon.run WHERE id=first_run_id) AS run_kind, fingerprint, reopen_count FROM recon.issue WHERE "
+                        "SELECT id, category, subject_type, subject_id, status, detected_by, (SELECT kind FROM recon.run WHERE id=first_run_id) AS run_kind, fingerprint, reopen_count FROM recon.issue WHERE "
                                 + predicate + " FOR UPDATE")
                 .params(parameters)
                 .query((rs, row) -> new Issue(
                         rs.getString("id"),
+                        rs.getString("category"),
+                        rs.getString("subject_type"),
+                        rs.getString("subject_id"),
                         rs.getString("status"),
                         rs.getString("detected_by"),
                         rs.getString("run_kind"),
@@ -48,7 +62,7 @@ public final class IssueStore implements IssueDisposition {
                 .list();
     }
 
-    String found(String runId, RunRequest.Kind kind, Finding finding, String fingerprint, OffsetDateTime now) {
+    Found found(String runId, RunRequest.Kind kind, Finding finding, String fingerprint, OffsetDateTime now) {
         var existing = lockIssues(
                 "category=? AND subject_type=? AND subject_id=?",
                 finding.category(),
@@ -77,10 +91,12 @@ public final class IssueStore implements IssueDisposition {
                             now)
                     .update();
             transition(id, null, "OPEN", runId, "DETECTED", "Detected by run " + runId, finding.evidenceRefs(), now);
-            return id;
+            log("recon.issue.opened", id, finding.category(), finding.subjectType(), finding.subjectId(), null, "OPEN");
+            return new Found(id, true, false);
         }
         Issue issue = existing.getFirst();
-        if (issue.detectedBy().equals("INGESTION") || !kind.name().equals(issue.runKind())) return issue.id();
+        if (issue.detectedBy().equals("INGESTION") || !kind.name().equals(issue.runKind()))
+            return new Found(issue.id(), false, false);
         if ((issue.status().equals("ACCEPTED") || issue.status().equals("RESOLVED"))
                 && fingerprint.equals(issue.fingerprint())) {
             jdbc.sql("""
@@ -96,7 +112,7 @@ public final class IssueStore implements IssueDisposition {
                             finding.evidenceRefs(),
                             issue.id())
                     .update();
-            return issue.id();
+            return new Found(issue.id(), false, false);
         }
         boolean reopen = issue.status().equals("EXPLAINED")
                 || (!issue.status().equals("OPEN") && !fingerprint.equals(issue.fingerprint()));
@@ -120,7 +136,7 @@ public final class IssueStore implements IssueDisposition {
                         reopen,
                         issue.id())
                 .update();
-        if (reopen)
+        if (reopen) {
             transition(
                     issue.id(),
                     issue.status(),
@@ -130,10 +146,13 @@ public final class IssueStore implements IssueDisposition {
                     "Reopened by run " + runId,
                     finding.evidenceRefs(),
                     now);
-        return issue.id();
+            log("recon.issue.reopened", issue, issue.status(), "OPEN");
+        }
+        return new Found(issue.id(), false, reopen);
     }
 
-    void absent(
+    /** Returns how many issues this moved to EXPLAINED (0 or 1). */
+    int absent(
             String runId,
             RunRequest.Kind kind,
             Finding.Key key,
@@ -143,20 +162,22 @@ public final class IssueStore implements IssueDisposition {
                 category=? AND subject_type=? AND subject_id=? AND detected_by <> 'INGESTION' AND status='OPEN'
                 AND first_run_id IN (SELECT id FROM recon.run WHERE kind=?)
                 """, key.category(), key.subjectType(), key.subjectId(), kind.name());
-        if (existing.isEmpty()) return;
+        if (existing.isEmpty()) return 0;
         Issue issue = existing.getFirst();
         String note = "Run " + runId + ": " + explanation.note();
         jdbc.sql("UPDATE recon.issue SET status='EXPLAINED', last_run_id=?, explanation=?, updated_at=? WHERE id=?")
                 .params(runId, note, now, issue.id())
                 .update();
         transition(issue.id(), "OPEN", "EXPLAINED", runId, "EXPLAINED", note, explanation.evidenceRefs(), now);
+        log("recon.issue.transition", issue, "OPEN", "EXPLAINED");
+        return 1;
     }
 
-    void escalated(String runId, Finding.Key key, ReconRule.Explanation explanation, OffsetDateTime now) {
+    int escalated(String runId, Finding.Key key, ReconRule.Explanation explanation, OffsetDateTime now) {
         // AGING owns this explicit cross-kind transition; ordinary absence remains kind-scoped.
         RunRequest.Kind source = key.subjectType().equals("payment") ? RunRequest.Kind.PROCESSOR : RunRequest.Kind.BANK;
-        absent(runId, source, key, explanation, now);
-        absent(runId, RunRequest.Kind.AGING, key, explanation, now);
+        return absent(runId, source, key, explanation, now)
+                + absent(runId, RunRequest.Kind.AGING, key, explanation, now);
     }
 
     @Override
@@ -182,6 +203,7 @@ public final class IssueStore implements IssueDisposition {
                     .params(target, note, now, issueId)
                     .update();
             transition(issueId, "OPEN", target, null, "OPERATOR", note, "[]", now);
+            log("recon.issue.transition", issue, "OPEN", target);
         });
     }
 
@@ -203,6 +225,33 @@ public final class IssueStore implements IssueDisposition {
                 .build()
                 .writeValueAsString(java.util.List.of(java.util.Map.of("type", "correction", "id", correctionId)));
         transition(issueId, "OPEN", "RESOLVED", null, "OPERATOR", note, evidence, now);
+        log("recon.issue.transition", issue, "OPEN", "RESOLVED");
+    }
+
+    private static void log(String action, Issue issue, @Nullable String from, String to) {
+        log(action, issue.id(), issue.category(), issue.subjectType(), issue.subjectId(), from, to);
+    }
+
+    /** Ids only: never the explanation, the operator's note or the evidence (AC-12.3). */
+    static void log(
+            String action,
+            String issueId,
+            String category,
+            String subjectType,
+            String subjectId,
+            @Nullable String from,
+            String to) {
+        try (LogContext ignored = LogContext.with(LogContext.ISSUE_ID, issueId)
+                .and(LogContext.BATCH_ID, subjectType.equals("batch") ? subjectId : null)) {
+            LOG.atInfo()
+                    .addKeyValue("event.action", action)
+                    .addKeyValue("category", category)
+                    .addKeyValue("subjectType", subjectType)
+                    .addKeyValue("subjectId", subjectId)
+                    .addKeyValue("fromStatus", from)
+                    .addKeyValue("toStatus", to)
+                    .log("Reconciliation issue changed");
+        }
     }
 
     private void transition(

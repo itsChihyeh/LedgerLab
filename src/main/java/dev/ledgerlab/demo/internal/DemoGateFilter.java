@@ -30,7 +30,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  */
 @Component
 @Profile("demo")
-@Order(Ordered.HIGHEST_PRECEDENCE)
+@Order(Ordered.HIGHEST_PRECEDENCE + 10) // after the request-id filter in `shared`, before everything else
 final class DemoGateFilter extends OncePerRequestFilter {
     static final String INTERNAL_HEADER = "X-Ledgerlab-Demo-Internal";
 

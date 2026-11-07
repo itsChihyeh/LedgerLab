@@ -17,8 +17,10 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.random.RandomGenerator;
 import java.util.stream.Collectors;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -67,28 +69,34 @@ public final class OutboundWorker {
             if (handlers.isEmpty()) return 0;
             List<CommandSnapshot> claims = Objects.requireNonNull(tx.execute(status -> claim()));
             for (var command : claims) {
-                hooks.afterClaim(command);
-                var handler = Objects.requireNonNull(handlers.get(command.kind()));
-                CommandResult result;
-                try {
-                    result = handler.execute(command, new Execution(command));
-                } catch (LostLease ignoredLease) {
-                    continue;
-                } catch (AttemptLimit limit) {
-                    result = new CommandResult.Unknown("ATTEMPT_LIMIT", clock.instant());
-                } catch (TransportFailure failure) {
-                    result = new CommandResult.Unknown("TRANSPORT_ERROR", clock.instant());
-                }
-                hooks.beforeWriteback(command);
-                CommandResult completed = result;
-                try {
-                    tx.executeWithoutResult(status -> writeback(command, handler, completed));
-                } catch (LostLease ignoredLease) {
-                    // Entire business transaction rolled back; the independently stored attempt remains.
+                try (CommandScope scope = new CommandScope(command)) {
+                    handle(command);
                 }
             }
             return claims.size();
         }));
+    }
+
+    private void handle(CommandSnapshot command) {
+        hooks.afterClaim(command);
+        var handler = Objects.requireNonNull(handlers.get(command.kind()));
+        CommandResult result;
+        try {
+            result = handler.execute(command, new Execution(command));
+        } catch (LostLease ignoredLease) {
+            return;
+        } catch (AttemptLimit limit) {
+            result = new CommandResult.Unknown("ATTEMPT_LIMIT", clock.instant());
+        } catch (TransportFailure failure) {
+            result = new CommandResult.Unknown("TRANSPORT_ERROR", clock.instant());
+        }
+        hooks.beforeWriteback(command);
+        CommandResult completed = result;
+        try {
+            tx.executeWithoutResult(status -> writeback(command, handler, completed));
+        } catch (LostLease ignoredLease) {
+            // Entire business transaction rolled back; the independently stored attempt remains.
+        }
     }
 
     private List<CommandSnapshot> claim() {
@@ -157,7 +165,11 @@ public final class OutboundWorker {
                                 .plus(done ? java.time.Duration.ZERO : properties.backoff(attempts, random))))
                 .update();
         if (updated == 0) throw new LostLease();
-        if (exhausted) LOG.warn("Outbound command {} reached attempt limit; result remains UNKNOWN", command.id());
+        if (exhausted)
+            LOG.atWarn()
+                    .addKeyValue("event.action", "outbound.exhausted")
+                    .addKeyValue("attempts", attempts)
+                    .log("Outbound command reached its attempt limit; result remains UNKNOWN");
     }
 
     private final class Execution implements CommandExecution {
@@ -202,10 +214,28 @@ public final class OutboundWorker {
                 response = request.get();
             } catch (RuntimeException failure) {
                 archive(attempt, sent, summary, new Response<>("TRANSPORT_ERROR", null, null, "TRANSPORT_ERROR"));
+                LOG.atInfo()
+                        .addKeyValue("event.action", "outbound.attempt")
+                        .addKeyValue("attempt", attempt)
+                        .addKeyValue("outcome", "TRANSPORT_ERROR")
+                        .log("Outbound call finished");
                 throw new TransportFailure();
             }
             archive(attempt, sent, summary, response);
+            LOG.atInfo()
+                    .addKeyValue("event.action", "outbound.attempt")
+                    .addKeyValue("attempt", attempt)
+                    .addKeyValue("outcome", outcome(response))
+                    .log("Outbound call finished");
             return response.value();
+        }
+
+        // Status code, or the short error code the gateway gave (TIMEOUT...); never a body or free text.
+        private static String outcome(Response<?> response) {
+            if (response.status() != null) return "HTTP_" + response.status();
+            String error = response.error();
+            if (error == null) return "NO_RESPONSE";
+            return error.matches("[A-Z_]{1,40}") ? error : "ERROR";
         }
 
         private void archive(int attempt, Instant sent, Map<String, Object> summary, Response<?> response) {
@@ -231,6 +261,32 @@ public final class OutboundWorker {
 
     private static OffsetDateTime utc(Instant instant) {
         return instant.atOffset(ZoneOffset.UTC);
+    }
+
+    /**
+     * Puts {@code commandId} and {@code commandKind} into the MDC for one command and restores the previous values.
+     * This is {@code shared.LogContext} written out by hand: the {@code outbound} module may not depend on any other
+     * module (Modulith), so it cannot call it. The key spellings are the ones in docs/design/observability.md 1.2.
+     */
+    private static final class CommandScope implements AutoCloseable {
+        private final @Nullable String previousId = MDC.get("commandId");
+        private final @Nullable String previousKind = MDC.get("commandKind");
+
+        CommandScope(CommandSnapshot command) {
+            MDC.put("commandId", command.id());
+            MDC.put("commandKind", command.kind());
+        }
+
+        @Override
+        public void close() {
+            restore("commandId", previousId);
+            restore("commandKind", previousKind);
+        }
+
+        private static void restore(String key, @Nullable String previous) {
+            if (previous == null) MDC.remove(key);
+            else MDC.put(key, previous);
+        }
     }
 
     private static final class LostLease extends RuntimeException {}

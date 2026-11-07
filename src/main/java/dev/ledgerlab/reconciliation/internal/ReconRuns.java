@@ -1,6 +1,7 @@
 package dev.ledgerlab.reconciliation.internal;
 
 import dev.ledgerlab.shared.IdGenerator;
+import dev.ledgerlab.shared.LogContext;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalTime;
@@ -16,6 +17,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.TreeMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -27,6 +30,7 @@ import tools.jackson.databind.ObjectMapper;
 @Service
 @EnableConfigurationProperties(ReconProperties.class)
 public final class ReconRuns {
+    private static final Logger LOG = LoggerFactory.getLogger(ReconRuns.class);
     private final JdbcClient jdbc;
     private final PlatformTransactionManager manager;
     private final Clock clock;
@@ -148,6 +152,20 @@ public final class ReconRuns {
         if (request.kind() == RunRequest.Kind.AGING) summary.put("limitations", AgingRule.LIMITATIONS);
         if (request.dryRun()) return report(null, request, inputs, summary, findings);
         String runId = ids.next("rr");
+        try (LogContext ignored = LogContext.with(LogContext.RUN_ID, runId)) {
+            return persist(request, started, runId, inputs, summary, findings, scope, keys);
+        }
+    }
+
+    private RunReport persist(
+            RunRequest request,
+            Instant started,
+            String runId,
+            Map<String, String> inputs,
+            Map<String, Object> summary,
+            List<RunReport.ObservedFinding> findings,
+            Map<Finding.Key, ReconRule.Explanation> scope,
+            HashSet<Finding.Key> keys) {
         OffsetDateTime now = started.atOffset(ZoneOffset.UTC);
         jdbc.sql("""
                 INSERT INTO recon.run (id, kind, status, input_file_ids, input_hashes, rule_version, cutoff_at,
@@ -165,9 +183,15 @@ public final class ReconRuns {
                         now,
                         now)
                 .update();
+        int opened = 0;
+        int reopened = 0;
+        int explained = 0;
         for (var observed : findings) {
             Finding f = observed.finding();
-            String issueId = issues.found(runId, request.kind(), f, observed.fingerprint(), now);
+            var found = issues.found(runId, request.kind(), f, observed.fingerprint(), now);
+            String issueId = found.issueId();
+            if (found.opened()) opened++;
+            if (found.reopened()) reopened++;
             jdbc.sql("""
                     INSERT INTO recon.finding (id, run_id, category, subject_type, subject_id, expected, actual,
                         evidence_refs, fingerprint, due_at, issue_id, recorded_at)
@@ -188,16 +212,23 @@ public final class ReconRuns {
                     .param("now", now)
                     .update();
         }
-        scope.forEach((key, explanation) -> {
-            if (!keys.contains(key)) {
-                if (request.kind() == RunRequest.Kind.AGING && key.category().equals("TIMING_DIFFERENCE"))
-                    issues.escalated(runId, key, explanation, now);
-                else issues.absent(runId, request.kind(), key, explanation, now);
-            }
-        });
+        for (var entry : scope.entrySet()) {
+            Finding.Key key = entry.getKey();
+            if (keys.contains(key)) continue;
+            if (request.kind() == RunRequest.Kind.AGING && key.category().equals("TIMING_DIFFERENCE"))
+                explained += issues.escalated(runId, key, entry.getValue(), now);
+            else explained += issues.absent(runId, request.kind(), key, entry.getValue(), now);
+        }
         jdbc.sql("UPDATE recon.run SET status='FINISHED', finished_at=?, summary=CAST(? AS jsonb) WHERE id=?")
                 .params(clock.instant().atOffset(ZoneOffset.UTC), json.write(summary), runId)
                 .update();
+        LOG.atInfo()
+                .addKeyValue("event.action", "recon.run.finished")
+                .addKeyValue("kind", request.kind().name())
+                .addKeyValue("opened", opened)
+                .addKeyValue("reopened", reopened)
+                .addKeyValue("explained", explained)
+                .log("Reconciliation run finished");
         return report(runId, request, inputs, summary, findings);
     }
 

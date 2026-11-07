@@ -15,6 +15,13 @@ spring:
     default-schema: flyway
     schemas: flyway
 
+# Empty keeps the human-readable console format; the demo profile and the deployed stack set `logstash`
+# (one JSON object per line, MDC keys as top-level fields; docs/design/observability.md section 1).
+logging:
+  structured:
+    format:
+      console: ${LEDGERLAB_LOG_FORMAT:}
+
 ledgerlab:
   corrections:
     enabled: true

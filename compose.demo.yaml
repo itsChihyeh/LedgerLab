@@ -63,6 +63,7 @@ services:
       dockerfile: docker/demo/Dockerfile
     environment:
       SPRING_PROFILES_ACTIVE: demo
+      LEDGERLAB_LOG_FORMAT: logstash
       LEDGERLAB_DB_URL: jdbc:postgresql://postgres:5432/ledgerlab_demo
       LEDGERLAB_MIGRATOR_PASSWORD: ${LEDGERLAB_MIGRATOR_PASSWORD:?run scripts/demo/up.sh}
       LEDGERLAB_APP_PASSWORD: ${LEDGERLAB_APP_PASSWORD:?run scripts/demo/up.sh}
