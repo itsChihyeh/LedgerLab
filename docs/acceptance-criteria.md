@@ -76,6 +76,7 @@
 | **P8** 对账调查 Agent | 只读窄工具、可替换模型接口、回放评测集、规则基线、评测报告 | AC-10 |
 | **P9** Agent 进工作台＋MCP | 调查服务、工作台调查面板与人工采纳、同一组只读工具的 MCP 服务 | AC-11 |
 | **P10** 可观测性＋部署准备 | 结构化日志、Actuator 指标、一条有测试的告警、部署方案与报价（不执行） | AC-12 |
+| **P11** 告警送达＋追踪方案 | 三条新告警规则、Alertmanager 送到本机接收程序、追踪方案（不实现）、合并 P8～P10 | AC-13 |
 
 ---
 
@@ -404,6 +405,23 @@ P6 的前提：用户已注册加拿大 Stripe 账号，密钥由用户本人放
 | AC-12.7 | 告警规则本身正确 | **Given** `ops/prometheus/alerts.yml` **When** 在固定版本的 `prom/prometheus` 容器里跑 `promtool test rules ops/prometheus/alerts.test.yml` **Then** 超阈值持续 6 分钟告警 firing、只持续 3 分钟不告警、回落后告警消失，退出码 0；`promtool check rules` 通过 | IT | P10 |
 | AC-12.8 | 告警能从真实应用触发 | **Given** 真实应用、worker 停调度 **When** 经 webhook 入口收进一条事件并把时钟拨前 10 分钟 **Then** 抓到的 `ledgerlab_inbox_oldest_due_age_seconds` ≥ 600，用抓到的值作输入时同一规则 firing；worker 处理后值回 0、同样验证不告警 | IT | P10 |
 | AC-12.9 | 部署方案与报价更新（不执行） | **Then** `docs/deploy/aws-plan.md` 写明日志、指标、告警在单机上的落法、内存估算、每一项的价格与查询日期（查不到的写“待核价”）、需要用户决定的事；没有执行任何云操作 | DOC | P10 |
+
+---
+
+## AC-13 告警送达与追踪方案（P11）
+
+设计正本 [alerting-and-tracing.md](design/alerting-and-tracing.md)，决策 [ADR-0022](adr/0022-alert-delivery-and-tracing-plan.md)。IT = Java 集成测试（Testcontainers）；PY = Python `unittest`；DOC = 文档评审。
+
+| ID | 场景 | Given / When / Then | 层 | 阶段 |
+|---|---|---|---|---|
+| AC-13.1 | 三条新规则本身正确 | **Given** `ops/prometheus/alerts.yml` **When** `promtool check rules` 和 `promtool test rules alerts.test.yml` **Then** `LedgerLabOutboundExhausted`（达上限持续 1 分钟触发，0 不触发）、`LedgerLabReconRunFailed`（失败计数增加后触发、30 分钟后消失、只有 `finished` 增加不触发）、`LedgerLabMetricsDown`（`up==0` 持续 5 分钟触发、3 分钟不触发）都按预期；`LedgerLabInboxStuck` 的用例继续通过；退出码 0 | IT | P11 |
+| AC-13.2 | 对账运行计数 | **Given** 真实应用＋真库 **Then** 启动后 `ledgerlab_recon_runs_total` 的 3×2 个序列都在且为 0；一次成功运行使对应 `kind` 的 `finished` 加 1；进入事务后失败的运行使 `failed` 加 1、异常照常抛出、库里没有该运行、日志有 `recon.run.failed`（带 `kind`、`errorClass`，不带异常消息）；不合法的请求（400）和干跑都不计数 | IT | P11 |
+| AC-13.3 | Alertmanager 配置与路由 | **Given** `ops/alertmanager/alertmanager.yml` **When** 在固定版本的 `prom/alertmanager` 容器里跑 `amtool check-config` 和 `amtool config routes test` **Then** 配置有效；`severity=page` 与 `severity=ticket` 落到各自的路由 | IT | P11 |
+| AC-13.4 | 告警从真实应用送达 | **Given** 真实应用（worker 停调度）、Prometheus、Alertmanager、测试里的接收端 **When** 收进一条事件并把时钟拨前 10 分钟，之后让 worker 处理掉 **Then** 接收端先收到 `firing` 的 `LedgerLabInboxStuck`（`severity=page`，带 `summary`、`runbook`），后收到同一组的 `resolved`；测试副本与仓库正本只差时间字段和接收地址；不访问任何外部地址 | IT | P11 |
+| AC-13.5 | 本机接收程序 | **Given** `scripts/ops/alert-sink.py` **Then** 默认只听 127.0.0.1；合法的 webhook 载荷追加一行 JSON（含收到时间、状态、各告警的标签和注释）；其他路径 404、其他方法 405、超过 64 KiB 413、坏 JSON 或缺字段 400 且不写文件；只用标准库 | PY | P11 |
+| AC-13.6 | 演示栈与运行手册 | **Then** `docker compose --profile observability config` 有效，Alertmanager 只发布在 127.0.0.1；Prometheus 配置指向 Alertmanager；`docs/ops/runbook.md` 有三条新告警各自一节和“本机看送达”的步骤；`aws-plan.md` 内存估算含 Alertmanager 并标明估算 | DOC | P11 |
+| AC-13.7 | 追踪方案 | **Then** `docs/design/tracing.md` 写明依赖与镜像清单、传播点（HTTP 入站、webhook→inbox→worker、出站命令→处理方调用）、跨异步边界存 trace 上下文所需的迁移、与 `requestId` 和业务编号的关系、对确定性重建的影响、导出端与成本、不做的理由；没有代码和依赖改动 | DOC | P11 |
+| AC-13.8 | 合并与收尾 | **Then** P8～P10 各有一个指向 `main` 的 PR 并写明合并顺序；README 阶段表与 `phases.md` 更新到 P11；`docs/handoff/p11.md` 列出每条 AC 的证据 | DOC | P11 |
 
 ---
 
