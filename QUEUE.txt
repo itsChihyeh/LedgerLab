@@ -12,3 +12,4 @@ T06b-hard-set.md
 T08-handoff-p8.md
 T07-deepseek-adapter.md
 T07b-citation-seen-and-prompt.md
+T07c-budget-awareness-traces.md
