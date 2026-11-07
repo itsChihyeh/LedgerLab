@@ -15,7 +15,7 @@
 7. **按 `deploy/README.md` 的步骤逐步执行**，哪些步骤是用户本人账号操作在那里标出。
 8. **（P10）决定可观测性档位**：最低档（只做日志轮转）还是推荐档（`t4g.medium`＋Prometheus），见“P10 可观测性”一节的月费。
 9. **（P10）决定日志去向**：只留在实例上（每日重置会丢），还是送 CloudWatch Logs（要给实例角色加日志写入权限，打破“除 SSM 外不加权限”，由用户决定）。
-10. **（P10）决定告警通知渠道**：只在 Prometheus 页面看（零成本）、SES 邮件，还是自己的 SMTP。**发信是对外发送，Claude 不做、也不替用户开通。**
+10. **（P10）决定告警通知渠道**：只在 Prometheus 页面看（零成本）、SES 邮件，还是自己的 SMTP。**发信是对外发送，Claude 不做、也不替用户开通。** （P11 补充）仓库里的 Alertmanager（`ops/alertmanager/alertmanager.yml`，演示栈 `observability` profile 里的 `alertmanager` 服务）目前只把告警送到本机接收程序 `scripts/ops/alert-sink.py`，**没有任何真实渠道**；云上那台机器没有这个接收程序，所以不选渠道时这些告警在云上只是留在 Alertmanager 页面里。选渠道（邮件、聊天软件、推送）是用户的决定：选定后只需加一个接收方和一条路由，地址和凭证放在实例上仓库之外的文件里（`url_file` 等），不进仓库。
 11. **（P10）启用 Prometheus 时设 `LEDGERLAB_DEMO_OBSERVABILITY=1`**：`scripts/demo`（T05b，已批准）据此对每次 compose 调用（`up`、`down`、`ps`、`logs`）带 `--profile observability`；不设时行为不变。`up.sh` 开启时先检查外部卷 `ledgerlab-prometheus-data` 和 `ops/prometheus/alerts.yml`，缺了就报错退出（不自动建卷）。变量要同时写进 `up.sh` 和每日重置 cron 两处。
 12. **（P10）本机装 Session Manager 插件**（自己的电脑，用于端口转发看 Prometheus）；确认 `prom/prometheus` 镜像的固定版本（草稿里是 `v3.5.0`，当天查官方发布页并考虑固定摘要）。
 
@@ -149,7 +149,8 @@ Lightsail, Fargate, RDS and ALB: read them from the pages listed in aws-plan.md.
   | Caddy | 0.03～0.05 |
   | **小计（不含 Prometheus）** | **约 1.4～2.0** |
   | Prometheus（约 1,000～1,500 个序列，15 秒一次，保留 7 天约 100 MB 磁盘；`mem_limit: 256m` 封顶） | 0.10～0.25 |
-  | **合计** | **约 1.5～2.25，而 `t4g.small` 只有 2.0（可用约 1.9）** |
+  | Alertmanager（P11；空闲时很小，`mem_limit: 64m` 封顶；估算，未实测） | 0.02～0.06 |
+  | **合计** | **约 1.5～2.3，而 `t4g.small` 只有 2.0（可用约 1.9）** |
 
   结论：不带 Prometheus 时 2 GiB 已经紧（P7 已为此加了 2 GiB swap）；带 Prometheus 大概率不够，**推荐换 `t4g.medium`（4 GiB）**。差价：0.0368 − 0.0184 = 0.0184 USD/小时，约 **+13.43 USD/月**（P7 数字，2026-11-05 核实，2026-11-07 复查未变）。`mem_limit: 256m` 保证 Prometheus 超了只会自己被杀，不拖垮 app。
 - **序列数的数法**（上线后核实 Prometheus 的内存估算）：`curl -s http://127.0.0.1:8079/actuator/prometheus | grep -vc '^#'`（在 app 容器内或经管理端口）得到当前序列数；Prometheus 页面里 `prometheus_tsdb_head_series` 也是这个数。
@@ -157,7 +158,7 @@ Lightsail, Fargate, RDS and ALB: read them from the pages listed in aws-plan.md.
 ### 告警通知
 
 - **零成本选项（默认）**：不装 Alertmanager，只在 Prometheus 的 `/alerts` 页面看（经 SSM 端口转发）。缺点是没人看就没人知道，但对一个每日重置、没有真实用户的演示站可以接受。
-- **Alertmanager→邮件（可选）**：同机再起一个 Alertmanager 容器（约 20～40 MiB，**估算**），经 SES 或用户自己的 SMTP 发邮件。**发信是对外发送，必须由用户决定，Claude 不替用户开通 SES、不验证域名、不创建 SMTP 凭证。** 价格（已核实）：SES 发信 0.00016 USD/封（上面的核价输出），一个月即使 50 封告警也只有 **约 0.01 USD**；附件 0.12 USD/GB，用不到。SES 新账号默认在沙盒，只能发给已验证的地址，需要用户验证收件地址或申请出沙盒。注意：Alertmanager 经 SES SMTP 发信需要一个 SMTP 凭证（由 IAM 用户生成），这是**要放在实例上的密钥**，和“实例上没有 AWS 凭证需要保管”相冲突；用户自己的 SMTP 也一样要放口令。这个取舍由用户定，且口令不得写进仓库。本任务没有给 Alertmanager 写任何配置或容器。
+- **Alertmanager→邮件（可选）**：同机再起一个 Alertmanager 容器（约 20～40 MiB，**估算**），经 SES 或用户自己的 SMTP 发邮件。**发信是对外发送，必须由用户决定，Claude 不替用户开通 SES、不验证域名、不创建 SMTP 凭证。** 价格（已核实）：SES 发信 0.00016 USD/封（上面的核价输出），一个月即使 50 封告警也只有 **约 0.01 USD**；附件 0.12 USD/GB，用不到。SES 新账号默认在沙盒，只能发给已验证的地址，需要用户验证收件地址或申请出沙盒。注意：Alertmanager 经 SES SMTP 发信需要一个 SMTP 凭证（由 IAM 用户生成），这是**要放在实例上的密钥**，和“实例上没有 AWS 凭证需要保管”相冲突；用户自己的 SMTP 也一样要放口令。这个取舍由用户定，且口令不得写进仓库。（P11 更新：仓库现在有 Alertmanager 配置和演示栈服务，但接收方只有本机程序，没有 SES 或 SMTP 的配置；`mem_limit: 64m`，无数据卷，静默随每日重置丢失，见上面的内存估算表。）
 
 ### 备选：CloudWatch 代理抓 Prometheus 端点（不自建 Prometheus）
 

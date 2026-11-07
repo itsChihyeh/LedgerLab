@@ -66,7 +66,8 @@ class PayoutReconTest {
                         new AgingRule(f.jdbc, calendar, policy, evidence, json, f.mapper)),
                 json,
                 f.mapper,
-                new IssueStore(f.jdbc, f.ids, f.clock, f.manager));
+                new IssueStore(f.jdbc, f.ids, f.clock, f.manager),
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
         bank = new BankStatements(
                 f.jdbc,
                 f.ledger,
@@ -432,7 +433,8 @@ class PayoutReconTest {
                 List.of(oldRule),
                 json,
                 f.mapper,
-                new IssueStore(f.jdbc, f.ids, f.clock, f.manager));
+                new IssueStore(f.jdbc, f.ids, f.clock, f.manager),
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
         f.clock.set(DUE.plusSeconds(120));
         var old = oldRuns.run(new RunRequest(RunRequest.Kind.BANK, DUE, DUE, "p4-v2", List.of(), false));
         assertThat(runs.get(Objects.requireNonNull(old.id()))).contains(old);

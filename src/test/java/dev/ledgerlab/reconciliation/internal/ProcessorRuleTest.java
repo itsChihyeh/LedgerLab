@@ -94,7 +94,8 @@ class ProcessorRuleTest {
                         new AgingPolicy(2, 2, 2, java.time.Duration.ofHours(1), 2, 5, 3))),
                 json,
                 mapper,
-                new IssueStore(jdbc, ids, clock, manager));
+                new IssueStore(jdbc, ids, clock, manager),
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
     }
 
     @AfterEach

@@ -38,7 +38,8 @@ class BankAgingRuleTest {
                         new AgingRule(f.jdbc, calendar, policy, evidence, json, f.mapper)),
                 json,
                 f.mapper,
-                new IssueStore(f.jdbc, ids, f.clock, manager));
+                new IssueStore(f.jdbc, ids, f.clock, manager),
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
         bank = new BankStatements(
                 f.jdbc,
                 f.ledger,
