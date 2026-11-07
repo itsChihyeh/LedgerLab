@@ -75,14 +75,13 @@ write_files:
         -v ledgerlab-caddy-data:/data \
         caddy:<CADDY_VERSION>
 
-      # OPTIONAL, NOT RUN BY DEFAULT: Prometheus next to the demo stack (aws-plan.md, "P10 可观测性"). Do not enable
-      # it before two things are settled; both are written up there:
-      #   1. scripts/demo must pass `--profile observability` on every compose call, including `down`. A plain
-      #      `down` leaves the profile's container running and fails to remove the network, which would break the
-      #      daily reset. That change is outside this draft and needs a decision.
-      #   2. The 2 GiB t4g.small is probably too small with Prometheus; the plan recommends t4g.medium.
-      # With both done, the only extra step here is the history volume that survives `down -v`:
-      #   docker volume create ledgerlab-prometheus-data
+      # OPTIONAL, NOT RUN BY DEFAULT: Prometheus next to the demo stack (aws-plan.md, "P10 可观测性"). Enabling it
+      # takes three things, all written up there:
+      #   1. The history volume that survives `down -v` (up.sh refuses to start without it):
+      #        docker volume create ledgerlab-prometheus-data
+      #   2. LEDGERLAB_DEMO_OBSERVABILITY=1 in BOTH the up.sh line above and the reset cron line below. scripts/demo
+      #      then passes `--profile observability` on every compose call, `down` included.
+      #   3. The 2 GiB t4g.small is probably too small with Prometheus; the plan recommends t4g.medium.
 
   - path: /etc/cron.d/ledgerlab-demo-reset
     permissions: "0644"

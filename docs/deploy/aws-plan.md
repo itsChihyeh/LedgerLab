@@ -16,7 +16,7 @@
 8. **（P10）决定可观测性档位**：最低档（只做日志轮转）还是推荐档（`t4g.medium`＋Prometheus），见“P10 可观测性”一节的月费。
 9. **（P10）决定日志去向**：只留在实例上（每日重置会丢），还是送 CloudWatch Logs（要给实例角色加日志写入权限，打破“除 SSM 外不加权限”，由用户决定）。
 10. **（P10）决定告警通知渠道**：只在 Prometheus 页面看（零成本）、SES 邮件，还是自己的 SMTP。**发信是对外发送，Claude 不做、也不替用户开通。**
-11. **（P10）批准一处 `scripts/demo` 的小改动**：启用 Prometheus 前，每日重置脚本要对每次 compose 调用带 `--profile observability`（原因和实测见“P10 可观测性”）。批准前 Prometheus 保持关闭。
+11. **（P10）启用 Prometheus 时设 `LEDGERLAB_DEMO_OBSERVABILITY=1`**：`scripts/demo`（T05b，已批准）据此对每次 compose 调用（`up`、`down`、`ps`、`logs`）带 `--profile observability`；不设时行为不变。`up.sh` 开启时先检查外部卷 `ledgerlab-prometheus-data` 和 `ops/prometheus/alerts.yml`，缺了就报错退出（不自动建卷）。变量要同时写进 `up.sh` 和每日重置 cron 两处。
 12. **（P10）本机装 Session Manager 插件**（自己的电脑，用于端口转发看 Prometheus）；确认 `prom/prometheus` 镜像的固定版本（草稿里是 `v3.5.0`，当天查官方发布页并考虑固定摘要）。
 
 ## 价格说明（重要）
@@ -137,7 +137,7 @@ Lightsail, Fargate, RDS and ALB: read them from the pages listed in aws-plan.md.
 - **形态**：`compose.demo.yaml` 的可选服务 `prometheus`（`profiles: [observability]`，默认不起），镜像 `prom/prometheus:v3.5.0`（固定版本，上线前核对并考虑固定摘要），`--storage.tsdb.retention.time=7d`、`--storage.tsdb.retention.size=512MB`，只发布 `127.0.0.1:29090`；抓取配置 `deploy/prometheus.demo.yml`（抓 Compose 网络里的 `app:8079`），告警规则只读挂载 `ops/prometheus/`（由 P10-T04 创建）。app 的管理端口 8079 **不发布到主机**；为了让 Prometheus 容器够得着，`compose.demo.yaml` 给 app 设了 `MANAGEMENT_SERVER_ADDRESS=0.0.0.0`（设计里默认是 `127.0.0.1`，在容器里别的容器连不上）。历史数据放外部卷 `ledgerlab-prometheus-data`，每日 `down -v` 不会清掉。Caddy 对 `/actuator` 返回 404 作为第二道防线。
 - **查看**：用 SSM 端口转发，在用户自己的电脑上（需要本机装 Session Manager 插件）：
   `aws ssm start-session --target <实例ID> --document-name AWS-StartPortForwardingSession --parameters '{"portNumber":["29090"],"localPortNumber":["29090"]}'`，然后浏览器开 `http://127.0.0.1:29090/alerts`。不开安全组端口，不公开。
-- **启用前必须先解决的事（已实测）**：每日重置脚本（`scripts/demo/demo.py`）调用 `docker compose down -v` 时不带 profile。用一个一次性的 Compose 项目实测：带 `--profile observability` 启动后，不带 profile 的 `down` **不会停掉带 profile 的容器，并且因为网络仍被占用而报 “Resource is still in use”**，也就是说照现在的脚本直接启用 Prometheus 会让每日重置失败。需要 `scripts/demo` 对每次 compose 调用（`up`、`down`、`ps`）统一加 `--profile observability`（例如由 `LEDGERLAB_DEMO_OBSERVABILITY=1` 控制）。这在 P10-T05 的可改范围之外，**待用户批准**；批准前 Prometheus 保持关闭，也不影响演示站。（另外，`python_env()` 会清掉所有 `COMPOSE_*` 环境变量，所以不能靠 `COMPOSE_PROFILES`。）同时实测确认：外部卷不存在时，不带 profile 的 `up` 不受影响。
+- **启用前必须先解决的事（已实测）**：每日重置脚本（`scripts/demo/demo.py`）调用 `docker compose down -v` 时不带 profile。用一个一次性的 Compose 项目实测：带 `--profile observability` 启动后，不带 profile 的 `down` **不会停掉带 profile 的容器，并且因为网络仍被占用而报 “Resource is still in use”**，也就是说照现在的脚本直接启用 Prometheus 会让每日重置失败。所以 `scripts/demo` 在 `LEDGERLAB_DEMO_OBSERVABILITY=1` 时对每次 compose 调用统一加 `--profile observability`（T05b 已实现，`selftest.py` 覆盖开与不开两种命令行；尚未用真实演示栈跑过，因为 `ops/prometheus/` 还没建）。不设该变量时 Prometheus 保持关闭，也不影响演示站。（另外，`python_env()` 会清掉所有 `COMPOSE_*` 环境变量，所以不能靠 `COMPOSE_PROFILES`。）同时实测确认：外部卷不存在时，不带 profile 的 `up` 不受影响。
 - **内存是否还够 2 GiB**（**估算，未实测**；典型常驻内存，上线后用 `free -m`、`docker stats --no-stream` 实测）：
 
   | 组成 | 估算（GiB） |

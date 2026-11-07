@@ -143,3 +143,8 @@
 - **`json-file` 日志随每日重置消失**：重置是 `down -v` 加重建容器，stdout 日志跟着容器走，只能保留不到一天。已在 `aws-plan.md` 写明，并列出两条出路（CloudWatch Logs、重置前转存），都需要用户决定。
 - 设计第 5 节“内存估算”是典型值的估算，未实测，已逐项标明；Alertmanager 没有写任何配置或容器（发信由用户决定）。
 - Caddyfile 用 `caddy:2` 镜像的 `caddy validate` 校验通过（`DEMO_DOMAIN` 给了假值）。
+
+## 实现备注（P10-T05b）
+
+- `scripts/demo/demo.py`：`LEDGERLAB_DEMO_OBSERVABILITY=1`（或 `true`）时，`compose_command()` 给每次 compose 调用加 `--profile observability`；`cmd_up` 先检查外部卷 `ledgerlab-prometheus-data` 和 `ops/prometheus/alerts.yml`，缺了报错退出，不自动建卷。不设时命令行与之前完全相同。
+- `prom/prometheus:v3.5.0` 已用 `docker manifest inspect` 确认该标签在镜像仓库中存在（未拉取、未运行）。`compose.demo.yaml` 无需改动；T04 测试用同一版本。
