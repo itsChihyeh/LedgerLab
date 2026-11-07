@@ -70,7 +70,7 @@
 | `http.server.requests` | timer | Spring 自带 | Actuator 默认的请求耗时，`uri` 是路由模板，自然覆盖调查 Agent 读的 `/api/investigation/**` 只读接口 |
 
 **调查服务耗时**（`agent/service`，Python 标准库）：调查服务加 `GET /agent/metrics`，输出 Prometheus 文本格式（`text/plain; version=0.0.4`）：
-- `ledgerlab_agent_investigations_total{status="ok|refused|error"}` counter；
+- `ledgerlab_agent_investigations_total{status="ok|budget_exhausted|error"}` counter（取值以调查记录的实际状态为准，见实现备注 P10-T02）；
 - `ledgerlab_agent_investigation_duration_seconds` histogram（桶 0.01、0.05、0.1、0.5、1、2、5、10、30、+Inf，带 `_sum`、`_count`）；
 - `ledgerlab_agent_tool_calls_total` counter。
 - 进程内计数，重启归零（Prometheus 的 `rate()` 能处理）；时间来源可注入，测试固定。它是 GET，不改变 AC-11.2 的“唯一的写是追加 JSONL”和“只有一个写入处理器”；同样不回 CORS 头、校验 `Host`。**不改** `agent/src/ledgerlab_agent/`（评测指纹）。
