@@ -121,10 +121,12 @@
 - **开关**：`logging.structured.format.console: ${LEDGERLAB_LOG_FORMAT:}` 在 Spring Boot 4.1 下空值可正常启动并保持人读格式（`HumanLogFormatTest` 实测），不需要 `json-logs` profile。`application-demo.yaml` 默认 `logstash`，`compose.demo.yaml` 的 app 环境也显式设了。
 - **请求号过滤器**在 `shared`（`RequestLogFilter`，`@Order(HIGHEST_PRECEDENCE)`）；`DemoGateFilter` 改为 `HIGHEST_PRECEDENCE + 10`，让请求号先放入，被演示闸门拒绝的请求也有 `http.request` 行。请求号用过滤器自己持有的一个 `IdGenerator.secure(clock)` 实例生成，**不是**应用里的那个 `IdGenerator` bean，所以不会动带种子的编号序列。
 - `http.route`：取不到模板，或取到的是静态资源兜底 `/**`，都写 `UNMATCHED`（`/**` 会匹配任何没有控制器认领的路径，不是真路由）。
-- **出站 worker 手写 MDC**：Modulith 声明 `outbound` 不依赖任何模块（`allowedDependencies = {}`），不能调用 `shared.LogContext`，所以 `OutboundWorker` 里有一个私有的 `CommandScope`，做同样的“放入、finally 恢复进入前的值”，键名与 1.2 节相同。若以后允许 `outbound` 依赖 `shared`（一行声明），应改回 `LogContext`。**待用户决定。**
+- **出站 worker 手写 MDC**：Modulith 声明 `outbound` 不依赖任何模块（`allowedDependencies = {}`），不能调用 `shared.LogContext`，所以 `OutboundWorker` 里有一个私有的 `CommandScope`，做同样的“放入、finally 恢复进入前的值”，键名与 1.2 节相同。`outbound` 是通用的命令表，零依赖是有意的，这十几行重复可以接受，**不要**给它加 `shared` 依赖（审查已定）。
 - `outbound.attempt` 的 `outcome`：有 HTTP 状态时 `HTTP_<状态码>`，否则网关给的短错误码（如 `TIMEOUT`），其余 `ERROR`；永不带正文。
 - `webhook.rejected` 的 `reason`：`invalid_signature`、`invalid_envelope`（签名对但包体残缺，400）；`livemode` 事件按设计是先收进 inbox，再由 worker 拒绝，所以 `reason=livemode` 的行由 inbox worker 写，带 `eventId`。`webhook.received` 另带 `outcome`（`NEW`／`DUPLICATE`／`CONFLICT`），`duplicate` 在后两种为 `true`。
 - 差异事件：对账运行内的开／重开／转状态由 `IssueStore` 写；入站管道开的差异（`JdbcIngestionIssues.open`，没有 `runId`）也写 `recon.issue.opened`，由 inbox worker 的 `eventId` 关联；入站自动收尾（付款已入账、银行退回）写 `recon.issue.transition`。`recon.run.finished` 的 `opened`／`reopened`／`explained` 由本次运行自己累计，不再查库；干跑不写这行。
+- **日志在提交前写**：`recon.issue.opened` 等是在事务内、提交前写的，事务回滚时会留下一条“打开了”但库里没有的日志。演示站可以接受；不为日志引入提交后监听器，因为 ADR 要求关键写入用显式同步调用。
+- **测试间的日志级别泄漏**：`ModelApplication` 和 `DemoStack` 用 `--logging.level.root=WARN` 启动应用，Logback 全 JVM 只有一个，级别留在 WARN，之后同一进程里的 `ReconLogTest`／`OutboundLogTest` 收不到 INFO 行。两者现在在 `close()` 里用 `testsupport/RootLogLevel` 恢复启动前的级别。
 - **测试**：捕获日志用 `testsupport/LogEvents`（挂在根 logger 上的内存 appender，读 MDC 和 key/value，按新行唤醒等待，不 sleep）；JSON 格式本身用 `StructuredLogsTest` 的控制台捕获验证（Spring Boot 初始化日志系统之前打出的行不算，之后每行都要能解析；JVM 和 Mockito 直接写 stderr 的提示行除外）。
 
 ## 实现备注（P10-T02）

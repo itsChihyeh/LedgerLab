@@ -9,6 +9,7 @@ import dev.ledgerlab.ingestion.internal.WorkerHooks;
 import dev.ledgerlab.ledger.LedgerAudit;
 import dev.ledgerlab.shared.IdGenerator;
 import dev.ledgerlab.testsupport.MutableClock;
+import dev.ledgerlab.testsupport.RootLogLevel;
 import dev.ledgerlab.testsupport.StripeSignatures;
 import dev.ledgerlab.testsupport.TestDatabase;
 import java.net.URI;
@@ -42,6 +43,7 @@ final class ModelApplication implements AutoCloseable {
     final PayoutReplay payouts;
     final FundsLockProbe funds;
     private final URI endpoint;
+    private final RootLogLevel rootLogLevel = RootLogLevel.remember();
     private boolean closed;
 
     ModelApplication() {
@@ -286,6 +288,7 @@ final class ModelApplication implements AutoCloseable {
         closed = true;
         http.close();
         context.close();
+        rootLogLevel.restore();
         processor.close();
         db.drop();
     }

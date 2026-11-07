@@ -266,7 +266,8 @@ public final class OutboundWorker {
     /**
      * Puts {@code commandId} and {@code commandKind} into the MDC for one command and restores the previous values.
      * This is {@code shared.LogContext} written out by hand: the {@code outbound} module may not depend on any other
-     * module (Modulith), so it cannot call it. The key spellings are the ones in docs/design/observability.md 1.2.
+     * module (Modulith), so it cannot call it; the command table stays dependency-free on purpose, and these few
+     * duplicated lines are the accepted price. The key spellings are the ones in docs/design/observability.md 1.2.
      */
     private static final class CommandScope implements AutoCloseable {
         private final @Nullable String previousId = MDC.get("commandId");

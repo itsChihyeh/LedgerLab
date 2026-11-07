@@ -1,6 +1,7 @@
 package dev.ledgerlab.demo.internal;
 
 import dev.ledgerlab.LedgerLabApplication;
+import dev.ledgerlab.testsupport.RootLogLevel;
 import dev.ledgerlab.testsupport.StripeSignatures;
 import dev.ledgerlab.testsupport.TestDatabase;
 import java.io.IOException;
@@ -43,6 +44,7 @@ final class DemoStack implements AutoCloseable {
 
     static final ObjectMapper MAPPER = new ObjectMapper();
 
+    private final RootLogLevel rootLogLevel = RootLogLevel.remember();
     final TestDatabase.Handle db = TestDatabase.freshBlank();
     final HttpClient http =
             HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
@@ -252,6 +254,7 @@ final class DemoStack implements AutoCloseable {
             }
         }
         context.close();
+        rootLogLevel.restore();
         db.drop();
     }
 }
