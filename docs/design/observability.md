@@ -56,6 +56,8 @@
 - 测试里管理端口用 `0`（随机），避免并行测试抢端口。
 
 ## 3. 指标（AC-12.5、AC-12.6）
+**修订（2026-11-07，T03 审查）**：`readonly` 角色读不到 `io.inbox_event.next_attempt_at`，所以新增迁移 V24，只加视图 `core.v_inbox_backlog`（三列，只给 `readonly` 授 SELECT），沿用 V12／V16／V22 的做法；P10 因此有一个迁移。指标用 `shared` 里一个公开的只读数据源（小连接池）；出站命令的两个 gauge 放在拥有对应视图的 `refunds`、`payouts` 模块，`outbound` 仍零依赖。
+
 命名用 Micrometer 的点分名，Prometheus 输出时自动转成下划线。数据库来的数用 `readonly` 数据源查（ADR-0014），每次抓取时查；每个 gauge 的查询必须是一条有索引可用的只读 SQL，查不到库时返回 `NaN` 而不是抛异常。时间一律取注入的 `Clock`。查询放在拥有数据的模块里（ingestion、outbound、reconciliation），各自注册 meter，不跨模块读表。
 
 | 指标 | 类型 | 标签 | 含义 |
