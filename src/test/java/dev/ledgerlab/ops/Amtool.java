@@ -1,5 +1,6 @@
 package dev.ledgerlab.ops;
 
+import dev.ledgerlab.testsupport.ContainerMounts;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.regex.Matcher;
@@ -43,7 +44,10 @@ final class Amtool {
                     .withFileSystemBind(OPS_DIR.toString(), CONFIG, BindMode.READ_ONLY)
                     .withStartupCheckStrategy(new OneShotStartupCheckStrategy().withTimeout(Duration.ofSeconds(60)));
             if (generatedDir != null)
-                container.withFileSystemBind(generatedDir.toAbsolutePath().toString(), GENERATED, BindMode.READ_ONLY);
+                container.withFileSystemBind(
+                        ContainerMounts.readable(generatedDir).toAbsolutePath().toString(),
+                        GENERATED,
+                        BindMode.READ_ONLY);
             container.start();
             String output = container.getLogs();
             Matcher exit = Pattern.compile(EXIT_MARK + "(\\d+)").matcher(output);

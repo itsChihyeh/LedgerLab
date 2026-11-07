@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.sun.net.httpserver.HttpServer;
 import dev.ledgerlab.ingestion.internal.InboxWorker;
+import dev.ledgerlab.testsupport.ContainerMounts;
 import dev.ledgerlab.testsupport.MutableClock;
 import dev.ledgerlab.testsupport.StripeSignatures;
 import dev.ledgerlab.testsupport.TestDatabase;
@@ -38,6 +39,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.Testcontainers;
+import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -131,6 +133,9 @@ class AlertDeliveryTest {
         Path alertmanagerDir = Files.createDirectory(dir.resolve("alertmanager"));
         writePrometheusFiles(prometheusDir);
         writeAlertmanagerConfig(alertmanagerDir, receiverPort);
+        // The images run as nobody; @TempDir is owner-only, which Linux enforces on bind mounts.
+        ContainerMounts.readable(prometheusDir);
+        ContainerMounts.readable(alertmanagerDir);
 
         try (Network network = Network.newNetwork()) {
             // Before any container that uses the host names starts.
@@ -138,12 +143,16 @@ class AlertDeliveryTest {
             try (GenericContainer<?> alertmanager = new GenericContainer<>(DockerImageName.parse(Amtool.IMAGE))
                             .withNetwork(network)
                             .withNetworkAliases(ALERTMANAGER_ALIAS)
-                            .withFileSystemBind(alertmanagerDir.toAbsolutePath().toString(), "/etc/alertmanager")
+                            .withFileSystemBind(
+                                    alertmanagerDir.toAbsolutePath().toString(),
+                                    "/etc/alertmanager",
+                                    BindMode.READ_ONLY)
                             .withExposedPorts(9093)
                             .waitingFor(Wait.forHttp("/-/ready").forPort(9093));
                     GenericContainer<?> prometheus = new GenericContainer<>(DockerImageName.parse(Promtool.IMAGE))
                             .withNetwork(network)
-                            .withFileSystemBind(prometheusDir.toAbsolutePath().toString(), "/etc/prometheus")
+                            .withFileSystemBind(
+                                    prometheusDir.toAbsolutePath().toString(), "/etc/prometheus", BindMode.READ_ONLY)
                             .withExposedPorts(9090)
                             .waitingFor(Wait.forHttp("/-/ready").forPort(9090))) {
                 alertmanager.start();
