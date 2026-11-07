@@ -324,6 +324,8 @@ section[aria-label="退款"] li {
   margin: 0;
 }
 .demo-counter {
+  min-width: 0;
+  overflow-wrap: anywhere;
   padding: 10px 12px;
   border: 1px solid #d5dfe3;
   background: #fafbfb;
