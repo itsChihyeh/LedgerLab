@@ -22,6 +22,23 @@ logging:
     format:
       console: ${LEDGERLAB_LOG_FORMAT:}
 
+# Actuator listens on its own port, bound to loopback; the public port 8080 has no /actuator/**
+# (docs/design/observability.md section 2). Only health (status only) and prometheus are exposed.
+management:
+  server:
+    port: ${LEDGERLAB_MANAGEMENT_PORT:8079}
+    address: 127.0.0.1
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      show-details: never
+      # No liveness/readiness groups: the body is {"status": ...} and nothing else (AC-12.4).
+      probes:
+        enabled: false
+
 ledgerlab:
   corrections:
     enabled: true

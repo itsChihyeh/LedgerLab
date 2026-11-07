@@ -6,6 +6,8 @@ import dev.ledgerlab.outbound.CommandResult;
 import dev.ledgerlab.outbound.CommandSnapshot;
 import dev.ledgerlab.outbound.OutboundHooks;
 import dev.ledgerlab.outbound.OutboundProperties;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -21,6 +23,7 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -40,7 +43,9 @@ public final class OutboundWorker {
     private final RandomGenerator random;
     private final OutboundHooks hooks;
     private final ObjectMapper mapper;
+    private final MeterRegistry meters;
 
+    /** Without a shared registry: attempt counts go to a private one nobody reads (tests that build a worker by hand). */
     public OutboundWorker(
             JdbcClient jdbc,
             PlatformTransactionManager manager,
@@ -50,6 +55,21 @@ public final class OutboundWorker {
             RandomGenerator random,
             OutboundHooks hooks,
             ObjectMapper mapper) {
+        this(jdbc, manager, handlers, clock, properties, random, hooks, mapper, new SimpleMeterRegistry());
+    }
+
+    @Autowired
+    public OutboundWorker(
+            JdbcClient jdbc,
+            PlatformTransactionManager manager,
+            List<CommandHandler> handlers,
+            Clock clock,
+            OutboundProperties properties,
+            RandomGenerator random,
+            OutboundHooks hooks,
+            ObjectMapper mapper,
+            MeterRegistry meters) {
+        this.meters = meters;
         this.jdbc = jdbc;
         this.tx = new TransactionTemplate(manager);
         tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -214,6 +234,7 @@ public final class OutboundWorker {
                 response = request.get();
             } catch (RuntimeException failure) {
                 archive(attempt, sent, summary, new Response<>("TRANSPORT_ERROR", null, null, "TRANSPORT_ERROR"));
+                count(attempt, "TRANSPORT_ERROR");
                 LOG.atInfo()
                         .addKeyValue("event.action", "outbound.attempt")
                         .addKeyValue("attempt", attempt)
@@ -222,12 +243,26 @@ public final class OutboundWorker {
                 throw new TransportFailure();
             }
             archive(attempt, sent, summary, response);
+            count(attempt, outcome(response));
             LOG.atInfo()
                     .addKeyValue("event.action", "outbound.attempt")
                     .addKeyValue("attempt", attempt)
                     .addKeyValue("outcome", outcome(response))
                     .log("Outbound call finished");
             return response.value();
+        }
+
+        // Kind, outcome (see below) and whether this is the second or a later attempt: all closed sets, no ids.
+        private void count(int attempt, String outcome) {
+            meters.counter(
+                            "ledgerlab.outbound.attempts",
+                            "kind",
+                            command.kind(),
+                            "outcome",
+                            outcome,
+                            "retry",
+                            Boolean.toString(attempt > 1))
+                    .increment();
         }
 
         // Status code, or the short error code the gateway gave (TIMEOUT...); never a body or free text.

@@ -150,3 +150,16 @@
 
 - `scripts/demo/demo.py`：`LEDGERLAB_DEMO_OBSERVABILITY=1`（或 `true`）时，`compose_command()` 给每次 compose 调用加 `--profile observability`；`cmd_up` 先检查外部卷 `ledgerlab-prometheus-data` 和 `ops/prometheus/alerts.yml`，缺了报错退出，不自动建卷。不设时命令行与之前完全相同。
 - `prom/prometheus:v3.5.0` 已用 `docker manifest inspect` 确认该标签在镜像仓库中存在（未拉取、未运行）。`compose.demo.yaml` 无需改动；T04 测试用同一版本。
+
+## 实现备注（P10-T03）
+
+- **依赖与迁移**：新增 `spring-boot-starter-actuator`、`micrometer-registry-prometheus`（版本跟随 BOM）；迁移 V24 只加 `core.v_inbox_backlog`（`status`、`received_at`、`next_attempt_at`，只含 `RECEIVED`／`PARKED`），数据字典有备注，权限测试在 `InboxBacklogViewTest`。
+- **管理端口**：配置见 `application.yaml`。测试用 `src/test/resources/config/application.yaml` 把管理端口设为 `0`（`classpath:/config/` 与主配置合并，不覆盖它）。`health` 另设 `probes.enabled: false`，否则响应体多一个 `groups`（liveness／readiness），不满足“只有 `status`”。
+- **只读数据源**：`shared.MetricsDatabase` 提供一个名为 `metricsReadonlyDataSource` 的 Hikari 池（最多 2 个连接，`defaultCandidate=false`，查询超时 2 秒，连接超时 2 秒，启动时不连库）；各模块用 `@Qualifier` 按名字注入，不产生模块依赖。`investigation`、`demo` 现有的数据源未改。
+- **每次抓取只查一次**：Micrometer 没有“抓取前”钩子，`shared.ScrapeSnapshot` 利用“一次抓取每个 gauge 恰好读一次”：某个 gauge 读到自己已读过的快照时，说明新一轮抓取开始，重新查库。同一组 gauge 共用一条 SQL（inbox 一条、对账一条、每个出站视图一条）。查询失败时整组返回 `NaN`，记一行 WARN（`event.action=metrics.query.failed`，只带指标组名和异常类名，不带 SQL 和参数）。副作用：别的代码直接读这些 gauge 的值也会触发重新查库，无害。
+- **归属**：`ledgerlab.inbox.*` 在 `ingestion.internal.InboxMetrics`；`ledgerlab.recon.*` 在 `reconciliation.internal.ReconMetrics`；出站两个 gauge 在 `refunds.internal.RefundCommandMetrics`（`kind=SUBMIT_REFUND`）和 `payouts.internal.PayoutCommandMetrics`（`SUBMIT_PAYOUT`、`QUERY_PAYOUT`），共用 `shared.OutboundCommandGauges`（视图名、`kind` 表达式、次数上限由调用方传入，次数上限取 `OutboundProperties.maxAttempts`）。两边注册同名 meter、`kind` 不同，输出里每个名字只有一组 `HELP`／`TYPE`（`BusinessMetricsTest` 断言）。`exhausted` 的口径是“状态不是 `DONE` 且 `attempts >= maxAttempts`”。`outbound` 模块仍零依赖，`ledgerlab.outbound.attempts` 在 `OutboundWorker` 里用 `MeterRegistry` 计数（Micrometer 是库，`ModularityTests` 通过）。旧的 8 参数构造器保留（接私有的 `SimpleMeterRegistry`，给手动构造 worker 的既有测试用），Spring 用带 `MeterRegistry` 的那个。
+- **与第 3 节表格的两处差别**：① `ledgerlab.recon.issues.open` 对封闭枚举的**每个**类别（30 个）都出一个序列，没有 `OPEN` 差异的为 0，而不是“只为出现过的类别出标签”：Micrometer 抓取时不能安全地新增序列，常驻的 0 序列对 PromQL 也更友好；`ReconMetricsCategoriesTest` 把 Java 里的清单与数据库 `issue_category` 约束比对，新增类别忘了改这里会让测试失败。② `ledgerlab.recon.issues.oldest.open.age` 以 `recon.issue.recorded_at`（首次记录时刻）计，重开不重置；`recon.issue` 没有 `status` 索引，`OPEN` 集合很小，这条查询是对小表的顺序扫描，没有为此新增迁移。
+- **没有 `MultiGauge`**：见上，固定集合的普通 gauge 加共享快照达到“每次抓取刷新”。
+- **数据库不可用的测法**：真断开连接不可靠，测试里用 `REVOKE SELECT ON core.v_inbox_backlog FROM readonly` 让那一组查询失败（`BusinessMetricsTest`），抓取仍 200，该组为 `NaN`，其他组不受影响；恢复授权后下一次抓取恢复数值。
+- **测试环境**：没有 `spring-boot-micrometer-metrics-test`，`@SpringBootTest` 不会关掉 Prometheus 导出，所以测试里不需要 `@AutoConfigureMetrics`。
+- **演示站自调用端口（实测踩到的坑）**：独立管理端口会让 `WebServerInitializedEvent` 再触发一次（命名空间 `management`）。`demo.internal.DemoConfiguration.LocalPort` 原来取最后一次事件的端口，会把演示动作对自己的 HTTP 调用指向管理端口，`DemoActionsTest` 11/13 失败（等不到 `CAPTURED`）。现在忽略 `management` 命名空间，`DemoLocalPortTest` 覆盖。以后凡是监听该事件的代码都要注意这一点。
