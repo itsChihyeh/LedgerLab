@@ -4,7 +4,7 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。按依赖推�
 
 “开工前置”是开工前审查发现、但到该阶段才用得上的设计缺口：**开始这个阶段之前先把它们改进设计文档和 AC**，不要边写代码边定。
 
-**当前状态（2026-11-07）**：**P11 进行中**（告警送达、三条新规则、追踪方案，`p11` 分支，设计 [alerting-and-tracing.md](alerting-and-tracing.md)；用户决定暂不上云，P8～P10 经 PR #8～#10 按顺序合入 `main`）。**P10 本地部分完成**（可观测性＋部署准备，`p10` 分支，设计 [observability.md](observability.md)，验收清单 [p10.md](../handoff/p10.md)；真实上云仍等用户批准报价和账号，没有创建任何云资源）。**P9 本地部分完成，待审查**（Agent 进对账工作台＋MCP 只读服务，`p9` 分支，设计 [agent-workbench-and-mcp.md](agent-workbench-and-mcp.md)，验收清单 [p9.md](../handoff/p9.md)；工作台面板用规则基线替身，不调用外部模型）。**P8 完成，待审查**（调查 Agent、规则基线与本地替身、冻结评测集 dev／test／hard，2026-11-07 接入 DeepSeek 并各正式运行一次，验收清单 [p8.md](../handoff/p8.md)，报告 [agent-2026-11-07.md](../eval/agent-2026-11-07.md)；在 `p8` 分支）。P0～P5 完成（P5 验收清单 [p5.md](../handoff/p5.md)）；**P6 完成**（2026-11-07 合并进 main；T01–T08 全部完成，AC-8.3–8.6、8.8–8.10 的验收清单与已知限制见 [p6.md](../handoff/p6.md)，运行报告在 [docs/runs/](../runs/)；中途暂停（2026-11-03）的经过见 [p6-pause.md](../handoff/p6-pause.md)）；**P7 本地部分完成，待用户审核**（演示页、运行时不变量、k6 基线、视频与文章草稿、AWS 方案与报价，验收清单 [p7.md](../handoff/p7.md)；部署待用户确认报价和账号，目前没有创建任何云资源）。P8 在 `p8` 分支另行推进。更早的暂停记录见 [pause-p4.md](../handoff/pause-p4.md)。
+**当前状态（2026-11-07）**：**P11 本地部分完成**（三条新告警规则、Alertmanager 送到本机接收程序、追踪方案，`p11` 分支，设计 [alerting-and-tracing.md](alerting-and-tracing.md)，验收清单 [p11.md](../handoff/p11.md)；用户决定项目做完前不上云，P8～P10 经 PR #8～#10 按顺序合入 `main`）。**P10 本地部分完成**（可观测性＋部署准备，`p10` 分支，设计 [observability.md](observability.md)，验收清单 [p10.md](../handoff/p10.md)；真实上云仍等用户批准报价和账号，没有创建任何云资源）。**P9 本地部分完成，待审查**（Agent 进对账工作台＋MCP 只读服务，`p9` 分支，设计 [agent-workbench-and-mcp.md](agent-workbench-and-mcp.md)，验收清单 [p9.md](../handoff/p9.md)；工作台面板用规则基线替身，不调用外部模型）。**P8 完成，待审查**（调查 Agent、规则基线与本地替身、冻结评测集 dev／test／hard，2026-11-07 接入 DeepSeek 并各正式运行一次，验收清单 [p8.md](../handoff/p8.md)，报告 [agent-2026-11-07.md](../eval/agent-2026-11-07.md)；在 `p8` 分支）。P0～P5 完成（P5 验收清单 [p5.md](../handoff/p5.md)）；**P6 完成**（2026-11-07 合并进 main；T01–T08 全部完成，AC-8.3–8.6、8.8–8.10 的验收清单与已知限制见 [p6.md](../handoff/p6.md)，运行报告在 [docs/runs/](../runs/)；中途暂停（2026-11-03）的经过见 [p6-pause.md](../handoff/p6-pause.md)）；**P7 本地部分完成，待用户审核**（演示页、运行时不变量、k6 基线、视频与文章草稿、AWS 方案与报价，验收清单 [p7.md](../handoff/p7.md)；部署待用户确认报价和账号，目前没有创建任何云资源）。P8 在 `p8` 分支另行推进。更早的暂停记录见 [pause-p4.md](../handoff/pause-p4.md)。
 
 | 阶段 | 内容 | 依赖 | 开工前置 | 退出条件 |
 |---|---|---|---|---|
@@ -21,7 +21,7 @@ P0 设计稿 v0.2，2026-10-21（同日开工前审查修订）。按依赖推�
 | **P8** 对账调查 Agent | Python 独立进程、只读窄工具、可替换模型接口与本地替身、回放评测集、规则基线、评测报告；外部模型最后由用户批准接入 | P7 | 已于 2026-11-06 写进 [investigation-agent.md](investigation-agent.md)（评测标准第 8 节）和 ADR-0019，新增 AC-10 | AC-10；做得不理想也不影响项目完整性 |
 | **P9** Agent 进工作台＋MCP | 本机调查服务；差异详情页显示调查结论与引用，人工“采纳”后经已有写接口处置（封闭映射，Agent 零写权限）；同一组只读工具的 MCP 服务（stdio，标准库） | P8 | 已于 2026-11-06 写进 [agent-workbench-and-mcp.md](agent-workbench-and-mcp.md) 和 ADR-0020，新增 AC-11 | AC-11 |
 | **P10** 可观测性＋真实部署 | 结构化日志、指标、一个告警；按 P7 报价真实部署（等用户确认账号和费用） | P9 | 已于 2026-11-07 写进 [observability.md](observability.md) 和 ADR-0021，新增 AC-12；Actuator 与 Prometheus 注册表两个依赖等用户批准 | AC-12（真实部署本身不在 AC 内，等用户批准报价） |
-| **P11** 告警送达＋追踪方案 | 三条新告警规则、Alertmanager 送到本机接收程序、追踪方案（不实现）、P8～P10 合入 main | P10 | 已于 2026-11-07 写进 [alerting-and-tracing.md](alerting-and-tracing.md) 和 ADR-0022，新增 AC-13；`prom/alertmanager` 镜像等用户批准；用户决定暂不上云 | AC-13 |
+| **P11** 告警送达＋追踪方案 | 三条新告警规则、Alertmanager 送到本机接收程序、追踪方案（不实现）、P8～P10 合入 main | P10 | 已于 2026-11-07 写进 [alerting-and-tracing.md](alerting-and-tracing.md) 和 ADR-0022，新增 AC-13；`prom/alertmanager` 镜像用户已批准；用户决定暂不上云 | AC-13 |
 
 P1 拆成三步，是因为一次做完“账本＋入站＋模型测试＋页面”太大，出错时难以定位；每一步都能单独验收，后一步建立在前一步已经稳定的契约上。
 

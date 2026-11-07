@@ -62,10 +62,12 @@ Details, the money model and the design trade-offs are in the [architecture over
 | P5 | Merchant payouts with unknown-outcome recovery | Done | `main` |
 | P6 | Real Stripe test mode | Done, awaiting review: real webhooks, missed-event recovery, real automatic payout as a batch, refunds through Stripe and reconciliation on live data all pass ([checklist](docs/handoff/p6.md), [run report](docs/runs/sandbox-sbx_20261102T224453022706Z.md)) | `main` |
 | P7 | Public break-it demo page, runtime invariants, performance baseline, AWS plan | Local part done, awaiting review; deployment waits for the owner's go-ahead ([checklist](docs/handoff/p7.md)) | `main` |
-| P8 | Read-only investigation agent with a rule baseline and a frozen evaluation | Done, awaiting review: on the held-out hard set DeepSeek answers 43 of 46, the rule baseline 14 ([checklist](docs/handoff/p8.md), [report](docs/eval/agent-2026-11-07.md)) | `p8` |
-| P9 | Agent in the reconciliation workbench (human adopts) and a read-only MCP server | Local part done, awaiting review ([checklist](docs/handoff/p9.md)) | `p9` |
+| P8 | Read-only investigation agent with a rule baseline and a frozen evaluation | Done, awaiting review: on the held-out hard set DeepSeek answers 43 of 46, the rule baseline 14 ([checklist](docs/handoff/p8.md), [report](docs/eval/agent-2026-11-07.md)) | `main` |
+| P9 | Agent in the reconciliation workbench (human adopts) and a read-only MCP server | Local part done, awaiting review ([checklist](docs/handoff/p9.md)) | `main` |
+| P10 | Structured JSON logs, Prometheus metrics on a loopback management port, an inbox-stuck alert, deploy plan with observability | Local part done; no cloud resources ([checklist](docs/handoff/p10.md)) | `main` |
+| P11 | Three more alerts, delivery through Alertmanager to a local receiver, a tracing plan (not built) | Local part done ([checklist](docs/handoff/p11.md)) | `main` |
 
-The `investigation` module on `main` is read-only query APIs; the AI agent that calls them lives in `agent/` on the `p8` branch.
+The `investigation` module on `main` is read-only query APIs; the AI agent that calls them lives in `agent/`.
 
 Two limits to keep in mind. The fake Stripe implements only the subset this project uses, and real Stripe is the authority where they differ; recorded, redacted Stripe test-mode fixtures drive contract tests that catch differences (`src/test/resources/contracts/stripe-sandbox/`). In Stripe test mode, webhooks and settlement data both come from Stripe, so they are less independent of each other than the simulator's fixtures, and reconciliation accuracy can only be judged in simulator mode, where the true answer is known.
 

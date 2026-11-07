@@ -94,6 +94,7 @@ jobs:
       - run: python3 --version && python3 -m unittest discover -s agent/tests -t agent
       - run: python3 -m unittest discover -s agent/service/tests -t agent/service
       - run: python3 -m unittest discover -s agent/mcp/tests -t agent/mcp
+      - run: python3 -m unittest discover -s scripts/ops/tests -t scripts/ops
       - run: sh scripts/agent/eval.sh --check
 
   smoke:
