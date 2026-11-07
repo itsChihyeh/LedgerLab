@@ -55,6 +55,10 @@ class HumanLogFormatTest {
 
     @Test
     void ac_12_1_withoutTheSwitchTheConsoleIsNotJson(CapturedOutput out) throws Exception {
+        // Only this test's own output counts. The capture also holds lines printed before this context took over the
+        // logging system, such as an earlier JSON-logging context shutting down when the context cache evicts it
+        // (seen in CI, 2026-11-07, where the test order differs from Windows).
+        int start = out.getAll().length();
         try (LogEvents events = LogEvents.attach()) {
             HttpResponse<Void> response = HTTP.send(
                     HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/events/evt_none"))
@@ -65,9 +69,9 @@ class HumanLogFormatTest {
             events.await(line -> requestId.equals(line.getMDCPropertyMap().get("requestId")), Duration.ofSeconds(10));
         }
         JsonMapper json = JsonMapper.builder().build();
-        long parseable = out.getAll().lines().filter(line -> isJson(json, line)).count();
-        assertThat(out.getAll()).isNotBlank();
-        assertThat(parseable).isZero();
+        String own = out.getAll().substring(start);
+        assertThat(own).isNotBlank();
+        assertThat(own.lines().filter(line -> isJson(json, line))).isEmpty();
     }
 
     private static boolean isJson(JsonMapper json, String line) {
