@@ -22,7 +22,7 @@ sh scripts/smoke-p5.sh | grep '^PASS' > target/smoke-p5-pass.txt
 cd frontend
 ```
 
-Rebuild the simulator as shown even if a jar exists. A jar left over from branch `p6` contains a migration that `main` cannot run, and the payout scenario will fail to start.
+Rebuild the simulator as shown even if a jar exists. A jar built from an older checkout can carry a different set of simulator migrations, and the payout scenario will then fail to start.
 
 Open each trace in its own window, then arrange them in the order of the scenes:
 
@@ -94,5 +94,5 @@ If you run over, cut the first trace in the Duplicate webhooks scene.
 ## Check before recording
 
 - Only say numbers you can see on screen or in the README.
-- If asked about branch `p6`, it holds the Stripe test mode work, which is partly done. It isn't in this demo.
+- If asked about real Stripe test mode, it runs as a separate local stack (see the README) and isn't in this demo.
 - Be ready to open `RefundApi`, `JdbcLedger.lockBalances` and `PayoutCommandHandler` if someone asks to see the code.

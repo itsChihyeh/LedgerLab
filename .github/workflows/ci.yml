@@ -36,7 +36,8 @@ jobs:
   backend:
     name: Backend (build, tests, checks)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 22 min on PR #11; the run on main after merging #11 hit the old 30 min limit. P10 and P11 added container tests.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0

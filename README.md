@@ -14,7 +14,7 @@ A payment settlement and reconciliation sandbox: signed processor webhooks, refu
 - **History can't be edited.** Entries are sealed by database triggers and role grants. Corrections are reversals plus restatements, limited to named types.
 - **Reconciliation is independent.** Discrepancies are checked against seeded fixtures that the ledger under test doesn't produce, and every finding links to its evidence.
 
-Built with Java 25, Spring Boot 4.1, Spring Modulith, PostgreSQL, Flyway, React, TypeScript, Testcontainers, jqwik, Playwright and GitHub Actions.
+Built with Java 25, Spring Boot 4.1, Spring Modulith, PostgreSQL, Flyway, React, TypeScript, Testcontainers, jqwik, Playwright, Prometheus and GitHub Actions, plus standard-library Python for the investigation agent.
 
 ## Architecture
 
@@ -60,12 +60,12 @@ Details, the money model and the design trade-offs are in the [architecture over
 |---|---|---|---|
 | P1–P4 | Ledger, webhook intake, settlement, bank reconciliation, refunds, corrections | Done | `main` |
 | P5 | Merchant payouts with unknown-outcome recovery | Done | `main` |
-| P6 | Real Stripe test mode | Done, awaiting review: real webhooks, missed-event recovery, real automatic payout as a batch, refunds through Stripe and reconciliation on live data all pass ([checklist](docs/handoff/p6.md), [run report](docs/runs/sandbox-sbx_20261102T224453022706Z.md)) | `main` |
-| P7 | Public break-it demo page, runtime invariants, performance baseline, AWS plan | Local part done, awaiting review; deployment waits for the owner's go-ahead ([checklist](docs/handoff/p7.md)) | `main` |
-| P8 | Read-only investigation agent with a rule baseline and a frozen evaluation | Done, awaiting review: on the held-out hard set DeepSeek answers 43 of 46, the rule baseline 14 ([checklist](docs/handoff/p8.md), [report](docs/eval/agent-2026-11-07.md)) | `main` |
-| P9 | Agent in the reconciliation workbench (human adopts) and a read-only MCP server | Local part done, awaiting review ([checklist](docs/handoff/p9.md)) | `main` |
-| P10 | Structured JSON logs, Prometheus metrics on a loopback management port, an inbox-stuck alert, deploy plan with observability | Local part done; no cloud resources ([checklist](docs/handoff/p10.md)) | `main` |
-| P11 | Three more alerts, delivery through Alertmanager to a local receiver, a tracing plan (not built) | Local part done ([checklist](docs/handoff/p11.md)) | `main` |
+| P6 | Real Stripe test mode | Done: real webhooks, missed-event recovery, real automatic payout as a batch, refunds through Stripe and reconciliation on live data all pass ([checklist](docs/handoff/p6.md), [run report](docs/runs/sandbox-sbx_20261102T224453022706Z.md)) | `main` |
+| P7 | Public break-it demo page, runtime invariants, performance baseline, AWS plan | Done locally; not deployed ([checklist](docs/handoff/p7.md)) | `main` |
+| P8 | Read-only investigation agent with a rule baseline and a frozen evaluation | Done: on the held-out hard set DeepSeek answers 43 of 46, the rule baseline 14 ([checklist](docs/handoff/p8.md), [report](docs/eval/agent-2026-11-07.md)) | `main` |
+| P9 | Agent in the reconciliation workbench (human adopts) and a read-only MCP server | Done ([checklist](docs/handoff/p9.md)) | `main` |
+| P10 | Structured JSON logs, Prometheus metrics on a loopback management port, an inbox-stuck alert, deploy plan with observability | Done; no cloud resources ([checklist](docs/handoff/p10.md)) | `main` |
+| P11 | Three more alerts, delivery through Alertmanager to a local receiver, a tracing plan (not built) | Done ([checklist](docs/handoff/p11.md)) | `main` |
 
 The `investigation` module on `main` is read-only query APIs; the AI agent that calls them lives in `agent/`.
 
@@ -73,7 +73,7 @@ Two limits to keep in mind. The fake Stripe implements only the subset this proj
 
 ## Reproduce the tests
 
-You need JDK 25, Docker with Compose v2, Node 24, Python 3.9+ and a POSIX shell (Git Bash on Windows). No Stripe account is needed, and nothing here reads `.env` except the optional local database at the end.
+You need JDK 25, Docker with Compose v2, Node 24, Python 3.12+ and a POSIX shell (Git Bash on Windows). No Stripe account is needed, and nothing here reads `.env` except the optional local database at the end.
 
 ```sh
 ./mvnw verify                          # main app, on Testcontainers PostgreSQL
@@ -89,17 +89,19 @@ sh scripts/smoke-p5.sh                 # the same, for payouts
 ./mvnw -Pmodel test -Dtest=PaymentModelProperties,RefundStatefulProperties   # 1000 sequences each, slow
 ```
 
-Last measured on 2026-11-04 from a fresh clone of `main` at `fdc94b5` with empty Maven and npm caches, on Windows 11:
+Last measured on 2026-11-07 from a fresh clone of `main` at `ffacd36` (after P11), on Windows 11:
 
 | Command | Result | Time |
 |---|---|---|
-| `./mvnw verify` | 1800 tests, 0 failures | 48 min |
-| `./mvnw -f simulator/pom.xml verify` | 154 tests, 0 failures | 2 min |
-| `npm run check` | 32 tests, 0 failures | under 1 min |
-| `npm run test:e2e` | 12 tests, 0 failures | 3 min |
-| `smoke-p2`, `smoke-p3`, `smoke-p4`, `smoke-p5` | All pass | 2–5 min each |
+| `./mvnw verify` | 2001 tests, 0 failures | 55 min |
+| `./mvnw -f simulator/pom.xml verify` | 256 tests, 0 failures | a few minutes |
+| `npm run check` | 50 tests, 0 failures | under 1 min |
+| `npm run test:e2e` | 10 scenarios, 23 tests, 0 failures | about 6 min |
+| `smoke-p2`, `smoke-p3`, `smoke-p4`, `smoke-p5` | All pass | 1–4 min each |
+| `sh scripts/demo/check-reset.sh` | Pass | a few minutes |
+| Python: `agent/tests`, `agent/service/tests`, `agent/mcp/tests`, `scripts/ops/tests`, `eval.sh --check` | 316, 36, 20 and 12 tests pass; evaluation unchanged | about 1 min |
 
-Model tests weren't part of that local run. On `main` at `fdc94b5` they passed in [GitHub Actions](https://github.com/itsChihyeh/LedgerLab/actions/workflows/ci.yml). Run locally on branch `p6`, each passed 1000 sequences in 52–78 minutes. They use fixed seeds, so a rerun replays the same sequences.
+Model tests weren't part of that local run; on `main` at `ffacd36` they passed in [GitHub Actions](https://github.com/itsChihyeh/LedgerLab/actions/workflows/ci.yml) (1000 sequences each). They use fixed seeds, so a rerun replays the same sequences.
 
 CI also runs PIT mutation testing on the `ledger` module only (133 mutations, 113 killed, 85%, at `fdc94b5`).
 
@@ -150,6 +152,16 @@ See [agent/README.md](agent/README.md), the [P8 handoff](docs/handoff/p8.md), th
 ### In the workbench and over MCP (P9)
 
 The issue page of the reconciliation workbench has an investigation panel: a small local service runs the agent on request, and the panel shows its conclusion with clickable citations. A person can adopt only two kinds of conclusion (a split bank deposit, a processor fee difference); adopting just opens a pre-filled form, and nothing is written until the person submits it through the existing correction or accept endpoint. The agent itself still has no write access. The same read-only tools are also offered as a stdio MCP server for other agent clients. The panel runs the local stand-in, not an external model, and says so. See the [P9 handoff](docs/handoff/p9.md) and the [design](docs/design/agent-workbench-and-mcp.md).
+
+## Logs, metrics and alerts (P10–P11)
+
+Set `LEDGERLAB_LOG_FORMAT=logstash` and the app writes one JSON object per line, carrying the request id and the business ids (`eventId`, `commandId`, `runId`, `issueId`). Request bodies, signatures and keys never appear in the logs. Prometheus metrics are on a separate management port bound to 127.0.0.1 (`/actuator/prometheus` on 8079), never on the public port. Four alert rules are in `ops/prometheus/alerts.yml`: the inbox is stuck, outbound commands hit their attempt limit, a reconciliation run failed, and the app's metrics are gone. Each rule is tested with `promtool`. Alertmanager sends alerts only to a local receiver, and nothing leaves the machine:
+
+```sh
+python scripts/ops/alert-sink.py --out alerts.jsonl   # writes each notification as one JSON line
+```
+
+Tests drive the inbox alert from the real app through Prometheus and Alertmanager to a receiver, firing and then resolved (`AlertDeliveryTest`). The runbook is [docs/ops/runbook.md](docs/ops/runbook.md). Distributed tracing is planned but not built: [docs/design/tracing.md](docs/design/tracing.md) (Chinese).
 
 ## Read more
 

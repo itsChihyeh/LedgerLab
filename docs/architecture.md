@@ -4,7 +4,7 @@ This is the English entry point. The design documents and ADRs are in Chinese; e
 
 ## The problem
 
-A small platform collects card payments for one merchant in CAD. A processor (a Stripe-compatible simulator, or Stripe test mode on branch `p6`) reports captures, payouts and refunds by webhook. The platform has to keep correct books even though webhooks repeat and arrive out of order, responses get lost, and three parties can disagree about what happened. No real money is involved.
+A small platform collects card payments for one merchant in CAD. A processor (a Stripe-compatible simulator, or a real Stripe test-mode account) reports captures, payouts and refunds by webhook. The platform has to keep correct books even though webhooks repeat and arrive out of order, responses get lost, and three parties can disagree about what happened. No real money is involved.
 
 ## System
 
@@ -44,7 +44,7 @@ flowchart LR
 
 The arrows show the main paths, not every module dependency. Statement files reach the app through its import API, and the simulator's data is stored in its own PostgreSQL schemas. Spring Modulith's `verify()` test fails the build if a module crosses its declared boundary. The app never reads the simulator's schemas, and the simulator shares no Java code with the app ([ADR-0013](adr/0013-modular-monolith-and-simulators.md)).
 
-Stripe test mode replaces the fake processor on branch `p6` only. See [Status](../README.md#status).
+Stripe test mode can replace the fake processor, as a long-running local stack; CI replays recorded, redacted fixtures instead ([Stripe integration](design/stripe-integration.md)).
 
 ## The money model
 
@@ -82,6 +82,11 @@ Cash moves only on bank statement evidence, never on an API response.
 | Modular monolith plus PostgreSQL | Microservices, Kafka | Money writes need one transaction. Nothing here needs a broker yet, and the failure modes are easier to test ([ADR-0013](adr/0013-modular-monolith-and-simulators.md)) |
 | A narrow outbound command table | Spring Modulith event publication registry | Refund and payout commands need query-before-resend and explicit unknown states ([ADR-0008](adr/0008-outbound-command-table.md)) |
 | A settlement-in-transit account | Book cash when the processor reports a payout | The processor saying it paid is not the bank receiving it ([ADR-0001](adr/0001-settlement-in-transit-and-batch-net.md)) |
+
+## Around the core
+
+- **Investigation agent** (`agent/`, standard-library Python, separate process): investigates one reconciliation issue through GET-only tools and cites the records it used. It has no write path. In the workbench a person must adopt its conclusion, and adopting only pre-fills a form for the existing write endpoints. The same tools are offered over MCP ([ADR-0019](adr/0019-investigation-agent-and-evaluation.md), [ADR-0020](adr/0020-agent-in-workbench-and-mcp.md)).
+- **Observability**: structured JSON logs with correlation ids, Prometheus metrics on a loopback management port, and alert rules delivered through Alertmanager to a local receiver ([ADR-0021](adr/0021-observability.md), [ADR-0022](adr/0022-alert-delivery-and-tracing-plan.md)). Business gauges are queried through the `readonly` role.
 
 ## Where to read next
 
