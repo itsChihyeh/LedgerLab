@@ -150,3 +150,7 @@ See [agent/README.md](agent/README.md), the [P8 handoff](docs/handoff/p8.md), th
 - [Money model with worked examples](docs/design/money-model.md), [acceptance criteria](docs/acceptance-criteria.md) and [decision records](docs/adr/) (Chinese)
 - [How this was built](docs/ai-usage.md): most of this code was written by AI agents, and this page says who did what
 - [Rules for coding agents](AGENTS.md) (Chinese)
+
+## License
+
+[MIT](LICENSE)
