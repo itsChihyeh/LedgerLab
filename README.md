@@ -126,3 +126,7 @@ Any figures about the real run (payments, refunds, the payout, duplicates and in
 - [Money model with worked examples](docs/design/money-model.md), [acceptance criteria](docs/acceptance-criteria.md) and [decision records](docs/adr/) (Chinese)
 - [How this was built](docs/ai-usage.md): most of this code was written by AI agents, and this page says who did what
 - [Rules for coding agents](AGENTS.md) (Chinese)
+
+## License
+
+[MIT](LICENSE)
