@@ -1,0 +1,558 @@
+{
+  "run_id": "sbx_20261102T224453022706Z",
+  "window_start": "2026-10-20T00:00:00Z",
+  "generated_at": "2026-11-06T17:23:56.704990Z",
+  "stripe": {
+    "payments": {
+      "count": 28,
+      "by_status": {
+        "succeeded": 28
+      },
+      "amount_total": 329276
+    },
+    "refunds": {
+      "count": 2,
+      "by_status": {
+        "succeeded": 2
+      },
+      "amount_total": 200
+    },
+    "payouts": {
+      "count": 1,
+      "by_status": {
+        "paid": 1
+      },
+      "amount_total": 306651
+    }
+  },
+  "local": {
+    "payments": {
+      "count": 28,
+      "by_status": {
+        "CAPTURED": 1,
+        "SETTLED": 27
+      }
+    },
+    "refunds": {
+      "count": 2,
+      "by_status": {
+        "SUCCEEDED": 2
+      },
+      "missing_locally": 0
+    },
+    "batches": {
+      "count": 1,
+      "by_status": {
+        "BANKED": 1
+      },
+      "net_total": 306651
+    }
+  },
+  "comparison": {
+    "payments_only_in_stripe": [],
+    "payments_only_local": []
+  },
+  "relay": {
+    "since": "2026-10-20T00:00:00Z",
+    "inbound": {
+      "PASS": 52,
+      "DUPLICATE": 15,
+      "DELAY": 0,
+      "HOLD_AND_REORDER": 3,
+      "DROP": 0,
+      "HOLD_TIMEOUT_RELEASE": 0
+    },
+    "outbound": {
+      "PASS": 186,
+      "DROP_RESPONSE": 1,
+      "FAIL_BEFORE_SEND": 0
+    }
+  },
+  "resend": {
+    "resend_total": 57,
+    "probe_resends": 6,
+    "listener_recovery_resends": 20,
+    "catchup_resends": 1,
+    "acceptance_resends": 30,
+    "catchup_runs": 20,
+    "events_recovered": 1,
+    "recovered_event_ids": [],
+    "still_missing_event_ids": [],
+    "latest_catchup": "2026-11-06T16:53:04.454578Z"
+  },
+  "invariants": {
+    "checked_at": "2026-11-06T17:23:56.675097502Z",
+    "violations_now": 0,
+    "checks_in_saved_results": 15,
+    "violations_in_saved_results": 0,
+    "all_hold": true
+  },
+  "reconciliation": {
+    "open_by_category": {
+      "FEE_MISMATCH": 27,
+      "PAYMENT_NOT_SETTLED": 1
+    },
+    "acceptance_finding_count": 28,
+    "untraceable": 0,
+    "replay_identical": true
+  },
+  "fee_analysis": {
+    "count": 27,
+    "by_country": [
+      {
+        "country": "US",
+        "count": 27,
+        "brands": [
+          "visa"
+        ],
+        "amount_range": [
+          690,
+          19446
+        ],
+        "differences": [
+          6,
+          10,
+          19,
+          24,
+          29,
+          48,
+          51,
+          62,
+          66,
+          72,
+          92,
+          93,
+          96,
+          97,
+          103,
+          109,
+          118,
+          130,
+          134,
+          140,
+          145,
+          147,
+          150,
+          152,
+          154,
+          156
+        ],
+        "stripe_fee_rule": {
+          "fixed": 30,
+          "bps": 370
+        },
+        "surplus_over_local_rule": null,
+        "unexplained": []
+      }
+    ],
+    "rows": [
+      {
+        "charge": "ch_3UXVJGF5hIinUF491G8h6vW1",
+        "country": "US",
+        "brand": "visa",
+        "amount": 690,
+        "stripe_fee": 56,
+        "local_fee": 50,
+        "difference": 6
+      },
+      {
+        "charge": "ch_3UXQCaF5hIinUF490AcFsuFL",
+        "country": "US",
+        "brand": "visa",
+        "amount": 1234,
+        "stripe_fee": 76,
+        "local_fee": 66,
+        "difference": 10
+      },
+      {
+        "charge": "ch_3UXVJLF5hIinUF4907UrBi5u",
+        "country": "US",
+        "brand": "visa",
+        "amount": 2403,
+        "stripe_fee": 119,
+        "local_fee": 100,
+        "difference": 19
+      },
+      {
+        "charge": "ch_3UXWG3F5hIinUF490AL1MoKL",
+        "country": "US",
+        "brand": "visa",
+        "amount": 3065,
+        "stripe_fee": 143,
+        "local_fee": 119,
+        "difference": 24
+      },
+      {
+        "charge": "ch_3UXWG1F5hIinUF490VIvEm1u",
+        "country": "US",
+        "brand": "visa",
+        "amount": 3593,
+        "stripe_fee": 163,
+        "local_fee": 134,
+        "difference": 29
+      },
+      {
+        "charge": "ch_3UXVJ3F5hIinUF490mPLewb6",
+        "country": "US",
+        "brand": "visa",
+        "amount": 6024,
+        "stripe_fee": 253,
+        "local_fee": 205,
+        "difference": 48
+      },
+      {
+        "charge": "ch_3UXVJ7F5hIinUF491Jd2Haef",
+        "country": "US",
+        "brand": "visa",
+        "amount": 6414,
+        "stripe_fee": 267,
+        "local_fee": 216,
+        "difference": 51
+      },
+      {
+        "charge": "ch_3UXVJ8F5hIinUF490DURxNaE",
+        "country": "US",
+        "brand": "visa",
+        "amount": 7795,
+        "stripe_fee": 318,
+        "local_fee": 256,
+        "difference": 62
+      },
+      {
+        "charge": "ch_3UXVJIF5hIinUF491lFMMx7n",
+        "country": "US",
+        "brand": "visa",
+        "amount": 8219,
+        "stripe_fee": 334,
+        "local_fee": 268,
+        "difference": 66
+      },
+      {
+        "charge": "ch_3UXVJKF5hIinUF491oYhCYlj",
+        "country": "US",
+        "brand": "visa",
+        "amount": 8947,
+        "stripe_fee": 361,
+        "local_fee": 289,
+        "difference": 72
+      },
+      {
+        "charge": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+        "country": "US",
+        "brand": "visa",
+        "amount": 11500,
+        "stripe_fee": 456,
+        "local_fee": 364,
+        "difference": 92
+      },
+      {
+        "charge": "ch_3UXVJEF5hIinUF490xwOosYR",
+        "country": "US",
+        "brand": "visa",
+        "amount": 11654,
+        "stripe_fee": 461,
+        "local_fee": 368,
+        "difference": 93
+      },
+      {
+        "charge": "ch_3UXVJ9F5hIinUF490lpXVPLE",
+        "country": "US",
+        "brand": "visa",
+        "amount": 12051,
+        "stripe_fee": 476,
+        "local_fee": 379,
+        "difference": 97
+      },
+      {
+        "charge": "ch_3UXVJHF5hIinUF49169PYJWP",
+        "country": "US",
+        "brand": "visa",
+        "amount": 12063,
+        "stripe_fee": 476,
+        "local_fee": 380,
+        "difference": 96
+      },
+      {
+        "charge": "ch_3UXVJDF5hIinUF491SdmOPZb",
+        "country": "US",
+        "brand": "visa",
+        "amount": 12896,
+        "stripe_fee": 507,
+        "local_fee": 404,
+        "difference": 103
+      },
+      {
+        "charge": "ch_3UXWG5F5hIinUF491JaEZdV1",
+        "country": "US",
+        "brand": "visa",
+        "amount": 13610,
+        "stripe_fee": 534,
+        "local_fee": 425,
+        "difference": 109
+      },
+      {
+        "charge": "ch_3UXVJJF5hIinUF49018yzUkZ",
+        "country": "US",
+        "brand": "visa",
+        "amount": 14786,
+        "stripe_fee": 577,
+        "local_fee": 459,
+        "difference": 118
+      },
+      {
+        "charge": "ch_3UXVJ4F5hIinUF490TT1MW2v",
+        "country": "US",
+        "brand": "visa",
+        "amount": 16189,
+        "stripe_fee": 629,
+        "local_fee": 499,
+        "difference": 130
+      },
+      {
+        "charge": "ch_3UXVJFF5hIinUF4902OLG7ZH",
+        "country": "US",
+        "brand": "visa",
+        "amount": 16693,
+        "stripe_fee": 648,
+        "local_fee": 514,
+        "difference": 134
+      },
+      {
+        "charge": "ch_3UXVJCF5hIinUF490R3KtJdn",
+        "country": "US",
+        "brand": "visa",
+        "amount": 17481,
+        "stripe_fee": 677,
+        "local_fee": 537,
+        "difference": 140
+      },
+      {
+        "charge": "ch_3UXVJMF5hIinUF490VqzYb1p",
+        "country": "US",
+        "brand": "visa",
+        "amount": 18051,
+        "stripe_fee": 698,
+        "local_fee": 553,
+        "difference": 145
+      },
+      {
+        "charge": "ch_3UXVJ6F5hIinUF490JWzgFyF",
+        "country": "US",
+        "brand": "visa",
+        "amount": 18381,
+        "stripe_fee": 710,
+        "local_fee": 563,
+        "difference": 147
+      },
+      {
+        "charge": "ch_3UXWG7F5hIinUF490TOqZRVy",
+        "country": "US",
+        "brand": "visa",
+        "amount": 18732,
+        "stripe_fee": 723,
+        "local_fee": 573,
+        "difference": 150
+      },
+      {
+        "charge": "ch_3UXVJBF5hIinUF4902mb7UYE",
+        "country": "US",
+        "brand": "visa",
+        "amount": 18908,
+        "stripe_fee": 730,
+        "local_fee": 578,
+        "difference": 152
+      },
+      {
+        "charge": "ch_3UXWG6F5hIinUF491XMYHYl4",
+        "country": "US",
+        "brand": "visa",
+        "amount": 19179,
+        "stripe_fee": 740,
+        "local_fee": 586,
+        "difference": 154
+      },
+      {
+        "charge": "ch_3UXWG4F5hIinUF490a0eFovT",
+        "country": "US",
+        "brand": "visa",
+        "amount": 19272,
+        "stripe_fee": 743,
+        "local_fee": 589,
+        "difference": 154
+      },
+      {
+        "charge": "ch_3UXVJ5F5hIinUF491Ackc8cR",
+        "country": "US",
+        "brand": "visa",
+        "amount": 19446,
+        "stripe_fee": 750,
+        "local_fee": 594,
+        "difference": 156
+      }
+    ]
+  },
+  "acceptance": {
+    "AC-8.4": {
+      "result": "PASS",
+      "finished_at": "2026-11-06T17:18:52.630852Z",
+      "file": "accept-20261106T171852630852Z.json",
+      "facts": {
+        "captured_count": 26,
+        "generated_count": 26
+      },
+      "history": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "FAIL",
+        "PASS"
+      ],
+      "invariant_violations": 0
+    },
+    "AC-8.5": {
+      "result": "PASS",
+      "finished_at": "2026-11-03T01:13:28.458777Z",
+      "file": "accept-20261103T011328458777Z.json",
+      "facts": {
+        "captured_count": 9,
+        "resend_count": 12
+      },
+      "history": [
+        "FAIL",
+        "PASS",
+        "PASS"
+      ],
+      "invariant_violations": 0
+    },
+    "AC-8.6": {
+      "result": "PASS",
+      "finished_at": "2026-11-06T02:43:48.214577Z",
+      "file": "accept-ac86-20261106T024348214577Z.json",
+      "facts": {
+        "stripe_refund_statuses": [
+          "succeeded"
+        ],
+        "pending_observed": false
+      },
+      "history": [
+        "PASS",
+        "PASS"
+      ],
+      "invariant_violations": 0
+    },
+    "AC-8.8": {
+      "result": "PASS",
+      "finished_at": "2026-11-06T16:53:06.964644Z",
+      "file": "accept-ac88-20261106T165306964644Z.json",
+      "facts": {},
+      "history": [
+        "WAITING",
+        "WAITING",
+        "PASS"
+      ],
+      "invariant_violations": 0
+    },
+    "AC-8.9": {
+      "result": "PASS",
+      "finished_at": "2026-11-06T02:44:53.825937Z",
+      "file": "accept-ac89-20261106T024453825937Z.json",
+      "facts": {
+        "finding_count": 28,
+        "replay_identical": true,
+        "untraceable": []
+      },
+      "history": [
+        "FAIL",
+        "PASS",
+        "PASS"
+      ],
+      "invariant_violations": 0
+    }
+  },
+  "fixtures": [
+    {
+      "scenario": "s1 s1-payment",
+      "files": 2,
+      "status": "已录制"
+    },
+    {
+      "scenario": "s2 s2-refund",
+      "files": 5,
+      "status": "已录制"
+    },
+    {
+      "scenario": "s3 s3-refund-pending",
+      "files": 0,
+      "status": "测试模式未复现（不录）"
+    },
+    {
+      "scenario": "s4 s4-payout",
+      "files": 5,
+      "status": "已录制"
+    }
+  ],
+  "known_differences": [
+    {
+      "item": "PaymentIntent 创建参数（T01，2026-11-02）",
+      "fake": "fake Stripe 不实现 PaymentIntent，无法暴露这个差异",
+      "real": "当前测试账号拒绝显式 `payment_method_types`；9.3 已按审查改用 automatic payment methods、禁止 redirect 并断言 charge 类型 card，两笔支付实测成功"
+    },
+    {
+      "item": "本地 webhook 监听鉴权（T01，2026-11-02）",
+      "fake": "fake Stripe 直接发签名 webhook，不需要 Stripe CLI 登录",
+      "real": "CLI 1.55.6 用当前受限密钥获取签名密钥失败（`PERMISSION_ERROR`）；需要用户本人登录后再测"
+    },
+    {
+      "item": "国际卡手续费（T01，2026-11-02）",
+      "fake": "默认按合同公式计算，故障计划可覆盖 fee；不模拟卡国家费率",
+      "real": "美国 bypass 卡 CAD 1234 分 fee=76，比国内公式 66 多 10；加拿大卡 CAD 10000 分 fee=320，与合同相等。只记录实际差额，不推导完整国际卡费率"
+    },
+    {
+      "item": "资金可用时间（T01，2026-11-02）",
+      "fake": "默认 availability-delay=PT0S；可显式配置延迟，使用模拟时钟",
+      "real": "bypass 净额 1158 分立即 available；加拿大卡净额 9680 分 pending、available_on=1794182400，不应要求普通卡立即可用"
+    },
+    {
+      "item": "国内费用公式对真实批次的差异（T07，2026-11-06）",
+      "fake": "批次与 fake Stripe 公式一致时无 FEE_MISMATCH",
+      "real": "对账 PROCESSOR 对 payout `po_…` 的 27 笔支付全部报 `FEE_MISMATCH`（本地期望按国内公式、批次行是 Stripe 实际费用；该 payout 的支付大多是美国 bypass 卡，见“国际卡手续费”一条）。不是账本错误：批次净额与 Stripe payout 金额相等。真实对账会如实报这类差异。T08 逐笔核对：27 笔都是美国 visa，Stripe 费用 = `30 + round(3.7%)`，无例外（见第 7 节第 2 条）"
+    },
+    {
+      "item": "探测阶段的未结算支付（T07，2026-11-06）",
+      "fake": "无",
+      "real": "T01 探测创建的一笔支付（待结算余额）不在任何 payout 内，AGING 报 `PAYMENT_NOT_SETTLED`；等其进入后续 payout 才会消失"
+    },
+    {
+      "item": "退款 pending（T07，2026-11-06）",
+      "fake": "`force_pending` 可构造 pending",
+      "real": "余额充足时两笔 100 分退款都直接 `succeeded`，未观察到 pending"
+    },
+    {
+      "item": "payout 首次出现时间（T07，2026-11-06）",
+      "fake": "按需创建 payout，可立即生成",
+      "real": "首个自动 payout 在最后一笔 charge 之后约 71.6 小时出现；`payout.created` 与 `reconciliation_completed` 同一秒，`paid` 约 5 分钟后"
+    },
+    {
+      "item": "退款事件序列（T08，2026-11-06）",
+      "fake": "直接成功只发 `refund.created(succeeded)`；不发 `refund.updated`",
+      "real": "同一笔退款先 `refund.created`（`destination_details.card.reference_status=pending`），紧接着 `refund.updated`（status 仍是 succeeded，卡参考号填上、`reference_status=available`）。AC-8.6 带着这两个真实事件实测通过、不变量零违反。未改 fake：改了会动 P3 既有测试的事件序列，需要单独决定"
+    },
+    {
+      "item": "payout 创建时的状态（T08，2026-11-06）",
+      "fake": "`payout.created` 的 status 是 `pending`、`reconciliation_status` 是 `in_progress`，要等 `reconcile` 动作才 `completed`",
+      "real": "`payout.created` 时 status 已是 `in_transit`、`reconciliation_status` 已是 `completed`（同一秒又来 `reconciliation_completed`）。契约测试断言了两边的这个差异；第 7 节第 8 条已说明批次触发保留了查询 payout 对象的后备路径；未改 fake"
+    },
+    {
+      "item": "payout 明细分页（T08，2026-11-06）",
+      "fake": "按 limit 分页，可注入第 N 页失败和重复行",
+      "real": "夹具只有一页（28 行，包含 payout 自己的一行），真实多页行为未录到；分页正确性由适配器单测和 fake 的分页故障覆盖"
+    },
+    {
+      "item": "退款对象多出的字段（T08，2026-11-06）",
+      "fake": "只有 id、charge、amount、status、metadata 等所用字段",
+      "real": "真实对象还带 `balance_transaction`、`destination_details`、`payment_intent`、`payment_method`、`receipt_number` 等；`used-fields.json` 只列我们用到的字段，多出的字段被忽略"
+    }
+  ]
+}

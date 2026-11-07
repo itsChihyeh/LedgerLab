@@ -1,0 +1,30 @@
+{
+  "id": "re_3UXVJ2F5hIinUF491JYoNysJ",
+  "object": "refund",
+  "amount": 100,
+  "balance_transaction": "txn_3UXVJ2F5hIinUF491QMN4BZY",
+  "charge": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+  "created": 1793932754,
+  "currency": "cad",
+  "customer": null,
+  "customer_account": null,
+  "destination_details": {
+    "card": {
+      "reference": "641894054276669",
+      "reference_status": "available",
+      "reference_type": "acquirer_reference_number",
+      "type": "refund"
+    },
+    "type": "card"
+  },
+  "metadata": {
+    "ledgerlab_refund_id": "rfd_01M6QBJZ4TAY557ZF41V1QG79C"
+  },
+  "payment_intent": "pi_3UXVJ2F5hIinUF491Xw7Lw5e",
+  "payment_method": "pm_1UXVJ2F5hIinUF495nSQg3SN",
+  "reason": null,
+  "receipt_number": null,
+  "source_transfer_reversal": null,
+  "status": "succeeded",
+  "transfer_reversal": null
+}

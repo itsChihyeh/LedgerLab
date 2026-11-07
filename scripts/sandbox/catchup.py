@@ -74,6 +74,13 @@ def missing_events(events, lookup):
     return missing
 
 
+def event_ids(initial_ids, still_missing):
+    # Which events this run brought back, and which are still absent after resend.
+    remaining = [event['id'] for event in still_missing]
+    return {'recovered_event_ids': [i for i in initial_ids if i not in remaining],
+            'missing_event_ids': remaining}
+
+
 def lookup_event(event_id):
     return get_json(APP, '/api/events/' + event_id, missing_ok=True)
 
@@ -146,8 +153,9 @@ def catchup(window_start=None):
                 resend(event['id'])
             except Failure as error:
                 report['resend_failures'].append({'event_id': event['id'], 'reason': str(error)})
+        initial_ids = [event['id'] for event in missing]
         missing = await_missing(missing)
-        report.update(missing_count=len(missing), missing_events=missing)
+        report.update(missing_count=len(missing), missing_events=missing, **event_ids(initial_ids, missing))
         write_json(STATE / 'missing-events.json', {'run_id': run['run_id'], 'window_start': run['window_start'],
                                                   'checked_at': instant(), 'events': missing})
         sync_bank(run, report)

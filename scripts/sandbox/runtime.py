@@ -63,7 +63,9 @@ def emit(value):
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    # newline='\n': fixtures are hashed byte-for-byte, so Windows must not write CRLF.
+    with temporary.open('w', encoding='utf-8', newline='\n') as stream:
+        stream.write(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
     temporary.replace(path)
 
 
