@@ -73,8 +73,9 @@ python -m unittest discover -s agent/service/tests -t agent/service
 | `POST /agent/investigations` with `{"issueId":"iss_…"}` (JSON only) | `201` investigation record; `400`, `409 busy`, `413`, `415` |
 | `GET /agent/investigations?issueId=iss_…` | `200` the last 20 records, newest first |
 | `GET /agent/investigations/{runId}` | `200` record, or `404` |
+| `GET /agent/metrics` | `200` Prometheus text 0.0.4 (investigation count by status, duration histogram, tool calls; in-process, reset on restart); `400` with a query string |
 
-Records are appended to a JSONL file (`agent/.runs/` is git-ignored); the code is in `agent/service/ledgerlab_agent_service/` (`app.py` HTTP, `runner.py` one investigation, `store.py` the file). The service reaches the backend only through the agent's read-only tool layer.
+Records are appended to a JSONL file (`agent/.runs/` is git-ignored); the code is in `agent/service/ledgerlab_agent_service/` (`app.py` HTTP, `runner.py` one investigation, `store.py` the file, `metrics.py` the counters). The service reaches the backend only through the agent's read-only tool layer.
 
 ## MCP service (P9)
 

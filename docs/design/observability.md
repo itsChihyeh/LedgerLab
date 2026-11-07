@@ -126,3 +126,9 @@
 - `webhook.rejected` 的 `reason`：`invalid_signature`、`invalid_envelope`（签名对但包体残缺，400）；`livemode` 事件按设计是先收进 inbox，再由 worker 拒绝，所以 `reason=livemode` 的行由 inbox worker 写，带 `eventId`。`webhook.received` 另带 `outcome`（`NEW`／`DUPLICATE`／`CONFLICT`），`duplicate` 在后两种为 `true`。
 - 差异事件：对账运行内的开／重开／转状态由 `IssueStore` 写；入站管道开的差异（`JdbcIngestionIssues.open`，没有 `runId`）也写 `recon.issue.opened`，由 inbox worker 的 `eventId` 关联；入站自动收尾（付款已入账、银行退回）写 `recon.issue.transition`。`recon.run.finished` 的 `opened`／`reopened`／`explained` 由本次运行自己累计，不再查库；干跑不写这行。
 - **测试**：捕获日志用 `testsupport/LogEvents`（挂在根 logger 上的内存 appender，读 MDC 和 key/value，按新行唤醒等待，不 sleep）；JSON 格式本身用 `StructuredLogsTest` 的控制台捕获验证（Spring Boot 初始化日志系统之前打出的行不算，之后每行都要能解析；JVM 和 Mockito 直接写 stderr 的提示行除外）。
+
+## 实现备注（P10-T02）
+- **`status` 的实际取值是 `ok`／`budget_exhausted`／`error`，没有 `refused`**（`agent.py`、`baseline.py` 只会以 `ok` 或 `budget_exhausted` 收尾，服务自己把失败记录标成 `error`）。第 3 节写的 `ok|refused|error` 与代码不符，标签按实际枚举：三个值始终都输出（没发生过的为 0）；未知状态一律计入 `error`，标签集保持封闭。
+- 耗时用服务上下文里注入的单调时钟（默认 `time.monotonic`），从开始跑调查到记录追加写完。若记录写入失败（500），也按 `error` 计一次、工具调用数记 0。409 和各类 4xx 在跑调查之前就返回，不计数。
+- `GET /agent/metrics?x=1` 返回 `400 invalid_request`（`/agent/health?x=1` 仍是 404，沿用原行为）。桶上界是闭区间（`le`），`le` 的文本用 `%g` 形式（`0.01`、`1`、`30`）。
+- 实例在 `InvestigationService.metrics`，模块 `metrics.py` 无全局状态。`test_static.py` 未改：新模块只用 `threading`，没有触发任何禁用模式。
