@@ -74,6 +74,11 @@ ModelResponse = {content:[text | tool_use{id,name,input}], stop_reason, usage{in
 
 替身的分数应当等于规则基线；不等就说明 Agent 循环或核验器丢了东西。报告里替身一律标注“替身，不代表大模型能力”。
 
+**实现备注（P8-T07，模型接口的扩展）**：
+- 内容块增加 `ReasoningBlock{text, provider}`（思考内容）；`ToolUseBlock` 增加 `invalid_reason`（提供方给的参数不是可用的 JSON 对象时置位，`input` 为空）；`Usage` 增加 `cache_hit_tokens`、`cache_miss_tokens`、`reasoning_tokens`（输入＝命中＋未命中，思考 token 已含在输出里；不报告这些的实现保持 0）。新增 `ModelError(fatal)`。
+- Agent 循环：assistant 回复（含思考块）原样追加进对话；`invalid_reason` 非空的工具调用不执行，按“无效参数”回传错误（不占工具调用次数，仍受 8 轮上限约束），若是 `submit_conclusion` 则等同一次无效结论（第二次即 `invalid_output`）；`stop_reason` 为 `max_tokens`／`content_filter`／`insufficient_system_resource`／`aborted` 时不再继续、不自动重试，以 `invalid_output` 结束，原因写进 `validation_errors`（没有新增 `provider_error` 状态：另立状态会让这类失败不计入 5% 的输出不合格率）；非致命的 `ModelError`（重试用尽、回复格式不对、400／422）同样以 `invalid_output` 结束该题，致命的（401／402／403／404）向上抛，由评测器停下并把结果标未完成。
+- `system.md` 本任务没有改（没有开发集上的证据支持改动）。
+
 ## 5. 操作手册（SOP）与检索
 
 - `agent/sop/reconciliation-sop.md`：项目自写的对账操作手册，按条款编号（`SOP-3.2` 这种），每条写：适用的差异类别、要看哪些证据、各原因的判别特征、建议的处理动作、什么情况下不能下结论。条款与第 6 节的原因表一一对应，另有通用条款（证据规则、拒答规则、提示注入规则）。
@@ -246,6 +251,17 @@ ModelResponse = {content:[text | tool_use{id,name,input}], stop_reason, usage{in
 - 花钱保护：价格表 `agent/pricing.json` 的 DeepSeek 价格未核实前为 `null`，此时拒绝运行；`eval --model deepseek:<model>` 先打印预计费用，没有 `--confirm-spend <美元上限>` 就不发请求；累计费用超过上限立即停止并写已完成部分的报告。
 - 模型（`deepseek-flash` 或 `deepseek-v4-pro`）、思考强度和费用上限由用户定。合同测试用手写的响应夹具，不联网。
 - 评测数据全部是合成数据，但调用时会发送到 DeepSeek 的服务器（用户已知悉）。
+
+**实现备注（P8-T07，DeepSeek 适配器与花钱保护）**：
+- **接口要点**（2026-11-07 读 API 参考、Tool Calls、Thinking Mode 三页得到，价格页没读到）：`POST https://api.deepseek.com/chat/completions`，`Authorization: Bearer`；`tool_choice` 恒为 `auto`；思考强度 `none` 发 `thinking:{type:disabled}`，其余发 `thinking:{type:enabled}` 加 `reasoning_effort`；不发 `temperature`；不用 `strict`（它需要 beta 基址）；`max_tokens` 用适配器自己的值（默认 8192，思考 token 也算在内，不用 Agent 预算里的 2048）。工具结果用 `role:tool`，且必须紧跟在发起调用的 assistant 消息之后，所以一条同时含工具结果和文字的内部消息会先拆出工具消息。`reasoning_content` 只回传 `provider == "deepseek"` 的思考块。
+- **重试**：429、5xx、网络错误最多重试 2 次（退避 1 秒、2 秒，`sleep` 可注入），4xx 不重试。401／402／403／404（密钥、余额、路径或模型名不对，之后每个请求都会同样失败）是致命错误。重定向不跟随。
+- **密钥**：构造 `DeepSeekModel` 时读 `DEEPSEEK_API_KEY`（缺失立即报错，此时还没有任何请求）；对象的 `repr`、抛出的异常信息都不含密钥（异常文本里出现密钥串会被替换成 `[redacted]`）；测试用占位串断言所有输出和写出的文件里搜不到。
+- **检查顺序**（`external.prepare`，`eval` 和 `investigate` 共用）：价格表无空字段 → 打印预计费用到标准错误 → 必须有 `--confirm-spend`（> 0）→ 密钥 → 才创建模型对象。任何一步失败都没有发出过请求。`eval` 还要求 `--out`（付费运行必须留下结果文件）。
+- **预计费用**：`eval` 对同一批题先跑一遍替身，取它估算的输入 token × 3（`--est-input-multiplier`）全部按缓存未命中价，加每题 2000 输出 token（`--est-output-tokens`）；`investigate` 单题用固定的 14000 输入＋2000 输出。这只是规划数字，上限靠运行中的累计。
+- **累计与停止**：`GuardedModel` 在每次请求前检查“已花费 > 上限”，是就不发并抛 `SpendLimitReached`，每次回复后按实际 `usage` 记账。所以最多超出一次请求的费用；进行中的那一题被丢弃，但它的费用计入。评测器在每道题开始前也检查，停下后返回已完成的题，结果文件标 `completed: false`、`incomplete_reason: 达到费用上限`，命令退出码 3。
+- **结果文件与报告**：`eval --model deepseek:<model> --out f.json` 写 `kind: external_run` 的 JSON（配置、价格及来源和日期、上限、实际费用、日期、提交、代码指纹、指标、逐题行）。`eval-report --external f1.json f2.json …` 把它们并入报告：总表和第 4 节多出“外部 dev／test／hard”列（未完成的列头带原因），第 7 节写配置、价格来源、实际费用、各集合状态、结构性要求是否满足和答错的分布。外部模型的结构性要求只在报告里列出，不影响 `--check` 的退出码（`--check` 守的是提交进仓库的本地运行）。
+- **测试集纪律**：外部评测在 test、hard 上也写 `runs.log`，模型配置记为 `deepseek:<模型>:<思考强度>`；`--limit N` 的冒烟运行也算看过，所以冒烟请在 dev 上做。
+- **价格表**：`agent/pricing.json` 的 `deepseek` 段先全是 `null`，任何一项为 `null` 就拒绝运行。**价格未核实**：由用户或执行者读 DeepSeek 价格页后填入三个价格、`source_url` 和 `checked_at`。
 
 ## 11. 交付物
 

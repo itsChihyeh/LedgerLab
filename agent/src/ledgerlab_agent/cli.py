@@ -5,19 +5,25 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Callable, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from typing import TextIO
 
 from pathlib import Path
 
+from ledgerlab_agent import external
 from ledgerlab_agent.agent import Budget, Investigation, investigate
 from ledgerlab_agent.baseline import BaselineInvestigator
-from ledgerlab_agent.model import ModelClient, ScriptedModel
+from ledgerlab_agent.deepseek_model import Transport as ModelTransport
+from ledgerlab_agent.model import ModelClient, ModelError, ScriptedModel
+from ledgerlab_agent.pricing import PRICING_PATH, Prices, SpendLimitReached, estimate_run_usd
 from ledgerlab_agent.replay import ReplayTransport, load_snapshot
 from ledgerlab_agent.sop import SopSearch, load_sop
 from ledgerlab_agent.stub_model import StubModel
 from ledgerlab_agent.tools import ToolRegistry
 from ledgerlab_agent.transport import HttpTransport, Transport
+
+from ledgerlab_agent.deepseek_model import REASONING_EFFORTS
 
 BASELINE = "baseline"
 
@@ -44,6 +50,18 @@ def build_model(spec: str) -> ModelClient:
     return factory(arg)
 
 
+def add_external_arguments(parser: argparse.ArgumentParser) -> None:
+    """Options for an external model (`--model deepseek:<model>`); shared with the eval command."""
+    parser.add_argument("--reasoning-effort", choices=REASONING_EFFORTS, default=external.DEFAULT_REASONING_EFFORT)
+    parser.add_argument("--max-tokens", type=int, default=external.DEFAULT_MAX_TOKENS, help="output limit per request, thinking included")
+    parser.add_argument(
+        "--confirm-spend",
+        type=float,
+        metavar="USD",
+        help="required for an external model: the most you allow this run to cost; no request is sent without it",
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ledgerlab-agent")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -52,7 +70,8 @@ def _parser() -> argparse.ArgumentParser:
     source = inv.add_mutually_exclusive_group(required=True)
     source.add_argument("--base-url", help="live backend, e.g. http://127.0.0.1:8080")
     source.add_argument("--snapshot", type=Path, help="recorded snapshot (replay), no backend needed")
-    inv.add_argument("--model", required=True, help="baseline | stub | scripted:<path.json>")
+    inv.add_argument("--model", required=True, help="baseline | stub | scripted:<path.json> | deepseek:<model>")
+    add_external_arguments(inv)
     inv.add_argument("--max-tool-calls", type=int, default=Budget.max_tool_calls)
     inv.add_argument("--json", action="store_true", help="print the conclusion as JSON")
     return parser
@@ -71,24 +90,51 @@ def _summary(result: Investigation) -> str:
     return "\n".join(lines)
 
 
-def main(argv: Sequence[str] | None = None, stdout: TextIO | None = None, stderr: TextIO | None = None) -> int:
+def _single_estimate(prices: Prices) -> float:
+    return estimate_run_usd(
+        1, external.SINGLE_INVESTIGATION_INPUT_TOKENS, prices, 1.0, external.DEFAULT_OUTPUT_TOKENS_PER_QUESTION
+    )
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+    model_transport: ModelTransport | None = None,
+    environ: Mapping[str, str] | None = None,
+    pricing_path: Path = PRICING_PATH,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """`model_transport`, `environ`, `pricing_path` and `sleep` exist for tests of the external model path."""
     out = stdout or sys.stdout
     err = stderr or sys.stderr
     args = _parser().parse_args(argv)
+    spent: str | None = None
     try:
+        guarded = None
+        if external.is_external(args.model):  # every guard runs before anything else is set up
+            config = external.parse_spec(args.model, args.reasoning_effort, args.max_tokens)
+            guarded, _ = external.prepare(
+                config, args.confirm_spend, _single_estimate, err, model_transport, environ, sleep, pricing_path
+            )
         transport: Transport = (
             ReplayTransport(load_snapshot(args.snapshot)) if args.snapshot else HttpTransport(args.base_url)
         )
         budget = Budget(max_tool_calls=args.max_tool_calls)
         sop = load_sop()
         tools = ToolRegistry(transport, local_tools=[SopSearch(sop)])
-        if args.model == BASELINE:
+        if guarded is not None:
+            result = investigate(args.issue_id, guarded, tools, budget)
+            spent = f"spent {guarded.guard.spent_usd:.4f} USD of the {guarded.guard.cap_usd:.4f} USD cap"
+        elif args.model == BASELINE:
             result = BaselineInvestigator(tools, sop, budget).investigate(args.issue_id)
         else:
             result = investigate(args.issue_id, build_model(args.model), tools, budget)
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, ModelError, SpendLimitReached) as exc:
         print(f"error: {exc}", file=err)
         return 2
+    if spent:
+        print(spent, file=err)
     if args.json:
         print(json.dumps(result.conclusion.as_dict(), ensure_ascii=False, indent=2), file=out)
     else:

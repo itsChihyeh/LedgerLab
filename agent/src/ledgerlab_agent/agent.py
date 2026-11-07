@@ -14,9 +14,12 @@ from ledgerlab_agent import conclusion as conclusion_mod
 from ledgerlab_agent.conclusion import Conclusion, abstention
 from ledgerlab_agent.model import (
     SUBMIT_TOOL,
+    ContentBlock,
     ModelClient,
+    ModelError,
     ModelRequest,
     ModelResponse,
+    ReasoningBlock,
     TextBlock,
     ToolUseBlock,
     Usage,
@@ -26,6 +29,8 @@ from ledgerlab_agent.tools import ToolRegistry, ToolResult
 
 SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system.md"
 ISSUE_ID_PATTERN = r"[A-Za-z0-9_\-]{1,64}"
+# The reply was cut off or refused; asking again would not help and is never retried automatically.
+NOT_CONTINUABLE_STOPS = frozenset({"max_tokens", "content_filter", "insufficient_system_resource", "aborted"})
 
 
 @dataclass(frozen=True)
@@ -127,10 +132,23 @@ def investigate(
     while True:
         if turns >= budget.max_turns:
             return exhausted(f"model turn limit of {budget.max_turns} reached")
-        response: ModelResponse = model.complete(ModelRequest(system, list(messages), definitions, budget.max_tokens))
+        try:
+            response: ModelResponse = model.complete(
+                ModelRequest(system, list(messages), definitions, budget.max_tokens)
+            )
+        except ModelError as exc:
+            if exc.fatal:
+                raise
+            turns += 1
+            last_errors = [f"model request failed: {exc}"]
+            return invalid()
         turns += 1
         usage = usage + response.usage
         messages.append({"role": "assistant", "content": [_block_to_message(b) for b in response.content]})
+
+        if response.stop_reason in NOT_CONTINUABLE_STOPS:
+            last_errors = [f"model stopped with {response.stop_reason}; the reply is not usable"]
+            return invalid()
 
         tool_uses = [b for b in response.content if isinstance(b, ToolUseBlock)]
         if not tool_uses:
@@ -148,8 +166,12 @@ def investigate(
 
         results: list[dict[str, Any]] = []
         for use in tool_uses:
+            if use.invalid_reason is not None and use.name != SUBMIT_TOOL:
+                results.append(_tool_result(use.id, f"Invalid arguments: {use.invalid_reason}", True))
+                continue
             if use.name == SUBMIT_TOOL:
-                errors = conclusion_mod.validate(use.input, issue_id)
+                errors = [f"invalid arguments: {use.invalid_reason}"] if use.invalid_reason else []
+                errors = errors or conclusion_mod.validate(use.input, issue_id)
                 if not errors:
                     return finish("ok", conclusion_mod.from_dict(use.input))
                 invalid_outputs += 1
@@ -166,9 +188,11 @@ def investigate(
         messages.append({"role": "user", "content": results})
 
 
-def _block_to_message(block: TextBlock | ToolUseBlock) -> dict[str, Any]:
+def _block_to_message(block: ContentBlock) -> dict[str, Any]:
     if isinstance(block, TextBlock):
         return {"type": "text", "text": block.text}
+    if isinstance(block, ReasoningBlock):
+        return {"type": "reasoning", "text": block.text, "provider": block.provider}
     return {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
 
 

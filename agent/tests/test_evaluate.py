@@ -356,7 +356,10 @@ class DevRunTest(unittest.TestCase):
             self.assertIn(f"`{term}`", text)
 
     def test_ac_10_9_cost_is_zero_and_stand_in_tokens_are_flagged_as_estimates(self) -> None:
-        self.assertEqual(self.runs[("baseline", "dev")].metrics["tokens"], {"input": 0, "output": 0, "is_estimate": False})
+        self.assertEqual(
+            self.runs[("baseline", "dev")].metrics["tokens"],
+            {"input": 0, "output": 0, "is_estimate": False, "cache_hit": 0, "cache_miss": 0, "reasoning": 0},
+        )
         self.assertGreater(self.runs[("stub", "dev")].metrics["tokens"]["input"], 0)
 
 

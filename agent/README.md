@@ -15,7 +15,7 @@ python -m unittest discover -s agent/tests -t agent
 ## Investigate an issue
 
 ```sh
-python agent/ledgerlab-agent.py investigate <issue_id> (--base-url http://127.0.0.1:8080 | --snapshot agent/eval/data/dev/snapshot.json) --model baseline|stub|scripted:<script.json> [--max-tool-calls 12] [--json]
+python agent/ledgerlab-agent.py investigate <issue_id> (--base-url http://127.0.0.1:8080 | --snapshot agent/eval/data/dev/snapshot.json) --model baseline|stub|scripted:<script.json>|deepseek:<model> [--max-tool-calls 12] [--json]
 # or, with uv:
 uv run --project agent python agent/ledgerlab-agent.py investigate ...
 ```
@@ -40,6 +40,24 @@ python agent/ledgerlab-agent.py eval --split dev|test|hard --model baseline|stub
 
 Evaluating the test or the hard split appends a line to `agent/eval/data/test/runs.log` or `agent/eval/data/hard/runs.log` unless this model configuration has already been run with the same code (source + SOP fingerprint). Tune rules and prompts on dev only; hard is a held-out set that is only reported, never tuned against.
 
+## External model (DeepSeek, billed)
+
+`--model deepseek:<model>` (`deepseek-flash`, `deepseek-v4-pro`) sends the conversation to DeepSeek's chat completions API over plain `urllib` (no dependency). The data is synthetic but it does leave the machine. Nothing is requested until all of these hold:
+
+1. `agent/pricing.json` has every `deepseek` field filled in (prices per million tokens, `source_url`, `checked_at`). They ship as `null`, so a fresh checkout refuses to run.
+2. `--confirm-spend <USD cap>` is given. The estimated cost is printed first; the run stops as soon as the actual cost passes the cap.
+3. `DEEPSEEK_API_KEY` is set in the environment (the only place the key is read from; it is never printed or written).
+
+```sh
+export DEEPSEEK_API_KEY=...   # your own key
+python agent/ledgerlab-agent.py investigate <issue_id> --snapshot agent/eval/data/dev/snapshot.json --model deepseek:deepseek-flash --reasoning-effort high --confirm-spend 0.50
+python agent/ledgerlab-agent.py eval --split dev --limit 3 --model deepseek:deepseek-flash --confirm-spend 0.50 --out /tmp/deepseek-dev-smoke.json   # smoke test on dev
+python agent/ledgerlab-agent.py eval --split test --model deepseek:deepseek-flash --confirm-spend 5 --out docs/eval/deepseek-test.json
+sh scripts/agent/eval.sh --external docs/eval/deepseek-dev.json docs/eval/deepseek-test.json docs/eval/deepseek-hard.json   # report with the external column
+```
+
+An `eval` that hits the cap writes the finished questions to `--out` marked `completed: false` and exits `3`. Smoke-test on dev: a `--limit` run on test or hard still counts as having looked at that split.
+
 ## Layout
 
 | Path | Role |
@@ -48,6 +66,7 @@ Evaluating the test or the hard split appends a line to `agent/eval/data/test/ru
 | `transport.py` | GET-only HTTP, no redirects, `http(s)` base URL without credentials |
 | `tools.py`, `records.py` | Tool registry: validates arguments, truncates bodies at 16 KB, extracts `{kind, id}` record identifiers |
 | `model.py` | `ModelClient` interface, `ScriptedModel`, tool JSON Schemas |
+| `deepseek_model.py`, `pricing.py`, `external.py` | DeepSeek adapter (the only file that POSTs, fixed base URL), price table and spend guard, shared set-up of the guards |
 | `conclusion.py`, `enums.py` | Conclusion format, validation, closed vocabularies |
 | `agent.py` | The loop: budgets (12 tool calls, 8 model turns), one correction chance, `<tool_data>` wrapping |
 | `prompts/system.md` | System prompt |
