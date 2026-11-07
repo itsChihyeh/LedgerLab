@@ -23,4 +23,4 @@
 新测试类全绿、`ModularityTests` 全绿；`spotless:check` 通过；提交带 `Task: P10-T04`。
 
 ## 用户批准
-（执行者在用户批准后填写原话和日期；没有这一段不要开始。）
+用户 Zhiye 2026-11-07 在项目讨论串里回复：“按你推荐的去继续做就好了”。推荐方案即：新增 `spring-boot-starter-actuator`、`micrometer-registry-prometheus`（版本跟 BOM），告警规则用固定版本的 `prom/prometheus` 镜像在测试容器里跑 `promtool`（只在测试里用）。

@@ -32,4 +32,9 @@
 新测试和受影响的已有测试全绿（**至少**跑 `ModularityTests`、演示白名单测试、新测试类、以及任何因管理端口配置受影响的测试；如果不确定影响面，跑 `./mvnw -B test` 全部单元＋集成测试，但不要跑 `verify`）；`spotless:check` 通过；提交带 `Task: P10-T03`。
 
 ## 用户批准
-（执行者在用户批准后填写原话和日期；没有这一段不要开始。）
+用户 Zhiye 2026-11-07 在项目讨论串里回复：“按你推荐的去继续做就好了”。推荐方案即：新增 `spring-boot-starter-actuator`、`micrometer-registry-prometheus`（版本跟 BOM），告警规则用固定版本的 `prom/prometheus` 镜像在测试容器里跑 `promtool`（只在测试里用）。
+
+## 补充（执行者，开工前）
+- `p10` 已合入最新 `p9`（含 P8 的 DeepSeek 适配器），T01 的日志、T05 的 `compose.demo.yaml` 里已经设了 `MANAGEMENT_SERVER_ADDRESS=0.0.0.0`（演示 Compose 内网用），默认地址仍按设计是 127.0.0.1。
+- 已知坑：用 `--logging.level.root=WARN` 起应用的测试会把级别泄漏给后面的测试，T01 用 `testsupport/RootLogLevel` 修过；新测试如果也起额外应用，照同样方式恢复。
+- 演示 profile 的测试启动方式见 `testsupport/DemoStack`；管理端口在这些测试里也必须不冲突。
