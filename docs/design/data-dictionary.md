@@ -530,3 +530,7 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - `webhook_delivery`：`id bigint identity PK`、`event_id text FK event`、`target_url text`、`signed_at bigint`（Unix 秒）、`http_status integer NULL`、`error text NULL`、`recorded_at timestamptz`；状态码与错误恰好一个非空。其余字段非空。
 
 创建 charge 和事件在一个事务提交后投递；失败不自动重试。redeliver 使用存档原文；reissue 复制原事件的 Charge 快照，仅换事件编号及事件创建时刻。模拟时钟影响对象/事件 created，签名和 recorded_at 使用独立的现实 UTC 时钟；同一进程的同事件连续投递至少递增一秒（参考已存日志），确保重投签名时间更新。
+
+### P10 T03 实现备注（V24：inbox 积压视图）
+
+- `core.v_inbox_backlog(status, received_at, next_attempt_at)`：只含 `RECEIVED`、`PARKED` 两种状态的行，不含事件编号、payload、签名、租约、错误文本。migrator 为属主；readonly 仅 SELECT；app 沿用 `io.inbox_event` 的既有授权、不另授视图权限；readonly 仍读不到 `io.inbox_event`。用途：`ledgerlab.inbox.backlog`、`ledgerlab.inbox.oldest.due.age` 两个指标（docs/design/observability.md 第 3 节）。
