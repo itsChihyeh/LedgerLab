@@ -68,10 +68,105 @@ class VerifierTest(unittest.TestCase):
         inv = investigation(conclusion(citations=(BATCH,)), failed)
         self.assertEqual(verify(inv, REQUIRED).fabricated_citations, (BATCH,))
 
-    def test_ac_10_6_a_kind_mismatch_is_fabricated_even_when_the_id_was_seen(self) -> None:
+    def test_ac_10_6_a_kind_mismatch_on_a_seen_id_is_malformed_not_fabricated(self) -> None:
         wrong_kind = Record("payout", "po_abc")
         inv = investigation(conclusion(citations=(wrong_kind,)), tool_result(BATCH))
-        self.assertEqual(verify(inv, REQUIRED).fabricated_citations, (wrong_kind,))
+        v = verify(inv, REQUIRED)
+        self.assertEqual(v.malformed_citations, (wrong_kind,))
+        self.assertEqual((v.fabricated_total, v.citations_valid), (0, 0))
+
+    def test_ac_10_6_an_id_seen_in_nested_raw_data_is_malformed_not_fabricated(self) -> None:
+        data = {"postings": [{"entryId": "je_nested1", "account": "cash"}]}
+        shown = ToolResult("get_batch", {}, True, 200, data=data)
+        entry, payment = Record("entry", "je_nested1"), Record("payment", "pay_nested1")
+        inv = investigation(conclusion(citations=(entry, payment), explanation="See je_nested1 and pay_nested1."), shown)
+        v = verify(inv, REQUIRED)
+        self.assertEqual(v.malformed_citations, (entry,))
+        self.assertEqual(v.fabricated_citations, (payment,))
+        self.assertEqual(v.fabricated_explanation_ids, ("pay_nested1",))
+        self.assertEqual(v.citations_valid, 0)
+
+    def test_ac_10_6_statement_line_cited_by_its_txn_reference_is_malformed(self) -> None:
+        data = {"fileId": "file_A", "lineSeq": 3, "txnId": "txn_77"}
+        line = ToolResult("get_statement_line", {}, True, 200, data=data, records=(Record("statement_line", "file_A/3"),))
+        wrong = Record("statement_line", "txn_77")
+        v = verify(investigation(conclusion(citations=(wrong,)), line), REQUIRED)
+        self.assertEqual((v.malformed_citations, v.fabricated_total), ((wrong,), 0))
+
+    def test_ac_10_6_a_two_part_id_needs_both_parts_to_have_been_shown(self) -> None:
+        shown = ToolResult("search_bank_lines", {}, True, 200, data={"fileId": "file_A", "lineSeq": 3})
+        both, only_file = Record("batch_line", "file_A/3"), Record("batch_line", "file_A/9")
+        v = verify(investigation(conclusion(citations=(both, only_file)), shown), REQUIRED)
+        self.assertEqual((v.malformed_citations, v.fabricated_citations), ((both,), (only_file,)))
+
+    def test_ac_10_6_an_id_only_in_a_503_result_is_fabricated(self) -> None:
+        failed = ToolResult("get_entry", {}, False, 503, data={"entryId": "je_hidden"})
+        ghost = Record("entry", "je_hidden")
+        v = verify(investigation(conclusion(citations=(ghost,), explanation="je_hidden"), failed), REQUIRED)
+        self.assertEqual((v.fabricated_citations, v.malformed_citations), ((ghost,), ()))
+        self.assertEqual(v.fabricated_explanation_ids, ("je_hidden",))
+
+    def test_ac_10_6_truncated_results_count_only_the_text_the_model_was_sent(self) -> None:
+        cut = '{"postings":[{"entryId":"je_before"}],"later":[{"entryId":"je_aft'
+        truncated = ToolResult("get_batch", {}, True, 200, data=cut, truncated=True)
+        before, after = Record("entry", "je_before"), Record("entry", "je_after")
+        v = verify(investigation(conclusion(citations=(before, after)), truncated), REQUIRED)
+        self.assertEqual((v.malformed_citations, v.fabricated_citations), ((before,), (after,)))
+
+    def test_ac_10_6_smoke_shaped_run_has_no_fabrication_and_one_malformed_citation(self) -> None:
+        # The payment timeline came back truncated (its records were not extracted) but showed je_9 to the model.
+        timeline = ToolResult(
+            "get_payment_timeline", {}, True, 200, data='{"id":"pay_1","postings":[{"entryId":"je_9"}],"x":"', truncated=True
+        )
+        lines = ToolResult(
+            "get_statement_line",
+            {},
+            True,
+            200,
+            data={"fileId": "file_A", "lineSeq": 2, "txnId": "txn_5"},
+            records=(Record("statement_line", "file_A/2"), Record("payment", "pay_1")),
+        )
+        cited = (Record("payment", "pay_1"), Record("entry", "je_9"), Record("statement_line", "txn_5"))
+        v = verify(investigation(conclusion(citations=cited, explanation="pay_1 posted je_9"), timeline, lines), REQUIRED)
+        self.assertEqual(v.fabricated_total, 0)
+        self.assertEqual(len(v.malformed_citations), 2)
+        self.assertEqual(v.citations_valid, 1)
+
+    def test_ac_10_6_nested_entries_postings_payments_and_events_are_extracted(self) -> None:
+        from ledgerlab_agent.records import extract_records
+
+        timeline = {
+            "id": "pay_1",
+            "events": [{"eventId": "evt_1"}, {"id": "evt_2", "table": "io.inbox_event"}],
+            "entries": [{"id": "je_1", "postings": [{"entryId": "je_1", "account": "x"}], "reversedBy": "je_2"}],
+            "refunds": [{"refundId": "rfd_1", "paymentId": "pay_1"}],
+        }
+        got = {(r.kind, r.id) for r in extract_records("get_payment_timeline", timeline)}
+        self.assertEqual(
+            got,
+            {
+                ("payment", "pay_1"),
+                ("event", "evt_1"),
+                ("event", "evt_2"),
+                ("entry", "je_1"),
+                ("entry", "je_2"),
+                ("refund", "rfd_1"),
+            },
+        )
+
+        batch = {"batch": {"batchId": "po_1"}, "lines": [{"batchId": "po_1", "lineNo": 1, "paymentId": "pay_2"}],
+                 "entries": [{"entryId": "je_3"}]}
+        got = {(r.kind, r.id) for r in extract_records("get_batch", batch)}
+        self.assertEqual(
+            got, {("batch", "po_1"), ("batch_line", "po_1/1"), ("payment", "pay_2"), ("entry", "je_3")}
+        )
+
+    def test_ac_10_6_a_truncated_result_extracts_no_records_so_its_ids_are_malformed_when_cited(self) -> None:
+        cut = '{"id":"pay_1","entries":[{"id":"je_1"}],"more":"'
+        truncated = ToolResult("get_payment_timeline", {}, True, 200, data=cut, truncated=True)
+        entry = Record("entry", "je_1")
+        v = verify(investigation(conclusion(citations=(entry,)), truncated), REQUIRED)
+        self.assertEqual((v.malformed_citations, v.fabricated_total, v.citations_valid), ((entry,), 0, 0))
 
     def test_ac_10_6_an_invented_record_id_in_the_explanation_is_counted(self) -> None:
         text = "Batch po_abc got bt_po_abc_1 and also bt_po_invented_7, see je_0001."

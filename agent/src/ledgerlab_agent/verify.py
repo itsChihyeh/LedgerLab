@@ -1,15 +1,20 @@
 """Citation verifier (docs/design/investigation-agent.md sections 8.3 and 8.4).
 
-Given a finished `Investigation` it answers, without trusting the model:
-  * which citations are real: a citation counts only if its (kind, id) appears in the `records` of a successful tool
-    result of that same run; anything else is a fabricated citation;
-  * which record-looking identifiers in the explanation were never seen (also fabricated);
+Given a finished `Investigation` it answers, without trusting the model, and sorts every citation into one of three:
+  * valid: its (kind, id) appears in the `records` of a successful tool result of that same run;
+  * malformed: not valid, but the identifier itself was shown to the model by a successful tool result (a whole JSON
+    string value of it; for `<a>/<b>` ids both parts), so the model read the record and only got the kind or the id
+    format wrong. Reported, never counted as fabricated;
+  * fabricated: anything else (the identifier was never shown). Failed results (including 503 withholding) show nothing,
+    and a truncated result shows only the text that was actually sent to the model.
+  * which record-looking identifiers in the explanation were never seen, by the same test (also fabricated);
   * whether the conclusion is supported: the valid citations meet the SOP clause's `required_evidence`
     (an abstention is not checked).
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from collections.abc import Mapping
@@ -29,10 +34,11 @@ EXPLANATION_ID_PATTERN = re.compile(
 class Verification:
     citations_total: int
     citations_valid: int
-    fabricated_citations: tuple[Record, ...]  # cited but never seen in a successful tool result
+    fabricated_citations: tuple[Record, ...]  # cited, and the identifier was never shown by a successful tool result
     fabricated_explanation_ids: tuple[str, ...]  # identifier-looking text in the explanation that was never seen
     supported: bool | None  # None for an abstention (support is not checked)
     missing_evidence: tuple[Evidence, ...] = ()  # (kind, still missing count) when not supported
+    malformed_citations: tuple[Record, ...] = ()  # identifier was shown, but not as this (kind, id): not fabricated
 
     @property
     def fabricated_total(self) -> int:
@@ -42,6 +48,53 @@ class Verification:
 def seen_records(investigation: Investigation) -> frozenset[Record]:
     """Every record that a successful tool result of this run showed."""
     return frozenset(record for result in investigation.tool_calls if result.ok for record in result.records)
+
+
+_QUOTED_STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
+_NUMBER = re.compile(r"(?<![A-Za-z0-9_.])-?\d+(?![A-Za-z0-9_.])")
+
+
+def _scalars(node: object, out: set[str], depth: int = 0) -> None:
+    if depth > 64:
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            out.add(str(key))
+            _scalars(value, out, depth + 1)
+    elif isinstance(node, list):
+        for item in node:
+            _scalars(item, out, depth + 1)
+    elif isinstance(node, str):
+        out.add(node)
+    elif isinstance(node, int) and not isinstance(node, bool):
+        out.add(str(node))
+
+
+def shown_values(investigation: Investigation) -> frozenset[str]:
+    """Every string and integer value that a successful tool result put in front of the model. A truncated result
+    (`data` is the cut text) contributes the complete quoted strings and bare numbers of the text that was sent."""
+    shown: set[str] = set()
+    for result in investigation.tool_calls:
+        if not result.ok:
+            continue
+        if isinstance(result.data, str):
+            for match in _QUOTED_STRING.finditer(result.data):
+                try:
+                    shown.add(json.loads(f'"{match.group(1)}"'))
+                except ValueError:
+                    shown.add(match.group(1))
+            shown.update(_NUMBER.findall(result.data))
+        else:
+            _scalars(result.data, shown)
+    return frozenset(shown)
+
+
+def _was_shown(record: Record, shown: frozenset[str]) -> bool:
+    """The identifier (not the kind) was shown: whole value, or both parts of a `<a>/<b>` id."""
+    if record.id in shown:
+        return True
+    head, slash, tail = record.id.rpartition("/")
+    return bool(slash) and head in shown and tail in shown
 
 
 def explanation_ids(explanation: str) -> list[str]:
@@ -55,13 +108,14 @@ def explanation_ids(explanation: str) -> list[str]:
 
 def verify(investigation: Investigation, required_evidence: Mapping[str, tuple[Evidence, ...]]) -> Verification:
     seen = seen_records(investigation)
-    seen_ids = {record.id for record in seen}
+    shown = shown_values(investigation) | {record.id for record in seen}
     conclusion = investigation.conclusion
 
     cited = list(conclusion.citations)
-    fabricated = tuple(c for c in cited if c not in seen)
     valid = {c for c in cited if c in seen}
-    unseen_ids = tuple(i for i in explanation_ids(conclusion.explanation) if i not in seen_ids)
+    malformed = tuple(c for c in cited if c not in seen and _was_shown(c, shown))
+    fabricated = tuple(c for c in cited if c not in seen and not _was_shown(c, shown))
+    unseen_ids = tuple(i for i in explanation_ids(conclusion.explanation) if i not in shown)
 
     supported: bool | None = None
     missing: list[Evidence] = []
@@ -78,4 +132,5 @@ def verify(investigation: Investigation, required_evidence: Mapping[str, tuple[E
         fabricated_explanation_ids=unseen_ids,
         supported=supported,
         missing_evidence=tuple(missing),
+        malformed_citations=malformed,
     )

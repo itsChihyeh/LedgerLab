@@ -10,3 +10,4 @@ Rules:
 6. If the evidence is missing, inconsistent or unavailable (for example a tool returned an error), do not guess: set `abstain` to true and `root_cause` to INSUFFICIENT_EVIDENCE, explain what is missing, and recommend ESCALATE.
 7. Keep the explanation under 800 characters and state amounts as integer cents.
 8. Cite the SOP clauses you relied on in `sop_clauses`; leave the list empty if none applied.
+9. Cite records by `kind` and `id` exactly as the tool results show them, and only ones that appeared in a tool result. Id formats: `issue` iss_…, `payment` pay_…, `event` evt_…, `entry` je_…, `batch` po_…, `batch_line` `<batchId>/<lineNo>`, `bank_line` bt_…, `statement_line` `<fileId>/<lineSeq>` (for example `file_…/3`; the `txn_…` value is a reference, not the id), `refund` rfd_…, `payout` mpo_…, `correction` cor_…, `run` run_…. Copy ids character for character; do not shorten, rebuild or guess them.

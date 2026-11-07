@@ -19,6 +19,12 @@ from ledgerlab_agent.enums import (
 from ledgerlab_agent.tools import ParamSpec, ToolSpec
 
 SUBMIT_TOOL = "submit_conclusion"
+CITATION_ID_HELP = (
+    "The identifier exactly as a tool result shows it. Formats by kind: issue iss_..., payment pay_..., event evt_..., "
+    "entry je_..., batch po_..., batch_line <batchId>/<lineNo>, bank_line bt_..., statement_line <fileId>/<seq> "
+    "(fileId and lineSeq of the statement line, e.g. file_.../3; never the txn_ reference), refund rfd_..., "
+    "payout mpo_..., correction cor_..., run run_...."
+)
 
 
 @dataclass(frozen=True)
@@ -170,7 +176,8 @@ def submit_conclusion_definition() -> dict[str, Any]:
         "name": SUBMIT_TOOL,
         "description": (
             "Finish the investigation with a structured conclusion. Call it exactly once. "
-            "Every fact in the explanation needs a citation to a record you actually read."
+            "Every fact in the explanation needs a citation to a record you actually read. "
+            "Cite only identifiers that appeared in tool results, copied exactly as they appear there."
         ),
         "input_schema": {
             "type": "object",
@@ -187,7 +194,7 @@ def submit_conclusion_definition() -> dict[str, Any]:
                         "type": "object",
                         "properties": {
                             "kind": {"type": "string", "enum": list(RECORD_KINDS)},
-                            "id": {"type": "string", "maxLength": 128},
+                            "id": {"type": "string", "maxLength": 128, "description": CITATION_ID_HELP},
                         },
                         "required": ["kind", "id"],
                         "additionalProperties": False,

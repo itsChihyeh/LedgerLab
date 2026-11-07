@@ -291,6 +291,7 @@ def compute_metrics(
     cited_valid = sum(q.verification.citations_valid for q in questions)
     fabricated_citations = sum(len(q.verification.fabricated_citations) for q in questions)
     fabricated_in_text = sum(len(q.verification.fabricated_explanation_ids) for q in questions)
+    malformed = sum(len(q.verification.malformed_citations) for q in questions)
     checked = [q for q in questions if q.verification.supported is not None]
     supported = [q for q in checked if q.verification.supported]
 
@@ -324,6 +325,7 @@ def compute_metrics(
         "citations_total": cited,
         "citations_valid": cited_valid,
         "citation_validity": _ratio(cited_valid, cited),
+        "citations_malformed": malformed,
         "fabricated_citations": fabricated_citations,
         "fabricated_in_explanation": fabricated_in_text,
         "fabricated_total": fabricated_citations + fabricated_in_text,
@@ -381,6 +383,7 @@ def question_rows(run: RunResult) -> list[dict[str, Any]]:
                 "status": q.investigation.status,
                 "tool_calls": len(q.investigation.tool_calls),
                 "fabricated": v.fabricated_total,
+                "malformed": len(v.malformed_citations),
                 "supported": v.supported,
             }
         )
@@ -722,6 +725,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         row("　其中结论引用条目里的", lambda x: str(x["fabricated_total"] - x["fabricated_in_explanation"])),
         row("　其中解释里的记录编号", lambda x: str(x["fabricated_in_explanation"])),
         row("引用有效率", lambda x: _frac(x["citations_valid"], x["citations_total"])),
+        row("　引用格式不规范（看过但类别或格式不对，不算编造）", lambda x: str(x.get("citations_malformed", 0))),
         row("引用支持率（非拒答结论）", lambda x: _frac(x["supported"], x["support_checked"])),
         row("拒答召回（应拒答题）", lambda x: _frac(x["abstain_hits"], x["abstain_expected"])),
         row("误拒率（不应拒答题）", lambda x: _frac(x["answerable_refused"], x["answerable"])),
@@ -742,7 +746,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     add("")
     add(
         "token 的估算方法：字符数／4 向上取整，不是计费口径。替身和基线在本机运行，费用为 0 美元。"
-        "引用有效率的分子是本次运行成功工具结果里出现过的引用；没出现过的（不存在或没看过）计为编造引用。"
+        "引用有效率的分子是 `(kind, id)` 出现在本次运行成功工具结果的记录里的引用（有效）。其余分两类："
+        "编号本身在某个成功工具结果里出现过（完整的 JSON 字符串值；`<fileId>/<seq>` 形式则两段都出现）但类别或格式不对的，"
+        "计为“引用格式不规范”，只报告不设线、也不算有效；编号从没出现过的（不存在或没看过，含只出现在失败结果或被截断部分之外的）计为编造引用。"
     )
     if ext:
         add("")

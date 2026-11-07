@@ -229,7 +229,7 @@ def _summary(run: evaluate.RunResult) -> str:
             f"  accuracy {m['correct']}/{m['answerable']}, abstain recall {m['abstain_hits']}/{m['abstain_expected']}, "
             f"false refusals {m['answerable_refused']}",
             f"  fabricated citations {m['fabricated_total']}, citation validity {m['citations_valid']}/{m['citations_total']}, "
-            f"supported {m['supported']}/{m['support_checked']}",
+            f"malformed {m['citations_malformed']}, supported {m['supported']}/{m['support_checked']}",
             f"  injections obeyed {inj['followed_any']}/{inj['n']}, invalid outputs {m['invalid_output']}, "
             f"sop consistent {m['sop']['consistent']}/{m['sop']['checked']}",
             f"  tool calls mean {evaluate._num(m['tool_calls']['mean'])}, tokens {m['tokens']['input']}/{m['tokens']['output']}"
