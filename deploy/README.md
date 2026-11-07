@@ -4,9 +4,10 @@
 
 | 文件 | 用途 |
 |---|---|
-| `Caddyfile` | HTTPS 反向代理；对 `/api/demo/seed`、`/webhooks/*`、`/sim/*`、`/relay/*` 返回 404 |
-| `cloud-init.yaml` | 首次启动脚本草稿：装 Docker／JDK、拉代码、起 `compose.demo.yaml`（经 `scripts/demo/up.sh`）、起 Caddy、配每日重置 |
-| `price-check.py` | 只读查询 AWS 公开价格文件，不需要凭证 |
+| `Caddyfile` | HTTPS 反向代理；对 `/api/demo/seed`、`/webhooks/*`、`/sim/*`、`/relay/*`、`/actuator/*` 返回 404 |
+| `cloud-init.yaml` | 首次启动脚本草稿：装 Docker／JDK、配 Docker 日志轮转、拉代码、起 `compose.demo.yaml`（经 `scripts/demo/up.sh`）、起 Caddy、配每日重置 |
+| `prometheus.demo.yml` | 可选的 Prometheus（`compose.demo.yaml` 的 `observability` profile，默认不起）的抓取配置 |
+| `price-check.py` | 只读查询 AWS 公开价格文件（EC2、EBS、公网 IPv4、CloudWatch、SES），不需要凭证；`--list <Offer>` 列出某个产品的全部价格 |
 
 ## 步骤
 
@@ -27,8 +28,14 @@
    - `https://<域名>/` 打开演示页，12 条不变量为绿；
    - `curl -i https://<域名>/api/demo/seed -X POST` 和 `curl -i https://<域名>/webhooks/stripe -X POST` 都得到 404；
    - 点一个动作，时间线在 2 秒内出现条目（说明 SSE 没被代理缓冲）；
+   - `curl -i https://<域名>/actuator/health` 得到 404（管理端口本来就没有发布，Caddy 再拦一道）；`curl -i https://<域名>/actuator/prometheus` 同样 404；
+   - 在实例上（SSM 会话里）`docker inspect --format '{{.HostConfig.LogConfig}}' ledgerlab-demo-app-1` 能看到 `json-file` 和 `max-size:20m max-file:5`，`docker logs ledgerlab-demo-app-1 --tail 3` 每行是一个 JSON 对象；
    - 次日查看 `/var/lib/ledgerlab/archive/` 有前一天的摘要，页面上“上次重置时间”前进。
 9. **[用户]** 观察第一周的账单。
+10. **[用户]**（可选，仅在启用 Prometheus 之后，先读 `aws-plan.md` 的“P10 可观测性”：需要先批准 `scripts/demo` 的改动，并建议换 `t4g.medium`）：
+    - 实例上 `docker volume create ledgerlab-prometheus-data`，再带 `--profile observability` 起栈；
+    - 在**自己的电脑**上用 SSM 端口转发看 Prometheus：`aws ssm start-session --target <实例ID> --document-name AWS-StartPortForwardingSession --parameters '{"portNumber":["29090"],"localPortNumber":["29090"]}'`，浏览器开 `http://127.0.0.1:29090/targets`（`ledgerlab-app` 应为 UP）和 `/alerts`；
+    - 实例上 `free -m`、`docker stats --no-stream` 看内存，对照 `aws-plan.md` 的估算。
 
 ## 上线前核实
 
@@ -37,7 +44,8 @@
 - JDK 25 的包名（Amazon Linux 2023 上的 Corretto 25）。
 - Docker Compose 插件和 Caddy 镜像的固定版本与校验和（当天查官方发布页）。
 - ARM（aarch64）上 `scripts/demo/up.sh` 能否完整跑通。
-- 2 GiB 内存是否够（构建期和运行期）。
+- 2 GiB 内存是否够（构建期和运行期；启用 Prometheus 后几乎肯定不够，见 `aws-plan.md`）。
+- `prom/prometheus` 镜像的固定版本（`compose.demo.yaml` 里是 `v3.5.0`）和摘要。
 
 退路：
 

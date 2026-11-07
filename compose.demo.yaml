@@ -81,6 +81,10 @@ services:
       # (LEDGERLAB_DEMO_BEHIND_PROXY=1) so each visitor is limited by his own X-Forwarded-For address.
       LEDGERLAB_DEMO_TRUSTED_PROXIES: ${LEDGERLAB_DEMO_TRUSTED_PROXIES:-}
       LEDGERLAB_DEMO_ARCHIVE_DIR: /demo-archive
+      # Actuator's management port (docs/design/observability.md section 2) listens on 127.0.0.1 inside the
+      # container by default, which the prometheus service below could not reach. It is never published to the
+      # host and Caddy only talks to 28080, so 0.0.0.0 here only exposes it to this Compose network.
+      MANAGEMENT_SERVER_ADDRESS: 0.0.0.0
     volumes:
       - ${DEMO_ARCHIVE_DIR:?run scripts/demo/up.sh}:/demo-archive:ro
     ports:
@@ -97,6 +101,39 @@ services:
       retries: 90
     networks: [demo]
 
+  # Optional (P10-T05): `--profile observability` adds Prometheus. Off by default. Reads the alert rule from
+  # ops/prometheus/ (created by P10-T04) and scrapes app:8079 inside the Compose network; the only published port
+  # is on 127.0.0.1. The data volume is external so that the daily `down -v` reset does not wipe the 7 days of
+  # history: create it once with `docker volume create ledgerlab-prometheus-data`. See docs/deploy/aws-plan.md.
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.size=512MB
+      - --web.listen-address=0.0.0.0:9090
+    mem_limit: 256m
+    ports:
+      - "127.0.0.1:29090:9090"
+    volumes:
+      - type: bind
+        source: ./deploy/prometheus.demo.yml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+      - type: bind
+        source: ./ops/prometheus
+        target: /etc/prometheus/rules
+        read_only: true
+        bind:
+          create_host_path: false
+      - prometheus-data:/prometheus
+    depends_on:
+      app:
+        condition: service_healthy
+    networks: [demo]
+
 networks:
   demo:
     ipam:
@@ -105,3 +142,6 @@ networks:
 
 volumes:
   demo-pgdata:
+  prometheus-data:
+    external: true
+    name: ledgerlab-prometheus-data

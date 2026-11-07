@@ -9,8 +9,9 @@
 	encode zstd gzip
 
 	# Never reachable from the internet: ops seed call, processor webhook (the relay talks to the app inside the
-	# Compose network), anything simulator-shaped.
-	@internal_only path /api/demo/seed /api/demo/seed/* /webhooks /webhooks/* /sim /sim/* /relay /relay/*
+	# Compose network), anything simulator-shaped, and Actuator (it is on a separate management port that is
+	# not published at all; this is the second line of defence, docs/design/observability.md section 2).
+	@internal_only path /api/demo/seed /api/demo/seed/* /webhooks /webhooks/* /sim /sim/* /relay /relay/* /actuator /actuator/*
 	handle @internal_only {
 		respond 404
 	}

@@ -134,3 +134,12 @@
 - 耗时用服务上下文里注入的单调时钟（默认 `time.monotonic`），从开始跑调查到记录追加写完。若记录写入失败（500），也按 `error` 计一次、工具调用数记 0。409 和各类 4xx 在跑调查之前就返回，不计数。
 - `GET /agent/metrics?x=1` 返回 `400 invalid_request`（`/agent/health?x=1` 仍是 404，沿用原行为）。桶上界是闭区间（`le`），`le` 的文本用 `%g` 形式（`0.01`、`1`、`30`）。
 - 实例在 `InvestigationService.metrics`，模块 `metrics.py` 无全局状态。`test_static.py` 未改：新模块只用 `threading`，没有触发任何禁用模式。
+
+## 实现备注（P10-T05）
+- **未执行任何云操作**：只改文档和草稿；`price-check.py` 对 AWS 公开价格文件只读 GET（EC2、VPC、CloudWatch、SES 四个产品），结果和日期见 `aws-plan.md` “P10 可观测性”的“核价输出”。脚本现在边下载边解析（不落临时文件，不整体加载），遇到 `terms.OnDemand` 之后就停止，不读体积最大的 Reserved 部分。
+- **管理端口在容器里要改监听地址**：第 2 节的 `management.server.address: 127.0.0.1` 在 Compose 里让别的容器（Prometheus）连不上。`compose.demo.yaml` 给 app 加了 `MANAGEMENT_SERVER_ADDRESS: 0.0.0.0`（环境变量覆盖配置文件）。端口 8079 不发布到主机，只在 demo 网络内可达；Caddy 只转发到 28080，且对 `/actuator/*` 返回 404。
+- **Prometheus 的抓取配置不用 `ops/prometheus/prometheus.yml`**：那份抓的是本地地址，而 Compose 里的目标是服务名 `app:8079`，所以放了 `deploy/prometheus.demo.yml`，只复用 `ops/prometheus/alerts.yml`（只读挂载到 `/etc/prometheus/rules`，`create_host_path: false`，T04 未合入时 `up` 会因目录不存在而失败，但 `config` 校验通过）。
+- **带 profile 的服务会让每日重置失败（实测，一个一次性 Compose 项目）**：带 `--profile observability` 起栈后，不带 profile 的 `down` 不停掉该服务，网络报 “Resource is still in use”；而 `scripts/demo/demo.py` 的 `compose()` 不带 profile，`python_env()` 还会清掉 `COMPOSE_*` 环境变量。所以 Prometheus 在 `scripts/demo` 改之前不能在部署里启用，已写入 `aws-plan.md` 和 `cloud-init.yaml` 的注释，待用户批准改 `scripts/demo`。也实测确认：未创建的外部卷不影响不带 profile 的 `up`。
+- **`json-file` 日志随每日重置消失**：重置是 `down -v` 加重建容器，stdout 日志跟着容器走，只能保留不到一天。已在 `aws-plan.md` 写明，并列出两条出路（CloudWatch Logs、重置前转存），都需要用户决定。
+- 设计第 5 节“内存估算”是典型值的估算，未实测，已逐项标明；Alertmanager 没有写任何配置或容器（发信由用户决定）。
+- Caddyfile 用 `caddy:2` 镜像的 `caddy validate` 校验通过（`DEMO_DOMAIN` 给了假值）。
