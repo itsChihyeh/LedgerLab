@@ -1,0 +1,9 @@
+# P10 队列：按顺序处理；已完成以 p10 分支提交信息里的 "Task: P10-<编号>" 判定。
+# 设计正本：p10 分支 docs/design/observability.md（2026-11-07），ADR-0021，AC-12。
+# 执行：本线程的 Claude（Opus）为每个任务起全新上下文的 Sonnet 5.5 进程（找工作/tmp/ledgerlab-p10/run-impl.ps1），
+# 提示词 = tasks/_common.md + 空行 + 任务文件（+ answers/<编号>.md）；独立重跑后 push p10，报告写 reports/。
+T01-json-logs.md
+T02-agent-metrics.md
+T03-actuator-metrics.md      # 等用户批准 Actuator＋Prometheus 注册表依赖
+T04-alert-rule.md            # 依赖 T03
+T05-deploy-plan.md
