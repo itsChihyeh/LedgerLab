@@ -1,0 +1,13 @@
+# The one alert rule of P10 (docs/design/observability.md section 4, ADR-0021).
+# Tested by OpsAlertRuleTest with `promtool check rules` and `promtool test rules alerts.test.yml`.
+groups:
+  - name: ledgerlab
+    rules:
+      - alert: LedgerLabInboxStuck
+        expr: ledgerlab_inbox_oldest_due_age_seconds > 300
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Webhook inbox has had due events waiting over 5 minutes"
+          runbook: "docs/ops/runbook.md#inbox-stuck"

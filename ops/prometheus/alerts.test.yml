@@ -1,0 +1,58 @@
+# Unit tests for alerts.yml: `promtool test rules alerts.test.yml` (run by OpsAlertRuleTest in a pinned prom/prometheus container).
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # Over the threshold for 6 minutes: pending from minute 0, firing once `for: 5m` has elapsed.
+  - name: stuck for six minutes fires
+    interval: 1m
+    input_series:
+      - series: 'ledgerlab_inbox_oldest_due_age_seconds'
+        values: '600x6'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: LedgerLabInboxStuck
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: LedgerLabInboxStuck
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Webhook inbox has had due events waiting over 5 minutes"
+              runbook: "docs/ops/runbook.md#inbox-stuck"
+
+  # Over the threshold for only 3 minutes, then the series ends (stale marker): never reaches `for: 5m`.
+  - name: stuck for three minutes does not fire
+    interval: 1m
+    input_series:
+      - series: 'ledgerlab_inbox_oldest_due_age_seconds'
+        values: '600x3 stale'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: LedgerLabInboxStuck
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: LedgerLabInboxStuck
+        exp_alerts: []
+
+  # Firing, then the backlog drains and the value returns to 0: the alert disappears.
+  - name: alert goes away when the value falls back
+    interval: 1m
+    input_series:
+      - series: 'ledgerlab_inbox_oldest_due_age_seconds'
+        values: '600x6 0x6'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: LedgerLabInboxStuck
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Webhook inbox has had due events waiting over 5 minutes"
+              runbook: "docs/ops/runbook.md#inbox-stuck"
+      - eval_time: 8m
+        alertname: LedgerLabInboxStuck
+        exp_alerts: []

@@ -163,3 +163,12 @@
 - **数据库不可用的测法**：真断开连接不可靠，测试里用 `REVOKE SELECT ON core.v_inbox_backlog FROM readonly` 让那一组查询失败（`BusinessMetricsTest`），抓取仍 200，该组为 `NaN`，其他组不受影响；恢复授权后下一次抓取恢复数值。
 - **测试环境**：没有 `spring-boot-micrometer-metrics-test`，`@SpringBootTest` 不会关掉 Prometheus 导出，所以测试里不需要 `@AutoConfigureMetrics`。
 - **演示站自调用端口（实测踩到的坑）**：独立管理端口会让 `WebServerInitializedEvent` 再触发一次（命名空间 `management`）。`demo.internal.DemoConfiguration.LocalPort` 原来取最后一次事件的端口，会把演示动作对自己的 HTTP 调用指向管理端口，`DemoActionsTest` 11/13 失败（等不到 `CAPTURED`）。现在忽略 `management` 命名空间，`DemoLocalPortTest` 覆盖。以后凡是监听该事件的代码都要注意这一点。
+
+## 实现备注（P10-T04）
+
+- **文件**：`ops/prometheus/alerts.yml`（组 `ledgerlab`，一条 `LedgerLabInboxStuck`，与第 4 节一致）、`alerts.test.yml`（三个用例：6 分钟 firing、3 分钟不 firing、回落后消失）、`prometheus.yml`（本地用，抓 `host.docker.internal:8079` 的 `/actuator/prometheus` 和 `host.docker.internal:8097` 的 `/agent/metrics`，间隔 15s；应用的管理端口默认只绑 127.0.0.1，容器经 `host.docker.internal` 够不到，本地用时需另设管理地址）。Compose 演示站仍用 `deploy/prometheus.demo.yml`（目标是服务名）。`docs/ops/runbook.md` 有 `#inbox-stuck` 一节和指标含义表。
+- **镜像**：`prom/prometheus:v3.5.0`（常量 `Promtool.IMAGE`，与 `compose.demo.yaml` 同版本），只在测试里起。
+- **序列写法**：“3 分钟”用例是 `600x3 stale`。不加 `stale` 时，promtool 的 5 分钟回看会让最后一个样本继续可见，规则最终仍会 firing。
+- **退出码**：容器入口是 `/bin/sh -c "promtool …; echo PROMTOOL_EXIT=$?"`，从日志里取退出码。一次性容器非 0 退出时 Testcontainers 会在读到退出码前就把它拆掉，所以不能直接读容器状态。
+- **AC-12.8 的生成文件**：写在 `@TempDir`，只读挂到 `/generated`；真实规则目录挂到 `/rules`，生成的测试文件用绝对路径 `/rules/alerts.yml` 加载同一份规则，不复制。抓到的值按整数写成 `<v>x6`（7 个样本，覆盖 `for: 5m`），并多带一个对照：同一真实值声称“不告警”必须失败。
+- **测试类**：`ops/OpsAlertRuleTest`（AC-12.7）、`ops/InboxStuckAlertTest`（AC-12.8）、辅助类 `ops/Promtool`。
