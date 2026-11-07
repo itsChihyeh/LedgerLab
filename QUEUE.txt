@@ -10,4 +10,4 @@ T05-sop-baseline-stub.md
 T06-evaluator-report.md
 T06b-hard-set.md
 T08-handoff-p8.md
-# T07 外部模型适配器：等用户批准（SDK 依赖、密钥、费用上限）后再写任务
+T07-deepseek-adapter.md
