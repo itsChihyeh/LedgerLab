@@ -70,7 +70,7 @@ ModelResponse = {content:[text | tool_use{id,name,input}], stop_reason, usage{in
 |---|---|---|
 | `ScriptedModel` | 单元测试：按脚本回放固定回复 | 否 |
 | `StubModel`（本地替身） | 端到端跑通：把规则基线（第 7 节）的判断过程翻译成工具调用和最终 JSON，经同一个 Agent 循环、同一个核验器 | 否 |
-| `AnthropicModel` | 外部模型（P8 最后，用户批准后加 SDK 可选依赖） | 是 |
+| `DeepSeekModel` | 外部模型（P8 最后，用户 2026-11-07 选定 DeepSeek；标准库 HTTP，不加依赖） | 是 |
 
 替身的分数应当等于规则基线；不等就说明 Agent 循环或核验器丢了东西。报告里替身一律标注“替身，不代表大模型能力”。
 
@@ -239,11 +239,13 @@ ModelResponse = {content:[text | tool_use{id,name,input}], stop_reason, usage{in
 - 怎么防：工具层没有写方法和任意 URL（代码＋测试）；后端路由清单逐条在服务端验证是只读的 readonly 数据源接口（Java 测试）；数据库层 readonly 角色本身不能写（已有测试）；结论枚举受限，引用由核验器逐条核对；所有建议动作需要人执行。
 - 不防：持有 app/migrator 凭证的人；模型给出**看起来合理但错误**的解释（这由评测度量，不由权限防）。
 
-## 10. 外部模型（最后一步，用户批准后）
+## 10. 外部模型（最后一步，用户批准后；2026-11-07 选定 DeepSeek）
 
-- 加 `AnthropicModel`（官方 Python SDK `anthropic`，放 `agent/pyproject.toml` 的可选依赖组 `anthropic`，固定版本），密钥只从环境变量 `ANTHROPIC_API_KEY` 读，不进仓库、不进报告。
-- 花钱保护：`eval --model anthropic` 先打印预计 token 和费用上限（按价格表 `agent/pricing.json`），没有 `--confirm-spend <美元上限>` 就不发请求；累计费用超过上限立即停止并写已完成部分的报告。
-- 默认模型、effort 由用户定（见 P8 交接文档里的报价）。合同测试用手写的响应夹具，不联网。
+- **用户 2026-11-07 选定 DeepSeek**（原计划为 Anthropic）。加 `DeepSeekModel`：DeepSeek 的 OpenAI 兼容 chat completions 接口，用标准库 `urllib` 直接发 HTTP，**不加任何依赖**；基址写死为 `https://api.deepseek.com`，这是 `agent/src` 里唯一允许的非 GET 网络调用，静态检查只为这一个文件开例外。密钥只从环境变量 `DEEPSEEK_API_KEY` 读，不进仓库、不进日志和报告。
+- DeepSeek 思考模式下，带工具的请求必须把之前每一轮的 `reasoning_content` 原样回传，所以内部消息格式增加只对适配器可见的“思考块”；`tool_choice` 只用 `auto`；`function.arguments` 是可能不合法的 JSON 字符串，解析失败按无效参数回传给模型，不崩溃。
+- 花钱保护：价格表 `agent/pricing.json` 的 DeepSeek 价格未核实前为 `null`，此时拒绝运行；`eval --model deepseek:<model>` 先打印预计费用，没有 `--confirm-spend <美元上限>` 就不发请求；累计费用超过上限立即停止并写已完成部分的报告。
+- 模型（`deepseek-flash` 或 `deepseek-v4-pro`）、思考强度和费用上限由用户定。合同测试用手写的响应夹具，不联网。
+- 评测数据全部是合成数据，但调用时会发送到 DeepSeek 的服务器（用户已知悉）。
 
 ## 11. 交付物
 
