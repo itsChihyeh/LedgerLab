@@ -491,6 +491,19 @@ investigation 使用限定名 `investigationDataSource`，配置 `ledgerlab.read
 - `event.charge_id` 在 V3 改成可空，原外键保留；payout 事件使用新增 `payout_id text NULL FK payout`，旧 charge 事件不变。两种事件均保存完整对象快照，redeliver 原样重签，reissue 保留类型及对象快照。
 - 资金写入事务首先以 SHARE ROW EXCLUSIVE 锁定 balance_transaction 表，防止多个请求或进程重复分配。默认 payout 归集已可用、未分配的 CAD 行（不含 payout 自身），负/零净额不创建；失败不解绑定旧行，只新增一条 payout_failure 返还行。amount 覆盖是故意制造不一致的故障：仍归集原集合，payout 借记采用覆盖金额，后续故障场景需独立重置数据，不承诺自动修复不一致。
 
+### P6 T03 实现备注：沙箱桥（模拟器 V8）
+
+- initdb 预建 `sim_sandbox AUTHORIZATION simulator`；V8 只建表与授权，不扩大 simulator 数据库权限。主应用、migrator、readonly 和 PUBLIC 均不可见。
+- `sim_sandbox.payment_attempt`：`id bigint identity PK`、`run_id text`（sbx_ 前缀）、`card text`（两张白名单卡）、`seed bigint`、`ordinal integer`（1～50）、`amount bigint`（500～20000）、`payment_intent/charge text`（未知为空串，已知须为 pi_/ch_ 编号）、`status text`（started、failed 或 Stripe PaymentIntent 状态）、`http_status integer NULL`（100～599）、`error_code text`（无错误为空串）、`recorded_at timestamptz`。发送前追加 started，完成后追加结果；逻辑支付身份为 `(run_id, card, seed, ordinal)`，统计取每个身份最新一行，成功要求 status=succeeded 且无 error_code。已确认成功直接返回持久结果；未确认的重试使用原幂等键，距首次 started 满 23 小时则拒绝重发并记 IDEMPOTENCY_WINDOW_EXPIRED，保留供人工核查。每次单进程生成请求串行执行。
+- `sim_sandbox.bank_sync`：`id bigint identity PK`、`run_id text`、`pages/seen/received integer`（非负）、`http_status integer`（200 或 502）、`received_payouts/skipped jsonb`（数组）、`error_code text`（无错误为空串）、`recorded_at timestamptz`。received 不超过 seen，且与 received_payouts 长度一致，失败时 received=0。完整分页后，银行接收与成功同步记录在同一事务提交；数据库 advisory transaction lock 串行化同步。已由沙箱桥接收的 payout 跳过，summary 按当前 run 的接收记录计数。
+- 两表仅授 simulator INSERT/SELECT，identity 序列 USAGE/SELECT；显式撤销所有其他角色权限及 simulator UPDATE/DELETE/TRUNCATE。时间来自注入的现实 UTC Clock；不保存请求、响应原文、凭证或 error.message。
+
+### P6 T02 实现备注：chaos relay 出站与录制（模拟器 V7）
+
+- `sim_chaos.api_exchange`：`id bigint identity PK`、`received_at/recorded_at timestamptz`、`method/path text`（路径不带查询串）、`query_parameter_names jsonb`（有序参数名数组，保留重复，不存参数值）、`upstream_status integer NULL`（100～599）、`action text`（PASS / DROP_RESPONSE / FAIL_BEFORE_SEND）、`duration_ms bigint`（非负）、`request_sha256 text`、`response_sha256 text NULL`（64 位小写十六进制）、`request_body/response_body bytea NULL`。没有上游完整响应时，响应哈希和正文为空；FAIL_BEFORE_SEND 的上游状态为空。
+- `sim_chaos.inbound_recording`：`id bigint identity PK`、`event_id/event_type text NULL`、`received_at/recorded_at timestamptz`、`sha256 text`、`body bytea NOT NULL`。只在 `sim.relay.record-bodies=true` 时追加每次接收的原文字节；复制/重排不额外录制。出站交换始终记元数据，同一开关控制是否保存正文。任何头都不保存。
+- 两张表由 simulator 迁移、拥有，但显式撤销其全部表权限后只授 INSERT/SELECT，序列只授 USAGE/SELECT；PUBLIC、migrator、app、readonly 无权限。接收与记录时间取注入的 Clock；既有 relay_log 的模拟时钟语义不变。
+
 ### P1b-8 chaos relay（模拟器 V2）
 
 `sim_chaos.relay_log` 由 simulator 迁移、拥有；PUBLIC、migrator、app、readonly 无表和序列访问权。

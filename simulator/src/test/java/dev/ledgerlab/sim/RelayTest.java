@@ -113,6 +113,19 @@ class RelayTest {
     }
 
     @Test
+    void ac_8_3_defaultProfileDoesNotEnableProxyOrRecordBodies() throws Exception {
+        assertThat(app.getBeansOfType(dev.ledgerlab.sim.relay.OutboundRelay.class))
+                .isEmpty();
+        assertThat(request("POST", "/relay/stripe-api/v1/refunds", "").statusCode())
+                .isEqualTo(404);
+        relay(event("unrecorded"));
+        assertThat(jdbc.sql("select count(*) from sim_chaos.inbound_recording")
+                        .query(Long.class)
+                        .single())
+                .isZero();
+    }
+
+    @Test
     void ac_2_3_duplicateThreeTimesAndFirstMatchingRuleWins() throws Exception {
         plan("""
                 [{"event_type":"charge.succeeded","action":"DUPLICATE","copies":3},
@@ -282,7 +295,12 @@ class RelayTest {
         int port = closed.getAddress().getPort();
         closed.start();
         closed.stop(0);
-        var relay = new dev.ledgerlab.sim.relay.Relay(jdbc, client, clock, "http://127.0.0.1:" + port + "/hook");
+        var relay = new dev.ledgerlab.sim.relay.Relay(
+                jdbc,
+                client,
+                clock,
+                "http://127.0.0.1:" + port + "/hook",
+                app.getBean(dev.ledgerlab.sim.relay.RelayRecording.class));
         relay.receive(event("network"), SIGNATURE);
         var result = jdbc.sql("select http_status,error from sim_chaos.relay_log where attempt_no=1")
                 .query()

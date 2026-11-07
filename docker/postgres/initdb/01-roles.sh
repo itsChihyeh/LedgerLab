@@ -36,4 +36,5 @@ CREATE SCHEMA sim_processor AUTHORIZATION simulator;
 CREATE SCHEMA sim_bank AUTHORIZATION simulator;
 CREATE SCHEMA sim_chaos AUTHORIZATION simulator;
 CREATE SCHEMA sim_truth AUTHORIZATION simulator;
+CREATE SCHEMA sim_sandbox AUTHORIZATION simulator;
 SQL

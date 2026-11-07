@@ -1,0 +1,104 @@
+{
+  "id": "evt_3UXVJ2F5hIinUF491kAVddrL",
+  "object": "event",
+  "api_version": "2026-09-30.endive",
+  "created": 1793664629,
+  "data": {
+    "object": {
+      "id": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+      "object": "charge",
+      "amount": 11500,
+      "amount_captured": 11500,
+      "amount_refunded": 0,
+      "application": null,
+      "application_fee": null,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_3UXVJ2F5hIinUF491LXP3f5A",
+      "calculated_statement_descriptor": "Stripe",
+      "captured": true,
+      "created": 1793664628,
+      "currency": "cad",
+      "customer": null,
+      "description": null,
+      "destination": null,
+      "dispute": null,
+      "disputed": false,
+      "failure_balance_transaction": null,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "livemode": false,
+      "metadata": {
+        "ledgerlab_run_id": "sbx_20261102T224453022706Z"
+      },
+      "on_behalf_of": null,
+      "order": null,
+      "outcome": {
+        "advice_code": null,
+        "reason": null,
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_3UXVJ2F5hIinUF491Xw7Lw5e",
+      "payment_method": "pm_1UXVJ2F5hIinUF495nSQg3SN",
+      "payment_method_details": {
+        "card": {
+          "amount_authorized": 11500,
+          "authorization_code": "055534",
+          "brand": "visa",
+          "checks": {
+            "address_line1_check": null,
+            "address_postal_code_check": null,
+            "cvc_check": "pass"
+          },
+          "country": "US",
+          "electronic_commerce_indicator": "07",
+          "exp_month": 11,
+          "exp_year": 2027,
+          "extended_authorization": {
+            "status": "disabled"
+          },
+          "funding": "credit",
+          "incremental_authorization": {
+            "status": "unavailable"
+          },
+          "installments": null,
+          "last4": "0077",
+          "mandate": null,
+          "multicapture": {
+            "status": "unavailable"
+          },
+          "network": "visa",
+          "overcapture": {
+            "maximum_amount_capturable": 11500,
+            "status": "unavailable"
+          },
+          "regulated_status": "unregulated",
+          "three_d_secure": null,
+          "transaction_link_id": null,
+          "wallet": null
+        },
+        "type": "card"
+      },
+      "radar_options": {},
+      "receipt_number": null,
+      "refunded": false,
+      "review": null,
+      "source": null,
+      "source_transfer": null,
+      "statement_descriptor": null,
+      "statement_descriptor_suffix": null,
+      "status": "succeeded",
+      "transfer_data": null,
+      "transfer_group": null
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 2,
+  "request": {
+    "id": "req_uCH7N8yMbhcDrP",
+    "idempotency_key": "sbx_20261102T224453022706Z:pay:pm_card_bypassPending:1:1"
+  },
+  "type": "charge.succeeded"
+}

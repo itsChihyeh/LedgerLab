@@ -12,8 +12,8 @@ import org.springframework.context.annotation.Primary;
 @Configuration
 public class ProcessorConfiguration {
     @Bean
-    SimulationClock simulationClock(@Value("${sim.clock.start:}") String start) {
-        return new SimulationClock(start.isBlank() ? Instant.now() : Instant.parse(start));
+    SimulationClock simulationClock(@Value("${sim.clock.start:}") String start, Clock signingClock) {
+        return new SimulationClock(start.isBlank() ? signingClock.instant() : Instant.parse(start));
     }
 
     @Bean

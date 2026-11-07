@@ -1,0 +1,25 @@
+{
+  "event": {
+    "/id": "string", "/type": "string", "/api_version": "string",
+    "/livemode": "boolean", "/created": "integer", "/data/object": "object"
+  },
+  "charge": {
+    "/id": "string", "/payment_intent": "string|null", "/amount": "integer",
+    "/amount_captured": "integer", "/currency": "string", "/captured": "boolean",
+    "/status": "string", "/livemode": "boolean", "/created": "integer"
+  },
+  "refund": {
+    "/id": "string", "/charge": "string", "/amount": "integer", "/currency": "string",
+    "/status": "string", "/metadata": "object", "/metadata/ledgerlab_refund_id": "string|missing",
+    "/livemode": "boolean|missing", "/failure_reason": "string|null|missing"
+  },
+  "payout": {
+    "/id": "string", "/amount": "integer", "/currency": "string", "/automatic": "boolean",
+    "/method": "string", "/status": "string", "/reconciliation_status": "string",
+    "/arrival_date": "integer", "/created": "integer"
+  },
+  "balance_transaction": {
+    "/id": "string", "/type": "string", "/source": "string|null", "/amount": "integer",
+    "/fee": "integer", "/net": "integer", "/currency": "string", "/created": "integer"
+  }
+}

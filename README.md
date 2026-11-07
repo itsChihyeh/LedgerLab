@@ -60,13 +60,13 @@ Details, the money model and the design trade-offs are in the [architecture over
 |---|---|---|---|
 | P1–P4 | Ledger, webhook intake, settlement, bank reconciliation, refunds, corrections | Done | `main` |
 | P5 | Merchant payouts with unknown-outcome recovery | Done | `main` |
-| P6 | Real Stripe test mode | In progress: real webhook intake and missed-event recovery pass; real payouts, refunds and reconciliation are waiting on Stripe's first automatic payout | [`p6`](https://github.com/itsChihyeh/LedgerLab/tree/p6) |
+| P6 | Real Stripe test mode | Done, awaiting review: real webhooks, missed-event recovery, real automatic payout as a batch, refunds through Stripe and reconciliation on live data all pass ([checklist](docs/handoff/p6.md), [run report](docs/runs/sandbox-sbx_20261102T224453022706Z.md)) | `main` |
 | P7 | Deployment, public demo page, performance baseline | Not started | |
 | P8 | Read-only investigation agent | Not started | |
 
 The `investigation` module on `main` is read-only query APIs, not an AI agent.
 
-Two limits to keep in mind. The fake Stripe implements only the subset this project uses, and real Stripe is the authority where they differ; the contract tests that catch differences are on `p6`. In Stripe test mode, webhooks and settlement data both come from Stripe, so they are less independent of each other than the simulator's fixtures, and reconciliation accuracy can only be judged in simulator mode, where the true answer is known.
+Two limits to keep in mind. The fake Stripe implements only the subset this project uses, and real Stripe is the authority where they differ; recorded, redacted Stripe test-mode fixtures drive contract tests that catch differences (`src/test/resources/contracts/stripe-sandbox/`). In Stripe test mode, webhooks and settlement data both come from Stripe, so they are less independent of each other than the simulator's fixtures, and reconciliation accuracy can only be judged in simulator mode, where the true answer is known.
 
 ## Reproduce the tests
 
@@ -103,6 +103,22 @@ CI also runs PIT mutation testing on the `ledger` module only (133 mutations, 11
 How the smoke scripts work: [smoke walkthrough](docs/testing/smoke-walkthrough.md) (Chinese).
 
 To start only a local PostgreSQL with the database roles, run `cp .env.example .env`, fill in the passwords, then `docker compose up -d`.
+
+## Real Stripe test mode (optional)
+
+The same adapter also runs against a real Stripe test-mode account, as a long-running local stack. It is not part of CI, which only replays the recorded, redacted fixtures. You need a Stripe CLI `stripe login` and a restricted test key in your local `.env` (never committed; loaded by `scripts/sandbox/env.sh`). Live keys and `livemode=true` events are rejected.
+
+```sh
+sh scripts/sandbox/up.sh                      # stack + real webhooks via stripe listen and the chaos relay
+sh scripts/sandbox/traffic.sh --count 20 --card pm_card_bypassPending --seed 1
+sh scripts/sandbox/catchup.sh                 # resend missed events, sync and import the bank
+sh scripts/sandbox/accept.sh --only ac-8.4    # also ac-8.5 / ac-8.6 / ac-8.8 / ac-8.9
+sh scripts/sandbox/check-payout.sh            # exit 0 once an automatic payout has settled, 75 while waiting
+sh scripts/sandbox/report.sh                  # write the run report under docs/runs/
+sh scripts/sandbox/down.sh                    # stop; keeps volumes
+```
+
+Any figures about the real run (payments, refunds, the payout, duplicates and invariants) come from the [run report](docs/runs/sandbox-sbx_20261102T224453022706Z.md) only.
 
 ## Read more
 

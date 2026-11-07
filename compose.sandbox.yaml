@@ -1,0 +1,34 @@
+# Only scripts/sandbox selects this overlay, project and explicit environment.
+services:
+  postgres:
+    profiles: !override [sandbox]
+    ports: !override ["127.0.0.1:15432:5432"]
+    volumes: !override
+      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
+      - sandbox-pgdata:/var/lib/postgresql
+  simulator:
+    profiles: !override [sandbox]
+    ports: !override ["127.0.0.1:18081:8081"]
+    environment:
+      SPRING_PROFILES_ACTIVE: sandbox
+      STRIPE_API_KEY: ${STRIPE_API_KEY:?load with scripts/sandbox/env.sh}
+      SIM_STRIPE_API_KEY: ""
+      SIM_STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:?start with scripts/sandbox/up.sh}
+      SIM_RELAY_TARGET_URL: http://app:8080/webhooks/stripe
+      SIM_RELAY_RECORD_BODIES: "true"
+      SIM_CLOCK_FOLLOW_WALL: "true"
+      SIM_CLOCK_START: ${SANDBOX_CLOCK_START:?set by sandbox scripts}
+      SIM_SANDBOX_RUN_ID: ${SIM_SANDBOX_RUN_ID:?set by sandbox scripts}
+      SIM_SANDBOX_WINDOW_START: ${SIM_SANDBOX_WINDOW_START:?set by sandbox scripts}
+  app:
+    profiles: !override [sandbox]
+    ports: !override ["127.0.0.1:18080:8080"]
+    environment:
+      SPRING_PROFILES_ACTIVE: sandbox
+      STRIPE_API_BASE_URL: http://simulator:8081/relay/stripe-api
+      STRIPE_API_KEY: ${STRIPE_API_KEY:?load with scripts/sandbox/env.sh}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:?start with scripts/sandbox/up.sh}
+      LEDGERLAB_BANK_PAYMENTS_ENABLED: "true"
+      LEDGERLAB_BANK_PAYMENTS_BASE_URL: http://simulator:8081
+volumes:
+  sandbox-pgdata:

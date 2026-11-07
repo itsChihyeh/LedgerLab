@@ -1,0 +1,65 @@
+{
+  "scenario": "s1",
+  "run_id": "sbx_20261102T224453022706Z",
+  "api_version": "2026-09-30.endive",
+  "recorded_at": "2026-11-03T00:14:42.241642Z",
+  "files": [
+    {
+      "file": "01-webhook-charge.succeeded.json",
+      "order": 1,
+      "kind": "webhook",
+      "type": "charge.succeeded",
+      "api_version": "2026-09-30.endive",
+      "recorded_at": "2026-11-03T00:14:42.241642Z",
+      "expected": {
+        "event": {
+          "id": "evt_3UXVJ2F5hIinUF491kAVddrL",
+          "type": "charge.succeeded",
+          "apiVersion": "2026-09-30.endive",
+          "livemode": false,
+          "occurredAt": "2026-11-03T00:10:29Z"
+        },
+        "charge": {
+          "eventId": "evt_3UXVJ2F5hIinUF491kAVddrL",
+          "chargeId": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+          "paymentIntentId": "pi_3UXVJ2F5hIinUF491Xw7Lw5e",
+          "amount": 11500,
+          "amountCaptured": 11500,
+          "currency": "cad",
+          "captured": true,
+          "status": "succeeded",
+          "livemode": false,
+          "created": "2026-11-03T00:10:28Z",
+          "receivedAt": "2026-11-03T00:14:42.241642Z"
+        },
+        "admission": "APPLIED"
+      }
+    },
+    {
+      "file": "02-api-balance_transactions.json",
+      "order": 2,
+      "kind": "api",
+      "type": "balance_transaction",
+      "method": "GET",
+      "path": "/v1/balance_transactions",
+      "status": 200,
+      "api_version": "2026-09-30.endive",
+      "recorded_at": "2026-11-03T02:14:44.176215Z",
+      "expected": {
+        "items": [
+          {
+            "id": "txn_3UXVJ2F5hIinUF491LXP3f5A",
+            "type": "charge",
+            "source": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+            "amount": 11500,
+            "fee": 456,
+            "net": 11044,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:28Z"
+          }
+        ]
+      }
+    }
+  ],
+  "api_recording": "included"
+}

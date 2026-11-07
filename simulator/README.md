@@ -134,6 +134,63 @@ curl http://localhost:8081/sim/relay/plan
 
 `RelayTest` 以真实 PostgreSQL 和 JDK HttpServer 验证本任务场景，为 AC-2.1（字节/签名）、AC-2.2（短延迟/乱序）、AC-2.3（重复）、AC-8.2（fake Stripe 协议）提供故障注入能力验证；不替代主应用对应的账本验收测试。
 
+### 出站代理（P6 T02）
+
+设置 `SIM_RELAY_OUTBOUND_ENABLED=true`（`sim.relay.outbound-enabled`），或启用 `sandbox` profile，即提供 `ANY /relay/stripe-api/**` 和 `GET /sim/relay/stats?since=<ISO-8601>`。默认模式不启用新 HTTP 接口。主应用的 `ledgerlab.stripe.api-base-url` 指向 `http://simulator:8081/relay/stripe-api`；reader 和退款适配器都会保留该路径前缀。
+
+- `SIM_RELAY_UPSTREAM_API_URL` / `sim.relay.upstream-api-url` 默认 `https://api.stripe.com`，只允许 HTTPS 或 loopback HTTP（localhost、127.x.x.x、IPv6 ::1）；不允许 URL 内嵌凭证、查询串或 fragment，启用代理时配置非法就启动失败。不跟随重定向。
+- 连接超时 `SIM_RELAY_CONNECT_TIMEOUT` 默认 `PT5S`，读取期限 `SIM_RELAY_READ_TIMEOUT` 默认 `PT60S`（对应 `sim.relay.connect-timeout/read-timeout`）。读取期限覆盖完整交换，包括响应正文停滞；超时返回 504，不自动重试。
+- 方法、原始路径、查询串、正文原样转发。调用方的头只转发 Authorization、Stripe-Version、Idempotency-Key、Content-Type；HTTP 客户端自行产生必要的传输头。响应保留状态、原文字节、Content-Type 和 Request-Id。live 凭证直接 403，不发请求、不消耗计划次数、不记交换表。
+
+```json
+{"rules":[{"event_type":"refund.updated","action":"DUPLICATE","copies":2},{"direction":"OUTBOUND","method":"POST","path_prefix":"/v1/refunds","action":"DROP_RESPONSE","times":1}]}
+```
+
+两方向独立按顺序匹配；出站须同时匹配 method 和原始 path 前缀（不含查询串），跳过次数已耗尽的规则，没有可用规则则 PASS。`times` 为正整数，匹配时原子消耗，`PUT /sim/relay/plan` 替换后重置，进程重启不保留。GET 返回配置次数，不是剩余次数；入站格式和已排队请求不变。
+
+出站动作 PASS 原样返回；DROP_RESPONSE 先完整读取上游响应，再返回 504 `{"error":"relay dropped upstream response"}`，日志保留上游真实状态和正文哈希；FAIL_BEFORE_SEND 不发出请求，返回 503。网络失败/超时返回 504，交换记录中的上游状态和响应哈希为空。日志动作仍是选中的计划动作。
+
+`sim_chaos.api_exchange` 每次允许的出站调用追加一行，存路径、查询参数**名**（不存值）、动作、上游状态、时间、耗时和正文 SHA-256。`SIM_RELAY_RECORD_BODIES` / `sim.relay.record-bodies` 默认 false；sandbox profile 默认 true，可显式关闭。打开时出站表保存请求/响应原文字节，`sim_chaos.inbound_recording` 每次收到 webhook 另存原文、事件号/类型和哈希；关闭时不新增入站录制，出站正文为空。两表不保存任何头（包括签名、凭证），simulator 只有 INSERT/SELECT，UPDATE/DELETE/TRUNCATE 都由数据库拒绝。导出脱敏由后续录制夹具任务实现。
+
+统计从持久日志计算，`since` 必填、含边界，非法时间返回 400；所有动作都有键，未发生为 0。入站按 `relay_log.attempt_no=0` 计接收动作，一次 DUPLICATE 只计 1，超时释放另计 HOLD_TIMEOUT_RELEASE；出站按交换行计数。入站沿用模拟时间，出站/录制取注入的审计 Clock。两个方向的计数都不随计划替换清零。
+
+`OutboundRelayTest`、`OutboundRelayConfigurationTest` 和既有 `RelayTest` 使用 loopback JDK HttpServer / PostgreSQL 验证 AC-8.6 的故障注入、AC-8.3 的录制基础和 AC-8.10 的统计基础，不调用真实 Stripe，也不代替后续真实退款验收。
+
+## 沙箱模式（P6 T03）
+
+显式启用 Spring `sandbox` profile 才装配 `/sim/sandbox/**`。运行仍是独立 simulator 进程；主应用不读取 `sim_sandbox`，不读取处理方模拟状态或真值。真实 Stripe 密钥仅由 `scripts/sandbox/env.sh` 加载给子进程，不把值写进命令或文档。T03 的自动测试只用本地 HttpServer，不连接 Stripe。
+
+| 属性 | 环境变量／默认值 |
+|---|---|
+| `sim.sandbox.stripe-api-key` | `STRIPE_API_KEY`，必填，只接受测试模式前缀 |
+| `sim.sandbox.stripe-base-url` | `SIM_SANDBOX_STRIPE_BASE_URL`，默认 `http://localhost:8081/relay/stripe-api`，经 T02 出站代理 |
+| `sim.sandbox.run-id` | `SIM_SANDBOX_RUN_ID`，必填，`sbx_` 后跟 1～100 个字母、数字、下划线或连字符 |
+| `sim.sandbox.window-start` | `SIM_SANDBOX_WINDOW_START`，必填，ISO-8601 UTC 时刻 |
+| `sim.clock.follow-wall` | `SIM_CLOCK_FOLLOW_WALL`，sandbox 默认 true，其他 profile 默认 false |
+
+每秒按注入的现实 UTC Clock 推进模拟时钟，只进不退，执行到期 relay 回调、退款扫描和银行计划。现实时间早于手动快进后的模拟时间时不推进；默认冻结模式不变。银行日历仍限定 2026–2027。
+
+```http
+POST /sim/sandbox/payments
+Content-Type: application/json
+
+{"count":20,"card":"pm_card_bypassPending","seed":1}
+```
+
+count 仅接受 1～50 整数，seed 为有符号 64 位整数，卡只接受 `pm_card_bypassPending` 和 T01 已验证的 `pm_card_ca`。同种子产生相同的 500～20000 分序列；固定 Stripe-Version，CAD、自动确认和自动请款、automatic payment methods enabled 且 allow_redirects=never，不传 payment_method_types。成功须验证 charge 为 card、livemode=false。连接超时 5 秒，完整响应期限 60 秒，不跟随重定向或自动重试。
+
+幂等键为 `<run_id>:pay:<card>:<seed>:<序号>`，序号从 1 开始。相同 card/seed 的扩容请求复用前面的支付；换 card 或 seed 是新批。每笔发送前后追加 started/结果行；已确认成功重放返回原结果，不再发送。未确认支付重试使用同键；首次尝试满 23 小时则记 IDEMPOTENCY_WINDOW_EXPIRED、不再 POST，需核查原对象，不能删记录绕过保护。部分失败不影响已成功支付，返回 `{count,succeeded,failed,payments}`；单进程生成请求串行执行。
+
+`GET /sim/sandbox/payments` 返回当前 run 的全部追加行（ordinal、id 升序），包含 amount、payment_intent、charge、status、http_status、error_code、recorded_at。无对象或错误时用空串，没有 HTTP 响应时 http_status 为 null。错误仅保存安全 code 或本地原因码，不保存 message、凭证或完整原文。`GET /sim/sandbox/summary` 返回 run_id、cards（每卡 count/amount）、succeeded/failed/pending、payouts_received；支付按 card/seed/ordinal 最新行计数，各卡金额包含失败的逻辑支付，重试不重复累计。
+
+`POST /sim/sandbox/bank/sync` 无请求体，拉取窗口内 paid payout，limit=100，跟随 starting_after 直到 has_more=false。全部页成功后，标准自动 CAD 正 payout 交给现有银行入口；入账日期、拆分/重复/少到故障仍由银行计划独立决定。重复已接收 payout 记 ALREADY_RECEIVED；其他跳过原因包括 MANUAL、INSTANT、CURRENCY、AMOUNT、LIVEMODE、NOT_PAID、OUTSIDE_WINDOW、INVALID_ID。金额遵守模拟银行既有 `<2^53` 约束。
+
+响应包含 `{seen,received,skipped:[{payout,reason}],pages,httpStatus,errorCode}`，received 是本次新接收数。任何页失败返回 502 和已完整读取页数，银行零入账；成功时所有接收与同步记录同事务提交，接收失败回滚本次全部入账。每次成功或失败都追加到 bank_sync。摘要的 payouts_received 为本 run 成功接收的唯一 payout 数，跨 run 不重复通知银行。
+
+V8 的两张表只允许 simulator INSERT/SELECT，禁止 UPDATE/DELETE/TRUNCATE，其他应用角色无权限。initdb 预建 schema；**已有旧卷**需管理员一次执行 `CREATE SCHEMA sim_sandbox AUTHORIZATION simulator;`，然后再启动迁移，不删卷。T04 沙箱栈新卷和冒烟新卷自动处理。
+
+`SandboxTest`、`SandboxConfigurationTest`、既有 `ProcessorTest` 覆盖 AC-8.2、8.4、8.8、8.10 的沙箱桥能力和角色边界；真实 webhook、自动 payout 与最终报告仍由后续沙箱任务验收。
+
 ## 退款（P3 T06）
 
 仅合成测试数据；不连接真实 Stripe。退款 REST 必须带 `Authorization: Bearer <sim.stripe.api-key>` 和 `Stripe-Version: 2026-09-30.endive`；创建另带 `Idempotency-Key`。例如：
