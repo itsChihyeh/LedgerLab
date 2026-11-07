@@ -109,3 +109,13 @@ Prometheus ──alerts──▶ Alertmanager ──webhook──▶ 接收程�
 - **不校验 `Host` 头**：Alertmanager 容器发来的 `Host` 是 `host.docker.internal:9095`；安全靠默认只听 127.0.0.1。
 - **时间格式**：`receivedAt` 为 UTC 毫秒精度加 `Z`，例如 `2026-11-07T08:30:15.123Z`。
 - **写文件失败**回 500 `internal_error`，不打印告警行。标准输出的 `severity` 缺失时打 `unknown`。
+
+## 实现备注（P11-T03）
+- **镜像**：`prom/alertmanager:v0.28.1`（用户 2026-11-07 批准），常量 `Amtool.IMAGE`（测试）和 `compose.demo.yaml` 的 `alertmanager` 服务用同一个标签；只在测试和 `observability` profile 里用。
+- **配置**：`ops/alertmanager/alertmanager.yml` 按 2.1。`url_file` 在 Alertmanager 官方文档的 `webhook_config` 里支持，本机地址直接写在配置里；`AlertmanagerConfigTest` 另有一个用例证明固定版本接受 `url_file`（真实渠道将来走它）。Prometheus 两份配置都加了 `alerting.alertmanagers`。
+- **路由测试怎么区分子路由**：两条子路由接收方相同，`amtool config routes test` 的接收方列表区分不了。用 `--tree`：输出里带命中的路径，例如 `└── {severity="page"}  receiver: local-sink`，未命中子路由时只有 `default-route`。`amtool` 不打印 `group_wait` 等时间参数，所以它们用 SnakeYAML 读文件另测（`ac_13_3_thePageRoutePagesFasterThanTheTicketRoute`）。故意写坏的配置是把 `receiver: local-sink` 改成未定义的接收方，`check-config` 退出非 0。
+- **端到端测试的设置**：`management.server.address=0.0.0.0`（默认的回环地址容器够不着）；`Testcontainers.exposeHostPorts(管理端口, 接收端口)`；Prometheus 与 Alertmanager 在同一 `Network`，Alertmanager 的别名是 `alertmanager`。测试副本改动的字段只有：Prometheus 的 `scrape_interval`／`evaluation_interval`（1s）、`ledgerlab-app` 的抓取目标、`alertmanagers` 目标、`LedgerLabInboxStuck` 的 `for`（5s）、Alertmanager 两条子路由的 `group_wait`／`group_interval`／`repeat_interval`（1s／2s／10m）和 webhook 地址。另一个用例 `ac_13_4_theTestCopiesDifferFromTheRealFilesOnlyInTimesAndAddresses` 把这些字段替换成标记后比较两边的解析结果，并证明改了别处（例如 `expr`）会被发现。`ledgerlab-agent` 抓取任务保持原样（目标不可达，对这条告警没有影响）。
+- **等待**：每 250 ms 轮询接收端收到的列表，总超时 90 秒，超时时失败信息带两个容器的日志。接收端是测试 JVM 里的 JDK `HttpServer`（随机端口）；测试里没有外部地址。
+- **耗时**：端到端用例在容器就绪后约 16 秒收到 `firing` 与 `resolved`；`AlertDeliveryTest` 两个用例共约 40 秒（含 Spring 上下文、数据库和两个容器的启动），`AlertmanagerConfigTest` 约 5 秒（每次 `amtool` 一个一次性容器）。
+- **演示栈**：`alertmanager` 服务 `mem_limit: 64m`，只发布 `127.0.0.1:9093`，只读挂 `ops/alertmanager/`（`create_host_path: false`），带 `extra_hosts: host.docker.internal:host-gateway`；`prometheus` 依赖它（`service_started`）。已用假环境变量文件跑过 `docker compose --profile observability config`，**没有 `up`**。Linux 上 `host-gateway` 指向网桥地址，只听 `127.0.0.1` 的接收程序到不了，写在运行手册里，未在 Linux 上实测。
+- **运行手册**：加了“在本机看到告警送达”一节；`aws-plan.md` 加了内存估算行（估算，未实测）和“需要用户决定”里的真实渠道说明。

@@ -132,6 +132,34 @@ services:
     depends_on:
       app:
         condition: service_healthy
+      alertmanager:
+        condition: service_started
+    networks: [demo]
+
+  # Optional (P11-T03): `--profile observability` also adds Alertmanager, which sends the alerts of the prometheus
+  # service to the local sink (scripts/ops/alert-sink.py, started by hand on the host, 127.0.0.1:9095; nothing is
+  # sent anywhere else). Because the sink runs on the host, the container reaches it as host.docker.internal; on
+  # Linux that name needs the extra_hosts entry. The sink must listen on an address the Docker host gateway can
+  # reach (see docs/ops/runbook.md). No data volume: silences are lost with the daily reset, which is accepted.
+  alertmanager:
+    profiles: [observability]
+    image: prom/alertmanager:v0.28.1
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address=0.0.0.0:9093
+    mem_limit: 64m
+    ports:
+      - "127.0.0.1:9093:9093"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - type: bind
+        source: ./ops/alertmanager
+        target: /etc/alertmanager
+        read_only: true
+        bind:
+          create_host_path: false
     networks: [demo]
 
 networks:

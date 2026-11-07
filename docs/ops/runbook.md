@@ -75,6 +75,23 @@
 - 不为了让告警消失而改规则、改 `job` 名或延长 `for`；规则改动走代码评审。
 - 不在故障期间手改库里的状态（inbox、命令、账本）；见 `inbox-stuck` 与 `outbound-exhausted` 两节的“不能做什么”。
 
+## 在本机看到告警送达
+
+设计见 `docs/design/alerting-and-tracing.md` 第 2 节。链路：Prometheus →（告警）→ Alertmanager →（webhook）→ 本机接收程序 → 一个 JSONL 文件和一行标准输出。**告警不会发到本机以外的任何地方**；接收方只有 `local-sink`（`ops/alertmanager/alertmanager.yml`）。
+
+1. **起接收程序**（只用 Python 标准库，默认只听 `127.0.0.1:9095`）：
+   `python scripts/ops/alert-sink.py --out target/alerts.jsonl`
+   每个通知追加一行 JSON（收到时间、`status`、`groupKey`、每条告警的标签和注解），同时在终端打一行 `alert <status> <alertname> <severity>`。看文件：`tail -f target/alerts.jsonl`（PowerShell：`Get-Content target/alerts.jsonl -Wait`）。
+2. **起 Alertmanager**，二选一：
+   - 演示栈：带 `--profile observability` 起 `compose.demo.yaml`（`scripts/demo` 在 `LEDGERLAB_DEMO_OBSERVABILITY=1` 时已带），其中的 `alertmanager` 服务只发布 `127.0.0.1:9093`，Prometheus 经 `alertmanager:9093` 送告警。
+   - 单独起（配合 `ops/prometheus/prometheus.yml` 的本机抓取方式）：
+     `docker run -d --name ledgerlab-alertmanager -p 127.0.0.1:9093:9093 --add-host host.docker.internal:host-gateway -v "<仓库路径>/ops/alertmanager:/etc/alertmanager:ro" prom/alertmanager:v0.28.1`
+     用完 `docker rm -f ledgerlab-alertmanager`。
+3. **容器怎么够到主机上的接收程序**：Alertmanager 配置里的地址是 `http://host.docker.internal:9095/alerts`。Docker Desktop（Windows、macOS）上这个名字自带，并且能到达只听 `127.0.0.1` 的程序；Linux 上靠 Compose／`docker run` 里的 `host-gateway` 映射，它指向 Docker 网桥地址（通常 `172.17.0.1`），**只听 `127.0.0.1` 的接收程序在那里收不到**，要把 `--host` 设成这个网桥地址（不要用 `0.0.0.0`，那会把接收程序开放给局域网）。Linux 这一条未实测（本任务只在 Docker Desktop 上验证过送达，自动化测试用 Testcontainers 的主机端口转发，不走 `host.docker.internal`）。
+4. **看到什么**：按严重程度分组等待——`page` 约 30 秒后第一次送达，`ticket` 约 2 分钟；之后 `page` 每 5 分钟、`ticket` 每 10 分钟更新一次分组，没有变化时 `page` 每小时、`ticket` 每 12 小时重发。告警恢复会再送达一条 `status=resolved`。Alertmanager 自己的页面（`http://127.0.0.1:9093`）能看到当前分组。
+5. **静默不持久**：Alertmanager 没有数据卷，静默（silence）和通知记录随容器重建丢失，演示站的每日重置也会清掉。这是有意的取舍（演示站没有值班），要长期静默就得给它一个卷，那属于部署决定。
+6. **真实通知渠道（邮件、聊天、推送）要用户决定**，见 `docs/deploy/aws-plan.md`。选定后只需要加一个接收方和一条路由；地址和凭证放在仓库之外的文件里，经 `url_file`（webhook 地址）或相应的 `*_file` 字段读取，**不进仓库，也不写在配置文件里**。选定之前不对外发送。
+
 ## 其他 P10 指标：含义与异常值
 
 | 指标 | 含义 | 什么值算异常 |

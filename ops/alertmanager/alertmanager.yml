@@ -1,0 +1,26 @@
+# Alertmanager configuration of LedgerLab (docs/design/alerting-and-tracing.md section 2; ADR-0022).
+# The only receiver is the local sink (scripts/ops/alert-sink.py on the host, 127.0.0.1:9095): nothing leaves the
+# machine. A real channel (mail, chat, push) is for the user to choose; its address would go through `url_file`
+# (a file outside the repository), never into this file.
+# Tested by AlertmanagerConfigTest (amtool) and AlertDeliveryTest (a real Alertmanager delivering to a test receiver).
+route:
+  receiver: local-sink
+  group_by: [alertname, kind]
+  routes:
+    - matchers:
+        - severity="page"
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 1h
+    - matchers:
+        - severity="ticket"
+      group_wait: 2m
+      group_interval: 10m
+      repeat_interval: 12h
+
+receivers:
+  - name: local-sink
+    webhook_configs:
+      - url: http://host.docker.internal:9095/alerts
+        send_resolved: true
+        max_alerts: 20
