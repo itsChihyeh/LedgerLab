@@ -1,0 +1,128 @@
+{
+  "scenario": "s2",
+  "run_id": "sbx_20261102T224453022706Z",
+  "api_version": "2026-09-30.endive",
+  "recorded_at": "2026-11-06T02:39:15.183563Z",
+  "files": [
+    {
+      "file": "01-api-refunds-create.json",
+      "order": 1,
+      "kind": "api",
+      "type": "refund",
+      "api_version": "2026-09-30.endive",
+      "recorded_at": "2026-11-06T02:39:15.183563Z",
+      "method": "POST",
+      "path": "/v1/refunds",
+      "status": 200,
+      "expected": {
+        "operation": "create",
+        "refund": {
+          "ref": "re_3UXVJ2F5hIinUF491JYoNysJ",
+          "refundId": "rfd_01M6QBJZ4TAY557ZF41V1QG79C",
+          "chargeRef": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+          "amount": 100,
+          "status": "succeeded",
+          "failureReason": null
+        }
+      }
+    },
+    {
+      "file": "02-webhook-refund.created.json",
+      "order": 2,
+      "kind": "webhook",
+      "type": "refund.created",
+      "api_version": "2026-09-30.endive",
+      "recorded_at": "2026-11-06T02:39:15.368566Z",
+      "expected": {
+        "event": {
+          "id": "evt_3UXVJ2F5hIinUF491zXT8MT7",
+          "type": "refund.created",
+          "apiVersion": "2026-09-30.endive",
+          "livemode": false,
+          "occurredAt": "2026-11-06T02:39:15Z"
+        },
+        "refund": {
+          "ref": "re_3UXVJ2F5hIinUF491JYoNysJ",
+          "refundId": "rfd_01M6QBJZ4TAY557ZF41V1QG79C",
+          "chargeRef": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+          "amount": 100,
+          "status": "succeeded",
+          "failureReason": null,
+          "occurredAt": "2026-11-06T02:39:15Z"
+        }
+      }
+    },
+    {
+      "file": "03-webhook-refund.updated.json",
+      "order": 3,
+      "kind": "webhook",
+      "type": "refund.updated",
+      "api_version": "2026-09-30.endive",
+      "recorded_at": "2026-11-06T02:39:15.664880Z",
+      "expected": {
+        "event": {
+          "id": "evt_3UXVJ2F5hIinUF491qE9BCaf",
+          "type": "refund.updated",
+          "apiVersion": "2026-09-30.endive",
+          "livemode": false,
+          "occurredAt": "2026-11-06T02:39:15Z"
+        },
+        "refund": {
+          "ref": "re_3UXVJ2F5hIinUF491JYoNysJ",
+          "refundId": "rfd_01M6QBJZ4TAY557ZF41V1QG79C",
+          "chargeRef": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+          "amount": 100,
+          "status": "succeeded",
+          "failureReason": null,
+          "occurredAt": "2026-11-06T02:39:15Z"
+        }
+      }
+    },
+    {
+      "file": "04-api-refunds-list.json",
+      "order": 4,
+      "kind": "api",
+      "type": "refund",
+      "api_version": "2026-09-30.endive",
+      "recorded_at": "2026-11-06T02:39:21.576109Z",
+      "method": "GET",
+      "path": "/v1/refunds",
+      "status": 200,
+      "expected": {
+        "operation": "findByRefundId",
+        "refund": {
+          "ref": "re_3UXVJ2F5hIinUF491JYoNysJ",
+          "refundId": "rfd_01M6QBJZ4TAY557ZF41V1QG79C",
+          "chargeRef": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+          "amount": 100,
+          "status": "succeeded",
+          "failureReason": null
+        },
+        "items": 1
+      }
+    },
+    {
+      "file": "05-api-refunds-retrieve.json",
+      "order": 5,
+      "kind": "api",
+      "type": "refund",
+      "api_version": "2026-09-30.endive",
+      "recorded_at": "2026-11-06T02:39:21.318083Z",
+      "method": "GET",
+      "path": "/v1/refunds/re_3UXVJ2F5hIinUF491JYoNysJ",
+      "status": 200,
+      "expected": {
+        "operation": "retrieve",
+        "refund": {
+          "ref": "re_3UXVJ2F5hIinUF491JYoNysJ",
+          "refundId": "rfd_01M6QBJZ4TAY557ZF41V1QG79C",
+          "chargeRef": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+          "amount": 100,
+          "status": "succeeded",
+          "failureReason": null
+        }
+      }
+    }
+  ],
+  "retrieve_recording": "included"
+}

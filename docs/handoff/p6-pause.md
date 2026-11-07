@@ -2,6 +2,8 @@
 
 P6（真实 Stripe 测试模式）做到一半时暂停：用户的 Codex 会员到期，本机执行停止。本文件说明停在哪、有哪些证据、怎么接着做。设计正本是 [stripe-integration 第 9 节](../design/stripe-integration.md#9-p6-真实沙箱运行开工设计2026-11-02)，开户实测记录在 [p6-probe.md](p6-probe.md)。
 
+> **2026-11-06 更新**：已按本文第 4 节在没有 Codex 的情况下恢复，T07、T08 完成，P6 全部做完。验收清单、已知限制见 [p6.md](p6.md)。下面保留的是暂停当时的记录，其中“仍待 T07 观察”等说法已被设计文档第 7 节的 T07 实测取代。
+
 ## 1. 已完成（`p6` 分支，T01–T06）
 
 | 任务 | 内容 | AC | 结果 |
@@ -34,7 +36,7 @@ P6（真实 Stripe 测试模式）做到一半时暂停：用户的 Codex 会员
 ## 4. 恢复步骤（不需要 Codex，Claude 本机执行即可）
 
 1. `sh scripts/sandbox/up.sh`（会重新起容器和 `stripe listen`，核对 CLI 账号）。
-2. `sh scripts/sandbox/catchup.sh`：Events API 保留 30 天，停机期间的 payout 和支付事件会补投；必须在 **2026-12-02 之前**恢复，否则最早的事件会超出保留期。
+2. `sh scripts/sandbox/catchup.sh`：Events API 保留 30 天，停机期间的 payout 和支付事件会补投；默认窗口起点是 2026-10-20，所以 **2026-11-19 之后**要给 `catchup.sh` 加 `--window-start`（取 30 天内的时刻）；原先写的 12-02 按最早事件算，对默认窗口不准（2026-11-07 更正，见 [p6.md](p6.md)）。
 3. `sh scripts/sandbox/check-payout.sh`：退出 0 才能做 T07；75 表示还在等。
 4. T07：按 `p6-tasks` 的任务说明实现 `accept.sh --only ac-8.8|ac-8.6|ac-8.9` 并真实跑；T08：补夹具、`report.sh`、验收清单 `docs/handoff/p6.md`。
 5. 全量 `./mvnw verify`、`./mvnw -f simulator/pom.xml verify`、`sh scripts/smoke-p5.sh` 后开 PR。

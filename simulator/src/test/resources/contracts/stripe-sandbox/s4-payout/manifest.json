@@ -1,0 +1,415 @@
+{
+  "scenario": "s4",
+  "run_id": "sbx_20261102T224453022706Z",
+  "api_version": "2026-09-30.endive",
+  "recorded_at": "2026-11-06T00:47:30.336437Z",
+  "files": [
+    {
+      "file": "01-webhook-payout.created.json",
+      "order": 1,
+      "kind": "webhook",
+      "type": "payout.created",
+      "api_version": "2026-09-30.endive",
+      "recorded_at": "2026-11-06T00:47:30.336437Z",
+      "expected": {
+        "event": {
+          "id": "evt_1UYbJWF5hIinUF49Rg8EfRuu",
+          "type": "payout.created",
+          "apiVersion": "2026-09-30.endive",
+          "livemode": false,
+          "occurredAt": "2026-11-06T00:47:30Z"
+        },
+        "payout": {
+          "id": "po_1UYbJVF5hIinUF49s91fRqrI",
+          "amount": 306651,
+          "currency": "cad",
+          "automatic": true,
+          "method": "standard",
+          "status": "in_transit",
+          "reconciliationStatus": "completed",
+          "arrivalDate": "2026-11-06T00:00:00Z",
+          "created": "2026-11-06T00:47:29Z"
+        }
+      }
+    },
+    {
+      "file": "02-webhook-payout.reconciliation_completed.json",
+      "order": 2,
+      "kind": "webhook",
+      "type": "payout.reconciliation_completed",
+      "api_version": "2026-09-30.endive",
+      "recorded_at": "2026-11-06T00:47:30.537242Z",
+      "expected": {
+        "event": {
+          "id": "evt_1UYbJWF5hIinUF49fmAezSZT",
+          "type": "payout.reconciliation_completed",
+          "apiVersion": "2026-09-30.endive",
+          "livemode": false,
+          "occurredAt": "2026-11-06T00:47:30Z"
+        },
+        "payout": {
+          "id": "po_1UYbJVF5hIinUF49s91fRqrI",
+          "amount": 306651,
+          "currency": "cad",
+          "automatic": true,
+          "method": "standard",
+          "status": "in_transit",
+          "reconciliationStatus": "completed",
+          "arrivalDate": "2026-11-06T00:00:00Z",
+          "created": "2026-11-06T00:47:29Z"
+        }
+      }
+    },
+    {
+      "file": "03-webhook-payout.paid.json",
+      "order": 3,
+      "kind": "webhook",
+      "type": "payout.paid",
+      "api_version": "2026-09-30.endive",
+      "recorded_at": "2026-11-06T00:52:30.887189Z",
+      "expected": {
+        "event": {
+          "id": "evt_1UYbOMF5hIinUF49gFOKCn0t",
+          "type": "payout.paid",
+          "apiVersion": "2026-09-30.endive",
+          "livemode": false,
+          "occurredAt": "2026-11-06T00:52:30Z"
+        },
+        "payout": {
+          "id": "po_1UYbJVF5hIinUF49s91fRqrI",
+          "amount": 306651,
+          "currency": "cad",
+          "automatic": true,
+          "method": "standard",
+          "status": "paid",
+          "reconciliationStatus": "completed",
+          "arrivalDate": "2026-11-06T00:00:00Z",
+          "created": "2026-11-06T00:47:29Z"
+        }
+      }
+    },
+    {
+      "file": "04-api-payouts-retrieve.json",
+      "order": 4,
+      "kind": "api",
+      "type": "payout",
+      "api_version": "2026-09-30.endive",
+      "recorded_at": "2026-11-06T02:39:07.878568Z",
+      "method": "GET",
+      "path": "/v1/payouts/po_1UYbJVF5hIinUF49s91fRqrI",
+      "status": 200,
+      "expected": {
+        "operation": "retrieve",
+        "payout": {
+          "id": "po_1UYbJVF5hIinUF49s91fRqrI",
+          "amount": 306651,
+          "currency": "cad",
+          "automatic": true,
+          "method": "standard",
+          "status": "paid",
+          "reconciliationStatus": "completed",
+          "arrivalDate": "2026-11-06T00:00:00Z",
+          "created": "2026-11-06T00:47:29Z"
+        }
+      }
+    },
+    {
+      "file": "05-api-balance_transactions.json",
+      "order": 5,
+      "kind": "api",
+      "type": "balance_transaction",
+      "api_version": "2026-09-30.endive",
+      "recorded_at": "2026-11-06T00:47:31.522494Z",
+      "method": "GET",
+      "path": "/v1/balance_transactions",
+      "status": 200,
+      "expected": {
+        "operation": "listForPayout",
+        "payoutId": "po_1UYbJVF5hIinUF49s91fRqrI",
+        "pages": 1,
+        "items": [
+          {
+            "id": "txn_1UYbJVF5hIinUF498MEUYSkg",
+            "type": "payout",
+            "source": "po_1UYbJVF5hIinUF49s91fRqrI",
+            "amount": -306651,
+            "fee": 0,
+            "net": -306651,
+            "currency": "cad",
+            "created": "2026-11-06T00:47:29Z"
+          },
+          {
+            "id": "txn_3UXWG7F5hIinUF490p74Bi0d",
+            "type": "charge",
+            "source": "ch_3UXWG7F5hIinUF490TOqZRVy",
+            "amount": 18732,
+            "fee": 723,
+            "net": 18009,
+            "currency": "cad",
+            "created": "2026-11-03T01:11:32Z"
+          },
+          {
+            "id": "txn_3UXWG6F5hIinUF491Tp4O0BH",
+            "type": "charge",
+            "source": "ch_3UXWG6F5hIinUF491XMYHYl4",
+            "amount": 19179,
+            "fee": 740,
+            "net": 18439,
+            "currency": "cad",
+            "created": "2026-11-03T01:11:31Z"
+          },
+          {
+            "id": "txn_3UXWG5F5hIinUF491sy3XNfD",
+            "type": "charge",
+            "source": "ch_3UXWG5F5hIinUF491JaEZdV1",
+            "amount": 13610,
+            "fee": 534,
+            "net": 13076,
+            "currency": "cad",
+            "created": "2026-11-03T01:11:30Z"
+          },
+          {
+            "id": "txn_3UXWG4F5hIinUF490AaZkQ0J",
+            "type": "charge",
+            "source": "ch_3UXWG4F5hIinUF490a0eFovT",
+            "amount": 19272,
+            "fee": 743,
+            "net": 18529,
+            "currency": "cad",
+            "created": "2026-11-03T01:11:28Z"
+          },
+          {
+            "id": "txn_3UXWG3F5hIinUF490fijrg8G",
+            "type": "charge",
+            "source": "ch_3UXWG3F5hIinUF490AL1MoKL",
+            "amount": 3065,
+            "fee": 143,
+            "net": 2922,
+            "currency": "cad",
+            "created": "2026-11-03T01:11:28Z"
+          },
+          {
+            "id": "txn_3UXWG1F5hIinUF490gWIWKTM",
+            "type": "charge",
+            "source": "ch_3UXWG1F5hIinUF490VIvEm1u",
+            "amount": 3593,
+            "fee": 163,
+            "net": 3430,
+            "currency": "cad",
+            "created": "2026-11-03T01:11:26Z"
+          },
+          {
+            "id": "txn_3UXVJMF5hIinUF490BLJrR3C",
+            "type": "charge",
+            "source": "ch_3UXVJMF5hIinUF490VqzYb1p",
+            "amount": 18051,
+            "fee": 698,
+            "net": 17353,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:48Z"
+          },
+          {
+            "id": "txn_3UXVJLF5hIinUF490RbFypNy",
+            "type": "charge",
+            "source": "ch_3UXVJLF5hIinUF4907UrBi5u",
+            "amount": 2403,
+            "fee": 119,
+            "net": 2284,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:47Z"
+          },
+          {
+            "id": "txn_3UXVJKF5hIinUF4919XbQVWs",
+            "type": "charge",
+            "source": "ch_3UXVJKF5hIinUF491oYhCYlj",
+            "amount": 8947,
+            "fee": 361,
+            "net": 8586,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:46Z"
+          },
+          {
+            "id": "txn_3UXVJJF5hIinUF490bCaARVf",
+            "type": "charge",
+            "source": "ch_3UXVJJF5hIinUF49018yzUkZ",
+            "amount": 14786,
+            "fee": 577,
+            "net": 14209,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:45Z"
+          },
+          {
+            "id": "txn_3UXVJIF5hIinUF491Su0RDjp",
+            "type": "charge",
+            "source": "ch_3UXVJIF5hIinUF491lFMMx7n",
+            "amount": 8219,
+            "fee": 334,
+            "net": 7885,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:44Z"
+          },
+          {
+            "id": "txn_3UXVJHF5hIinUF491BKHvhCY",
+            "type": "charge",
+            "source": "ch_3UXVJHF5hIinUF49169PYJWP",
+            "amount": 12063,
+            "fee": 476,
+            "net": 11587,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:43Z"
+          },
+          {
+            "id": "txn_3UXVJGF5hIinUF491waGhhTO",
+            "type": "charge",
+            "source": "ch_3UXVJGF5hIinUF491G8h6vW1",
+            "amount": 690,
+            "fee": 56,
+            "net": 634,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:42Z"
+          },
+          {
+            "id": "txn_3UXVJFF5hIinUF490AK3bjO8",
+            "type": "charge",
+            "source": "ch_3UXVJFF5hIinUF4902OLG7ZH",
+            "amount": 16693,
+            "fee": 648,
+            "net": 16045,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:41Z"
+          },
+          {
+            "id": "txn_3UXVJEF5hIinUF4909UYyovZ",
+            "type": "charge",
+            "source": "ch_3UXVJEF5hIinUF490xwOosYR",
+            "amount": 11654,
+            "fee": 461,
+            "net": 11193,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:40Z"
+          },
+          {
+            "id": "txn_3UXVJDF5hIinUF491JlpylzB",
+            "type": "charge",
+            "source": "ch_3UXVJDF5hIinUF491SdmOPZb",
+            "amount": 12896,
+            "fee": 507,
+            "net": 12389,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:39Z"
+          },
+          {
+            "id": "txn_3UXVJCF5hIinUF490IXLB8I0",
+            "type": "charge",
+            "source": "ch_3UXVJCF5hIinUF490R3KtJdn",
+            "amount": 17481,
+            "fee": 677,
+            "net": 16804,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:38Z"
+          },
+          {
+            "id": "txn_3UXVJBF5hIinUF490gBVwjom",
+            "type": "charge",
+            "source": "ch_3UXVJBF5hIinUF4902mb7UYE",
+            "amount": 18908,
+            "fee": 730,
+            "net": 18178,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:37Z"
+          },
+          {
+            "id": "txn_3UXVJ9F5hIinUF4908VPR0G0",
+            "type": "charge",
+            "source": "ch_3UXVJ9F5hIinUF490lpXVPLE",
+            "amount": 12051,
+            "fee": 476,
+            "net": 11575,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:36Z"
+          },
+          {
+            "id": "txn_3UXVJ8F5hIinUF490pYPe96A",
+            "type": "charge",
+            "source": "ch_3UXVJ8F5hIinUF490DURxNaE",
+            "amount": 7795,
+            "fee": 318,
+            "net": 7477,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:35Z"
+          },
+          {
+            "id": "txn_3UXVJ7F5hIinUF491Y52zMNv",
+            "type": "charge",
+            "source": "ch_3UXVJ7F5hIinUF491Jd2Haef",
+            "amount": 6414,
+            "fee": 267,
+            "net": 6147,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:34Z"
+          },
+          {
+            "id": "txn_3UXVJ6F5hIinUF490CbCVkhk",
+            "type": "charge",
+            "source": "ch_3UXVJ6F5hIinUF490JWzgFyF",
+            "amount": 18381,
+            "fee": 710,
+            "net": 17671,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:33Z"
+          },
+          {
+            "id": "txn_3UXVJ5F5hIinUF491SuOwUj6",
+            "type": "charge",
+            "source": "ch_3UXVJ5F5hIinUF491Ackc8cR",
+            "amount": 19446,
+            "fee": 750,
+            "net": 18696,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:31Z"
+          },
+          {
+            "id": "txn_3UXVJ4F5hIinUF490h8IYa21",
+            "type": "charge",
+            "source": "ch_3UXVJ4F5hIinUF490TT1MW2v",
+            "amount": 16189,
+            "fee": 629,
+            "net": 15560,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:30Z"
+          },
+          {
+            "id": "txn_3UXVJ3F5hIinUF490SI3I02Z",
+            "type": "charge",
+            "source": "ch_3UXVJ3F5hIinUF490mPLewb6",
+            "amount": 6024,
+            "fee": 253,
+            "net": 5771,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:29Z"
+          },
+          {
+            "id": "txn_3UXVJ2F5hIinUF491LXP3f5A",
+            "type": "charge",
+            "source": "ch_3UXVJ2F5hIinUF491FFhBm1B",
+            "amount": 11500,
+            "fee": 456,
+            "net": 11044,
+            "currency": "cad",
+            "created": "2026-11-03T00:10:28Z"
+          },
+          {
+            "id": "txn_3UXQCaF5hIinUF490TfBEoq0",
+            "type": "charge",
+            "source": "ch_3UXQCaF5hIinUF490AcFsuFL",
+            "amount": 1234,
+            "fee": 76,
+            "net": 1158,
+            "currency": "cad",
+            "created": "2026-11-02T18:43:29Z"
+          }
+        ]
+      }
+    }
+  ]
+}

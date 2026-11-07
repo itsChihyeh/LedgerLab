@@ -23,6 +23,13 @@ def payment():
 
 
 class CatchupTest(unittest.TestCase):
+    def test_ac_8_5_report_names_recovered_and_still_missing_events(self):
+        still = [event(3)]
+        ids = catchup.event_ids(['evt_test1', 'evt_test2', 'evt_test3'], still)
+        self.assertEqual(['evt_test1', 'evt_test2'], ids['recovered_event_ids'])
+        self.assertEqual(['evt_test3'], ids['missing_event_ids'])
+        self.assertEqual({'recovered_event_ids': [], 'missing_event_ids': []}, catchup.event_ids([], []))
+
     def test_ac_8_5_merges_all_pages_and_deduplicates_overlap(self):
         pages = iter([{'data': [event(1), event(2)], 'has_more': True},
                       {'data': [event(2), event(3)], 'has_more': False}])
