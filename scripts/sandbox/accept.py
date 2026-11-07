@@ -69,6 +69,15 @@ def traffic(args):
             'TRAFFIC_PARTIALLY_FAILED_REVIEW_PERSISTED_ATTEMPTS')
 
 
+def captured_or_later(payment):
+    """CAPTURED, or SETTLED after a real payout batch took it (AC-8.8 runs after AC-8.4). A settled
+    payment still has to show the capture entry, so settlement cannot stand in for a missing capture."""
+    if payment.get('status') == 'CAPTURED':
+        return True
+    return payment.get('status') == 'SETTLED' and any(
+        p.get('entryType') == 'PAYMENT_CAPTURED' for p in payment.get('postings', []))
+
+
 def wait_for_captured(run, charges, report, seconds=300, monotonic=time.monotonic, sleep=time.sleep):
     deadline = monotonic() + seconds
     pending = set(charges)
@@ -88,7 +97,7 @@ def wait_for_captured(run, charges, report, seconds=300, monotonic=time.monotoni
             by_charge.setdefault(event['data']['object']['id'], (row, body, event))
         for charge in sorted(pending):
             payment = get_json(APP, '/api/payments/' + charge, missing_ok=True, timeout=min(5, remaining()))
-            if payment is None or payment.get('status') != 'CAPTURED' or charge not in by_charge:
+            if payment is None or not captured_or_later(payment) or charge not in by_charge:
                 continue
             require(payment.get('processorPaymentRef') == charge, 'PAYMENT_REFERENCE_MISMATCH')
             row, body, event = by_charge[charge]
@@ -103,7 +112,7 @@ def wait_for_captured(run, charges, report, seconds=300, monotonic=time.monotoni
             if inbox.get('status') != 'PROCESSED':
                 continue
             require(any(d.get('outcome') == 'NEW' for d in inbox.get('deliveries', [])), 'NO_ACCEPTED_DELIVERY')
-            evidence.append({'charge': charge, 'status': 'CAPTURED', 'event_id': event['id'],
+            evidence.append({'charge': charge, 'status': payment['status'], 'event_id': event['id'],
                              'inbox_status': inbox['status'], 'api_version': inbox['apiVersion'],
                              'relay_body_sha256': row['sha256'], 'signature_evidence': 'Stripe listen -> relay -> inbox'})
             pending.remove(charge)
@@ -167,12 +176,15 @@ def main():
     generate.add_argument('--card', choices=['pm_card_bypassPending', 'pm_card_ca'], default='pm_card_bypassPending')
     generate.add_argument('--seed', type=int, required=True)
     check = commands.add_parser('accept')
-    check.add_argument('--only', choices=['ac-8.4', 'ac-8.5'], default='ac-8.4')
+    check.add_argument('--only', choices=['ac-8.4', 'ac-8.5', 'ac-8.6', 'ac-8.8', 'ac-8.9'], default='ac-8.4')
     args = parser.parse_args()
     try:
         if args.command == 'traffic':
             traffic(args)
             return 0
+        if args.only in ('ac-8.6', 'ac-8.8', 'ac-8.9'):
+            from payout_refund_recon import run_ac
+            return run_ac(args.only)
         if args.only == 'ac-8.5':
             from duplicates import accept_duplicates
             return accept_duplicates()

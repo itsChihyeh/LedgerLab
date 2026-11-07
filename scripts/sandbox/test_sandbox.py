@@ -209,6 +209,14 @@ class SandboxTest(unittest.TestCase):
         self.assertEqual([], report['missing_charges'])
         self.assertEqual('evt_test', report['payments'][0]['event_id'])
 
+    def test_ac_8_4_settled_payment_counts_only_with_its_capture_entry(self):
+        capture = {'entryType': 'PAYMENT_CAPTURED'}
+        self.assertTrue(accept.captured_or_later({'status': 'CAPTURED'}))
+        self.assertTrue(accept.captured_or_later({'status': 'SETTLED', 'postings': [capture]}))
+        for payment in ({'status': 'SETTLED'}, {'status': 'SETTLED', 'postings': [{'entryType': 'BATCH_SETTLED'}]},
+                        {'status': 'RECEIVED', 'postings': [capture]}):
+            self.assertFalse(accept.captured_or_later(payment))
+
     def test_ac_8_4_accept_checks_three_negatives_and_audit_without_creating_payments(self):
         for violations, expected in (([], 0), ([{'invariant': 'INV-2', 'detail': 'bad balance'}], 1)):
             with tempfile.TemporaryDirectory() as directory, patch.object(accept, 'OUT', Path(directory)), \

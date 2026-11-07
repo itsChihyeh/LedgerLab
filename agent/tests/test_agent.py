@@ -155,12 +155,13 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(len(result.tool_calls), 2)
 
     def test_ac_10_4_more_than_8_model_turns_is_budget_exhausted(self) -> None:
-        steps = [use(f"t{i}", "get_issue", issue_id=ISSUE) for i in range(8)] + [submit()]
+        steps = [use(f"t{i}", "get_issue", issue_id=ISSUE) for i in range(9)] + [submit()]
         result, model = run(steps)
         self.assertEqual(result.status, "budget_exhausted")
-        self.assertEqual(result.turns, 8)
-        self.assertEqual(len(model.requests), 8)
+        self.assertEqual(result.turns, 9, "8 regular turns plus the final turn")
+        self.assertEqual(len(model.requests), 9)
         self.assertIn("turn limit of 8", result.conclusion.explanation)
+        self.assertFalse(result.final_turn_submit)
 
     def test_ac_10_4_invalid_tool_arguments_come_back_as_errors_and_count_toward_budget(self) -> None:
         tr = transport()
@@ -210,7 +211,7 @@ class AgentLoopTest(unittest.TestCase):
         result, model = run([both, submit()])
         self.assertEqual([c.tool for c in result.tool_calls], ["get_issue", "get_batch"])
         results = model.requests[1].messages[-1]["content"]
-        self.assertEqual([r["tool_use_id"] for r in results], ["a", "b"])
+        self.assertEqual([r["tool_use_id"] for r in results if r["type"] == "tool_result"], ["a", "b"])
 
     def test_ac_10_4_issue_id_is_validated_before_it_enters_the_prompt(self) -> None:
         with self.assertRaises(ValueError):

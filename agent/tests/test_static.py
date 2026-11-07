@@ -17,6 +17,11 @@ FORBIDDEN = {
 }
 
 
+# The one file allowed to send a POST (to its fixed base URL only); every other verb stays forbidden there too.
+EXTERNAL_MODEL_FILE = "deepseek_model.py"
+POST_ALLOWED_PATTERN = r"\b(PUT|DELETE|PATCH)\b"
+
+
 class StaticChecksTest(unittest.TestCase):
     def test_ac_10_1_agent_source_has_no_write_shell_socket_or_database_access(self) -> None:
         files = sorted(SRC.rglob("*.py"))
@@ -25,10 +30,24 @@ class StaticChecksTest(unittest.TestCase):
         for path in files:
             text = path.read_text(encoding="utf-8")
             for label, pattern in FORBIDDEN.items():
+                if label == "HTTP write verbs" and path.name == EXTERNAL_MODEL_FILE:
+                    pattern = POST_ALLOWED_PATTERN
                 for match in re.finditer(pattern, text):
                     line = text.count("\n", 0, match.start()) + 1
                     problems.append(f"{path.relative_to(SRC)}:{line}: {label}")
         self.assertEqual(problems, [])
+
+    def test_ac_10_10_only_the_deepseek_adapter_posts_and_only_to_the_fixed_base_url(self) -> None:
+        posting = [p.name for p in sorted(SRC.rglob("*.py")) if re.search(r"\bPOST\b", p.read_text("utf-8"))]
+        self.assertEqual(posting, [EXTERNAL_MODEL_FILE])
+        text = (SRC / "ledgerlab_agent" / EXTERNAL_MODEL_FILE).read_text("utf-8")
+        self.assertEqual(re.findall(r'^BASE_URL = "([^"]*)"$', text, re.M), ["https://api.deepseek.com"])
+        # the base URL is the only URL written in the file (the docstring names none), and nothing reads it from outside
+        self.assertEqual(re.findall(r"https?://[^\s\"')]+", text), ["https://api.deepseek.com"])
+        self.assertEqual(re.findall(r'^API_KEY_ENV = "([^"]*)"$', text, re.M), ["DEEPSEEK_API_KEY"])
+        self.assertEqual(re.findall(r"\.get\(([A-Z_]+)[,)]", text), ["API_KEY_ENV"])  # the only environment lookup
+        self.assertNotIn("getenv", text)
+        self.assertNotIn("BASE_URL =", text.replace('BASE_URL = "https://api.deepseek.com"', "", 1))
 
     def test_ac_10_1_agent_source_only_imports_the_standard_library_or_itself(self) -> None:
         import sys
