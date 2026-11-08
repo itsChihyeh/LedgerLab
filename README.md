@@ -133,7 +133,7 @@ sh scripts/demo/status.sh
 sh scripts/demo/reset.sh         # the daily reset: archive today's summary, then rebuild and reseed
 sh scripts/demo/down.sh          # remove the stack and its volumes
 sh scripts/demo/check-reset.sh   # up, actions, reset, assertions, down; evidence in target/demo/
-cd frontend && npm run video:demo   # scripted demo video into docs/media/
+cd frontend && npm run video:demo   # scripted demo video into docs/media/ (not committed)
 sh perf/run.sh                   # k6 baseline on its own stack, about an hour; see docs/perf/baseline-2026-11-05.md
 ```
 
