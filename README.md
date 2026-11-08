@@ -56,6 +56,8 @@ Details, the money model and the design trade-offs are in the [architecture over
 
 ## Status
 
+**Project status: complete.** All phases P1–P11 are done and merged into `main`; the repository is no longer under active development. Nothing is deployed: the AWS plan (P7, P10) and distributed tracing (P11) are written up as plans only.
+
 | Phase | Scope | State | Where |
 |---|---|---|---|
 | P1–P4 | Ledger, webhook intake, settlement, bank reconciliation, refunds, corrections | Done | `main` |
