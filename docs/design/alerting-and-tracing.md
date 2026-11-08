@@ -80,7 +80,7 @@ Prometheus ──alerts──▶ Alertmanager ──webhook──▶ 接收程�
 - `docs/ops/runbook.md` 加 `#outbound-exhausted`、`#recon-run-failed`、`#metrics-down` 三节，以及“怎么在本机看到告警送达”（起接收程序、起 Alertmanager）。
 
 ## 3. 追踪方案（AC-13.7，只写文档）
-写在 [tracing.md](tracing.md)：用什么（Micrometer Tracing＋OpenTelemetry 桥、W3C `traceparent`）、跨异步边界怎么接（inbox 和出站命令表要存 trace 上下文，需要迁移）、和 `requestId`／业务编号的关系、对确定性重建的影响、导出到哪里（本地 Jaeger 或 Tempo，新基础设施）、需要的新依赖和镜像清单、不做的理由和做的代价。**P11 不实现**，等用户决定是否在之后的阶段做。
+写在 [tracing.md](tracing.md)：用什么（Micrometer Tracing＋OpenTelemetry 桥、W3C `traceparent`）、跨异步边界怎么接（inbox 和出站命令表要存 trace 上下文，需要迁移）、和 `requestId`／业务编号的关系、对确定性重建的影响、导出到哪里（本地 Jaeger 或 Tempo，新基础设施）、需要的新依赖和镜像清单、不做的理由和做的代价。**没有实现**（项目已完成，只留方案）。
 
 ## 4. 合并与收尾（AC-13.8）
 - PR #8（p8）→ #9（p9）→ #10（p10）按顺序合进 `main`；P11 结束时开 `p11` → `main` 的 PR，排在 #10 之后。
