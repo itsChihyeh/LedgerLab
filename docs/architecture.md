@@ -69,7 +69,7 @@ Cash moves only on bank statement evidence, never on an API response.
 |---|---|---|
 | Entries are append-only | Database triggers and role grants, checked by tests that connect as `app` and `readonly` | [ADR-0003](adr/0003-sealed-entries-and-db-invariants.md), [ADR-0014](adr/0014-db-roles-and-threat-boundary.md) |
 | Concurrent refunds and payouts cannot overspend | A single funds-lock row, then business-row and account locks in a fixed order, tested with barriers and controlled interleavings | [ADR-0004](adr/0004-concurrency-and-lock-order.md) |
-| Duplicates have no second effect | Three separate layers: event ID, API idempotency key, business reference | [ADR-0009](adr/0009-three-layer-idempotency.md), [ADR-0007](adr/0007-webhook-inbox.md) |
+| Duplicates have no second effect | Three layers (API idempotency key, business reference, entry `source_key`), plus inbound webhook dedup by event ID | [ADR-0009](adr/0009-three-layer-idempotency.md), [ADR-0007](adr/0007-webhook-inbox.md) |
 | A lost response never releases funds | A payout stays `UNKNOWN` and reserved until a query or the bank statement settles it | [ADR-0006](adr/0006-payout-unknown-outcome.md), [ADR-0008](adr/0008-outbound-command-table.md) |
 | Mistakes are corrected, not edited | Reversal plus restatement, limited to named correction types | [ADR-0011](adr/0011-restricted-correction.md) |
 | Reconciliation is independent | Compares the ledger with processor data and bank statements, and only writes findings | [ADR-0010](adr/0010-reconciliation-matching.md) |
