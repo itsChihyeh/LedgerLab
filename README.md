@@ -16,6 +16,16 @@ A payment settlement and reconciliation sandbox: signed processor webhooks, refu
 
 Built with Java 25, Spring Boot 4.1, Spring Modulith, PostgreSQL, Flyway, React, TypeScript, Testcontainers, jqwik, Playwright, Prometheus and GitHub Actions, plus standard-library Python for the investigation agent.
 
+## Screenshots
+
+From the automated browser tests, with synthetic data. The UI labels are in Chinese.
+
+![Funds overview: settlement in transit, bank cash, merchant available, payouts in transit, and recent batches](docs/images/overview.png)
+
+The investigation panel on a reconciliation issue. Here the local stand-in (the rule baseline, not an external model) finds that one payout arrived as two bank credits and cites the batch and both bank lines. Nothing is written until a person adopts the conclusion and submits the pre-filled form.
+
+![Investigation panel showing root cause BANK_SPLIT_DEPOSIT, confidence, explanation, recommended action and clickable citations](docs/images/investigation-panel.png)
+
 ## Architecture
 
 ```mermaid
