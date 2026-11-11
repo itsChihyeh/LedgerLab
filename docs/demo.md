@@ -2,7 +2,7 @@
 
 Every step below replays a real run of the automated browser tests: the real app, real PostgreSQL, signed webhooks and bank files. There is no hosted version. Nothing here touches Stripe or real money. The UI labels are in Chinese, so the script gives the English meaning.
 
-It does not show the investigation agent or deployment, because neither has been built.
+It does not show the investigation agent, which was built after this script was written (see [Investigation agent](../README.md#investigation-agent-p8) in the README), and there is no deployment to show: nothing is deployed.
 
 ## Prepare (about 5 minutes, off camera)
 
